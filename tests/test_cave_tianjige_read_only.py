@@ -78,6 +78,51 @@ def read(command=".我的阴罗幡"):
     return asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_read_only(1001, ENTRY, command, now=NOW))
 
 
+def test_public_tianjige_voyage_status_reconciles_returned_state(runtime):
+    runtime.identity.update(
+        concubine_name="南宫婉·月影",
+        concubine_voyage_status="idle",
+        concubine_voyage_route="月殿寻痕",
+        concubine_voyage_return_at=0,
+        concubine_voyage_enabled=True,
+    )
+    runtime.flow.return_value["data"]["actionResult"]["rawMessage"] = (
+        "远航状态: 月殿寻痕航线已归航，待结算（.远航归来）。"
+    )
+    response = read(".远航状态")
+    assert response["ok"]
+    assert runtime.identity["concubine_voyage_status"] == "returned"
+    assert runtime.identity["concubine_voyage_route"] == "月殿寻痕"
+    assert runtime.identity["concubine_voyage_return_at"] == NOW
+
+
+def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(runtime):
+    runtime.identity.update(
+        concubine_name="南宫婉·月影",
+        concubine_kind="道心侍妾",
+        concubine_affinity=166,
+        concubine_last_snapshot_at=NOW,
+        concubine_voyage_status="returned",
+        concubine_voyage_route="月殿寻痕",
+        concubine_voyage_return_at=NOW - 1,
+        concubine_voyage_enabled=True,
+    )
+    runtime.flow.return_value["data"]["actionResult"]["rawMessage"] = (
+        "【乱星海远航·归】\n"
+        "侍妾【南宫婉·月影】已自 月殿寻痕 航线归来，向你呈上收获：\n"
+        "- 修为 +423\n- 灵石 +89\n- 素女禁纹 x1\n"
+        "此行顺遂，侍妾对你更添信重，情缘增加 6 点。"
+    )
+    response = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
+        1001, ENTRY, ".远航归来", now=NOW,
+    ))
+    assert response["ok"]
+    assert runtime.identity["concubine_voyage_status"] == "idle"
+    assert runtime.identity["concubine_affinity"] == 172
+    assert "月殿寻痕" in runtime.identity["concubine_voyage_last_result"]
+    runtime.save.assert_called_once_with()
+
+
 @pytest.mark.parametrize("message", [
     "【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！",
     "【转化失败·反噬】\n魔功失控，你消耗的 10000 点修为尽数逸散！",

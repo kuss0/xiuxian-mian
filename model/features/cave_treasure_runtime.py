@@ -13,7 +13,13 @@ from urllib.parse import urljoin
 
 from telethon import functions
 
-from ..config import CD_BUFFER_SEC, CMD_TIANTI_STATUS, STATE_DIR
+from ..config import (
+    CD_BUFFER_SEC,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
+    CMD_TIANTI_STATUS,
+    STATE_DIR,
+)
 from ..inventory_delta import prepare_inventory_delta, record_inventory_delta, stable_payload_digest
 from ..miniapp_state import prepare_miniapp_state, record_miniapp_state
 from ..persistence import save_state
@@ -4967,7 +4973,7 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
     """Apply supported Tianjige panels through status-only module bridges."""
-    if command not in {CMD_TIANTI_STATUS, ".我的阴罗幡", ".我的侍妾"}:
+    if command not in {CMD_TIANTI_STATUS, ".我的阴罗幡", ".我的侍妾", CMD_CONCUBINE_VOYAGE_STATUS}:
         return {"supported": False, "handled": False, "summary": {}}
 
     with use_identity(identity_id):
@@ -4998,6 +5004,19 @@ def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now)
                 "reason": str(sync_result.get("reason") or ""),
                 "summary": summary,
                 "detail": detail,
+            }
+        if command == CMD_CONCUBINE_VOYAGE_STATUS:
+            parsed = concubine._parse_voyage_status_text(message, now)
+            if not parsed:
+                return {"supported": True, "handled": False, "reason": "unparsed_voyage_status", "summary": {}}
+            handled = concubine._apply_voyage_snapshot(parsed, now)
+            summary = dict(parsed)
+            return {
+                "supported": True,
+                "handled": bool(handled),
+                "reason": "" if handled else "voyage_snapshot_rejected",
+                "summary": summary,
+                "detail": f"远航 {summary.get('route') or '未知航线'}｜{summary.get('status') or '未知状态'}",
             }
         sync_result = yinluo.sync_yinluo_miniapp_status(message, now)
     summary = dict(sync_result.get("summary") or {})
@@ -5060,6 +5079,7 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
     entry_observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
     prefix = {
         CMD_TIANTI_STATUS: "tianti_", ".我的阴罗幡": "yinluo_", ".我的侍妾": "concubine_",
+        CMD_CONCUBINE_VOYAGE_STATUS: "concubine_",
     }.get(normalized_command)
 
     def business_snapshot():
@@ -5076,6 +5096,8 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 return tianti.tianti_miniapp_status_block_reason(now)
             if normalized_command == ".我的侍妾":
                 return concubine.concubine_miniapp_status_block_reason(now, processed_at=max(now, time.time()))
+            if normalized_command == CMD_CONCUBINE_VOYAGE_STATUS:
+                return concubine.concubine_voyage_miniapp_status_block_reason(now)
             if normalized_command == ".我的阴罗幡":
                 return yinluo.yinluo_miniapp_status_block_reason(now)
         return ""
@@ -5206,6 +5228,8 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             final_message = (
                 "洞府天机阁天阶状态已同步（只读，不触发登阶）"
                 if normalized_command == CMD_TIANTI_STATUS
+                else "洞府天机阁远航状态已同步（只读）"
+                if normalized_command == CMD_CONCUBINE_VOYAGE_STATUS
                 else f"洞府天机阁只读状态已同步：{normalized_command}"
             )
             detail = str(sync_result.get("detail") or "").strip()
@@ -5220,6 +5244,112 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             "ok": False, "message": f"洞府天机阁只读命令尚未接入状态同步：{normalized_command}",
             "extra": _miniapp_result_extra({"command": normalized_command, "raw_message": message}, session, result),
         }
+
+
+async def run_cave_public_tianjige_action(identity_id, public_entry_url, command, *, now=None):
+    """Run one whitelisted Tianjige mutation with single-dispatch semantics.
+
+    This is intentionally separate from the read-only path. A dispatched
+    voyage settlement is never retried locally when its HTTP result is
+    uncertain.
+    """
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    normalized_command = str(command or "").strip()
+    allowed_commands = {
+        CMD_CONCUBINE_VOYAGE_RETURN,
+        ".侍妾远航 月殿寻痕",
+    }
+    if normalized_command not in allowed_commands:
+        return {"ok": False, "message": "洞府天机阁动作不在受控白名单", "extra": {}}
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if identity_id <= 0 or owner is None:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    with use_identity(identity_id):
+        due = (
+            concubine._is_voyage_return_due(now)
+            if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN
+            else concubine._is_voyage_eligible(now)
+        )
+        if not due:
+            message = (
+                "当前没有已确认的远航归航结算"
+                if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN
+                else "当前不满足月殿寻痕发起条件"
+            )
+            return {"ok": False, "message": message, "extra": {"status": "not_due"}}
+    entry_observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        return (
+            owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and _public_entry_allowed()
+            and (entry_observation is None or entry_observation.permits(identity_id, token))
+        )
+
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    async with lock:
+        if not can_continue():
+            return {"ok": False, "message": "洞府天机阁动作已取消或身份已变更", "extra": {"status": "cancelled"}}
+        session = await _load_cave_public_identity_session(
+            identity_id, token, webview_url, now=now,
+            capture_source=f"cave_public_tianjige_action_start:{identity_id}",
+            operation_check=can_continue,
+        )
+        if not can_continue():
+            return {"ok": False, "message": "洞府天机阁动作已取消或身份已变更", "extra": {"status": "cancelled"}}
+        if session.get("ok") is not True:
+            response = {"ok": False, "message": f"洞府天机阁动作身份读取失败：{session.get('error') or 'unknown'}", "extra": _miniapp_result_extra({}, session)}
+            await _audit_cave_tianjige_read_only(identity_id, response)
+            return response
+        player_error = _cave_tianjige_session_player_error(session, identity_id)
+        if player_error:
+            return {"ok": False, "message": player_error, "extra": _miniapp_result_extra({"status": "identity_unverified"}, session)}
+        result = await run_cave_tianjige_command_production_flow(
+            identity_id, token=token, webview_url=webview_url, command=normalized_command,
+            init_data=session.get("init_data") or "", player_id=session.get("player_id"),
+            capture_sink=_capture_store(now), capture_source=f"cave_public_tianjige_action:{identity_id}",
+            operation_check=can_continue,
+        )
+        if not can_continue():
+            return {"ok": False, "message": "洞府天机阁动作已取消或身份已变更", "extra": _miniapp_result_extra({"status": "cancelled"}, session, result)}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        player_error = cave_action_player_error(data, identity_id) if result.get("ok") is True else ""
+        message = extract_cave_tianjige_command_message(data)
+        extra = _miniapp_result_extra({"raw_message": message, "action_dispatched": bool(result.get("action_dispatched")), "outcome_unknown": bool(result.get("outcome_unknown"))}, session, result)
+        if player_error:
+            extra.update(status="identity_unverified")
+            return {"ok": False, "message": player_error, "extra": extra}
+        if result.get("ok") is not True or not _cave_tianjige_action_succeeded(data) or not message:
+            response = {"ok": False, "message": f"洞府天机阁远航归来未确认：{result.get('error') or result.get('status') or '无可识别回包'}", "extra": extra}
+            await _audit_cave_tianjige_read_only(identity_id, response)
+            return response
+        with use_identity(identity_id):
+            applied = concubine.apply_concubine_miniapp_voyage_result(
+                message, now,
+                kind="voyage_return" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "voyage",
+            )
+        if not applied.get("handled"):
+            response = {"ok": False, "message": "洞府天机阁远航归来回包未通过现有解析器，已停止补发", "extra": {**extra, "status": "unparsed"}}
+            await _audit_cave_tianjige_read_only(identity_id, response)
+            return response
+        response = {
+            "ok": True,
+            "message": "洞府天机阁远航归来已结算" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "洞府天机阁月殿寻痕已发起",
+            "extra": {**extra, "voyage": applied},
+        }
+        await _audit_cave_tianjige_read_only(identity_id, response, detail="远航归来已由 MiniApp 回包核销", priority="low")
+        return response
 
 
 async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
@@ -5761,6 +5891,7 @@ __all__ = [
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
     "run_cave_public_tianjige_read_only",
+    "run_cave_public_tianjige_action",
     "run_cave_public_tianti_status",
     "run_cave_public_tower",
     "run_cave_public_treasure",

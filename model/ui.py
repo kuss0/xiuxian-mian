@@ -119,6 +119,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
     run_cave_public_tianjige_read_only,
+    run_cave_public_tianjige_action,
     run_cave_public_tianti_status,
     run_cave_public_tower,
     run_cave_public_tree,
@@ -7613,6 +7614,12 @@ def _cave_public_entry_runner(identity_id, action, *, tree_operation=None):
     }
     if action in commands:
         return lambda url: run_cave_public_tianjige_read_only(identity_id, url, commands[action])
+    if action == "concubine_voyage_status":
+        return lambda url: run_cave_public_tianjige_read_only(identity_id, url, ".远航状态")
+    if action == "concubine_voyage_return":
+        return lambda url: run_cave_public_tianjige_action(identity_id, url, ".远航归来")
+    if action == "concubine_voyage_moon":
+        return lambda url: run_cave_public_tianjige_action(identity_id, url, ".侍妾远航 月殿寻痕")
     if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
         return lambda url: run_cave_public_deep_retreat_action(identity_id, url, action.removeprefix("deep_"))
     return None

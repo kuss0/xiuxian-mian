@@ -10,6 +10,10 @@ import re
 from telethon import functions
 
 from ..config import (
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
+    CMD_CONCUBINE_VOYAGE,
+    CONCUBINE_VOYAGE_MOON_ROUTE,
     CMD_TIANTI_STATUS,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -113,6 +117,7 @@ CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
+    CMD_CONCUBINE_VOYAGE_STATUS,
 })
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
@@ -121,6 +126,9 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
+    CMD_CONCUBINE_VOYAGE_STATUS,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    f"{CMD_CONCUBINE_VOYAGE} {CONCUBINE_VOYAGE_MOON_ROUTE}",
 })
 CAVE_EXTERNAL_ACTIONS = frozenset({
     "fate_cards",

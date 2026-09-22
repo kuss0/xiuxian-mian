@@ -54,7 +54,7 @@ from ..persistence import mark_dirty, save_state
 from ..message_keys import find_message_key, message_key_parts
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ..runtime import _fire_and_forget, classify_game_send_block, clear_pending_by_reply, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
-from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_id, get_game_group_ids, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_id, get_game_group_ids, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_miniapp_auto_config, get_pending_command, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ..verified_event import telegram_event_timestamp
 from ..resource_accounting import valid_point
@@ -574,6 +574,49 @@ def _apply_voyage_snapshot(parsed, now):
         _schedule_voyage_wait(now)
         return True
     return False
+
+
+def apply_concubine_miniapp_voyage_result(text, now, *, kind="voyage_return"):
+    """Apply one already-confirmed MiniApp voyage settlement.
+
+    No send record is created here: the MiniApp transport already supplied
+    the authoritative result. Parsing remains the same strict parser used by
+    the command reply path, so an ambiguous panel cannot consume affinity or
+    clear the local voyage lock.
+    """
+    now = _query_time(now)
+    if now is None or kind not in {"voyage", "voyage_return"}:
+        return {"handled": False, "reason": "voyage_not_due"}
+    partner = str(state.get("concubine_name") or "").strip()
+    route = str(state.get("concubine_voyage_route") or _preferred_voyage_route()).strip()
+    record = {
+        "kind": kind,
+        "partner": partner,
+        "route": route,
+        "affinity": int(state.get("concubine_affinity", 0) or 0),
+        "snapshot_at": state.get("concubine_last_snapshot_at", 0),
+        "voyage": voyage_actions._voyage(),
+    }
+    expected_statuses = {"returned", "sailing"} if kind == "voyage_return" else {"", "idle"}
+    if not partner or not record["voyage"] or record["voyage"].get("status") not in expected_statuses:
+        return {"handled": False, "reason": "voyage_snapshot_missing"}
+    parsed = voyage_actions._parse_result(record, text, now)
+    expected_outcome = "returned" if kind == "voyage_return" else "started"
+    if not parsed or parsed.get("outcome") != expected_outcome:
+        return {"handled": False, "reason": "unparsed_voyage_result"}
+    before = copy.deepcopy(state)
+    voyage_actions._apply_result({"result": parsed, **record}, now, True)
+    if state == before:
+        return {"handled": False, "reason": "voyage_projection_unchanged"}
+    save_state()
+    return {
+        "handled": True,
+        "outcome": parsed["outcome"],
+        "route": route,
+        "affinity_loss": int(parsed.get("affinity_loss", 0) or 0),
+        "affinity_gain": int(parsed.get("affinity_gain", 0) or 0),
+        "text": parsed["text"],
+    }
 
 
 def _format_voyage_reward_line(line):
@@ -2525,6 +2568,15 @@ def concubine_miniapp_status_block_reason(now, *, processed_at=None):
     return _status_snapshot_block_reason(now, allow_fragment_ready=external_events.needs_calibration())
 
 
+def concubine_voyage_miniapp_status_block_reason(now):
+    """Block only active owned work; voyage status is a recovery read.
+
+    Unlike the full concubine panel, a voyage status read must be able to
+    repair stale local affinity/snapshot data from the authoritative panel.
+    """
+    return _status_snapshot_block_reason(now, allow_status_pending=True)
+
+
 def sync_concubine_miniapp_status(text, now):
     """Apply an idle Tianjige status panel without driving the active chain."""
     phase = _phase()
@@ -3527,7 +3579,50 @@ async def _send_heart_command(now):
 
 
 async def _send_voyage_return_command(now):
+    miniapp_result = await _send_voyage_miniapp_command("return", now)
+    if miniapp_result is not None:
+        return miniapp_result
     return await voyage_actions.send("voyage_return", now)
+
+
+async def _send_voyage_miniapp_command(kind, now):
+    """Prefer the configured Cave command-center path for voyage actions.
+
+    Read/status failures may fall back to the established command query. A
+    mutation only falls back when no request was dispatched; an uncertain or
+    dispatched result remains held for evidence-based recovery.
+    """
+    config = get_miniapp_auto_config()
+    if not (config.get("cave_public_entry_urls") or config.get("cave_public_entry_url")):
+        return None
+    action = {
+        "status": "concubine_voyage_status",
+        "return": "concubine_voyage_return",
+        "launch": "concubine_voyage_moon",
+    }.get(str(kind or "").strip())
+    if not action:
+        return None
+    try:
+        from ..ui import ui_run_cave_public_entry
+        ok, _message, extra = await ui_run_cave_public_entry(
+            get_current_identity_id(), action, "",
+        )
+    except Exception as exc:
+        console_log(f"侍妾远航 MiniApp 调用失败，准备受控回退：{type(exc).__name__}", scope="identity")
+        return None
+    extra = dict(extra or {})
+    if ok:
+        return True
+    dispatched = bool(extra.get("action_dispatched") or extra.get("outcome_unknown"))
+    if kind != "status" and dispatched:
+        state["concubine_voyage_last_error"] = str(_message or "远航 MiniApp 结果未知")[:240]
+        state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
+        _set_phase("idle")
+        state["concubine_voyage_msg_id"] = 0
+        _schedule_voyage_wait(now)
+        save_state()
+        return False
+    return None
 
 
 async def _send_voyage_status_command(now):
@@ -3536,10 +3631,16 @@ async def _send_voyage_status_command(now):
     if _defer_active_for_phaseful_summary(now, "远航状态校准", error_key="concubine_voyage_last_error"):
         save_state()
         return False
+    miniapp_result = await _send_voyage_miniapp_command("status", now)
+    if miniapp_result is not None:
+        return miniapp_result
     return await _send_status_query("voyage_status", now)
 
 
 async def _send_voyage_command(now):
+    miniapp_result = await _send_voyage_miniapp_command("launch", now)
+    if miniapp_result is not None:
+        return miniapp_result
     return await voyage_actions.send("voyage", now)
 
 
