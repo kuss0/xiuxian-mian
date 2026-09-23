@@ -1213,20 +1213,60 @@ def get_world_boss_status_burst_exempt_ids(events: list[dict]) -> set[int]:
     return exempt_ids
 
 
-def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> int:
+def non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> list[dict]:
     start = now - float(seconds)
     recent = [item for item in events if float(item.get("_epoch", 0) or 0) >= start]
     marked_heart_choice_exempt_ids = get_marked_heart_choice_burst_exempt_ids(recent)
     world_boss_status_exempt_ids = get_world_boss_status_burst_exempt_ids(recent)
     storage_bag_exempt_ids = get_storage_bag_retry_exempt_ids(recent)
-    return sum(
-        1
-        for item in recent
+    return [
+        item for item in recent
         if not is_send_burst_exempt_event(item)
         and id(item) not in marked_heart_choice_exempt_ids
         and id(item) not in world_boss_status_exempt_ids
         and id(item) not in storage_bag_exempt_ids
-    )
+    ]
+
+
+def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> int:
+    return len(non_burst_exempt_since(events, now, seconds))
+
+
+def send_burst_details(events: list[dict], now: float, cfg: WatchdogConfig, reason: str) -> list[str]:
+    windows = {f"send burst: {limit}+ sends in {seconds}s": seconds for seconds, limit in (
+        (120, cfg.total_2m_limit), (300, cfg.total_5m_limit), (900, cfg.total_15m_limit),
+    )}
+    seconds = windows.get(reason)
+    if seconds is None:
+        return []
+    sent = [item for item in events if item.get("event_type") == "sent" and float(item.get("_epoch", 0) or 0) > 0]
+    recent = [item for item in sent if float(item["_epoch"]) >= now - seconds]
+    counted = sorted(non_burst_exempt_since(sent, now, seconds), key=lambda item: float(item["_epoch"]))
+
+    def label(value: object) -> str:
+        return " ".join(str(value or "unknown").split())[:24]
+
+    sources: dict[str, int] = defaultdict(int)
+    for item in counted:
+        sources[label(item.get("source_module") or item.get("family"))] += 1
+    top_sources = sorted(sources.items(), key=lambda pair: (-pair[1], pair[0]))[:4]
+    lines = [
+        "仅告警，未暂停；需结合回包判断是否重复发送。",
+        f"采样：{datetime.fromtimestamp(now, TZ_LOCAL):%Y-%m-%d %H:%M:%S} UTC+8｜窗口 {seconds}s",
+        f"计数 {len(counted)}｜豁免 {len(recent) - len(counted)}｜身份 {len({item.get('sender_id') for item in counted})}",
+        "来源：" + " / ".join(f"{source}×{count}" for source, count in top_sources)
+        + (f" / 另 {len(sources) - 4} 类" if len(sources) > 4 else ""),
+        f"计入样本（最近 {min(5, len(counted))}/{len(counted)} 条）：",
+    ]
+    for item in counted[-5:]:
+        # Omit arguments: some commands can carry private text or credentials.
+        words = str(item.get("text") or "").split()
+        lines.append(
+            f"- {datetime.fromtimestamp(float(item['_epoch']), TZ_LOCAL):%H:%M:%S} "
+            f"id={label(item.get('sender_id'))} {label(words[0] if words else '')} "
+            f"msg={label(item.get('message_id'))}"
+        )
+    return lines
 
 
 def get_storage_bag_retry_exempt_ids(events: list[dict]) -> set[int]:
@@ -1651,7 +1691,7 @@ def format_fuse_message(reason: str, action: str, actions: list[str], *, env: di
     return message
 
 
-def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = False) -> str:
+def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = False, details: list[str] | None = None) -> str:
     lines = [
         "[SAFETY WATCHDOG WARNING]",
         f"reason: {reason}",
@@ -1660,6 +1700,7 @@ def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = 
     if dry_run:
         lines[0] = "[SAFETY WATCHDOG WOULD WARN]"
         lines[-1] = "action: warn dry-run"
+    lines.extend(details or [])
     message = "\n".join(html.escape(line) for line in lines)
     mentions = format_admin_mentions_html(env)
     if mentions and not dry_run:
@@ -1740,18 +1781,20 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     print(send_log_via_bot(env, format_fuse_message(reason, cfg.action, actions, env=env)))
 
 
-def perform_warning(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
-    message = format_warning_message(reason, env=env, dry_run=cfg.dry_run)
-    print(message)
+def perform_warning(cfg: WatchdogConfig, env: dict[str, str], reason: str, *, details: list[str] | None = None) -> None:
+    message = format_warning_message(reason, env=env, dry_run=cfg.dry_run, details=details)
+    print(message, flush=True)
     if not cfg.dry_run:
-        print(send_log_via_bot(env, message))
+        print(send_log_via_bot(env, message), flush=True)
 
 
 def current_log_file(project_root: Path) -> Path:
     return project_root / "data" / "messages" / f"{datetime.now().strftime('%Y-%m-%d')}.log"
 
 
-def check_once(cfg: WatchdogConfig) -> str:
+def check_once(cfg: WatchdogConfig, *, warning_details: list[str] | None = None) -> str:
+    if warning_details is not None:
+        warning_details.clear()
     now = time.time()
     legacy_processes = find_legacy_xiuxian_processes(cfg.project_root)
     if legacy_processes:
@@ -1766,6 +1809,8 @@ def check_once(cfg: WatchdogConfig) -> str:
         ]
     breach = find_send_breach(events, now, cfg)
     if breach:
+        if warning_details is not None:
+            warning_details.extend(send_burst_details(events, now, cfg, breach))
         return breach
     breach = find_reply_breach(events, now)
     if breach:
@@ -1911,13 +1956,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.once:
-        breach = check_once(cfg)
+        warning_details: list[str] = []
+        breach = check_once(cfg, warning_details=warning_details)
         journal_breach = find_journal_breach(cfg.service_name)
         if not breach and journal_breach and not journal_breach.startswith("journal check failed"):
             breach = journal_breach
         if breach:
             if is_warn_only_breach_reason(breach):
-                perform_warning(cfg, env, breach)
+                perform_warning(cfg, env, breach, details=warning_details)
                 return 0
             perform_fuse(cfg, env, breach)
             return 2
@@ -1927,9 +1973,10 @@ def main(argv: list[str]) -> int:
     last_journal_check = 0.0
     last_warning_at_by_reason: dict[str, float] = {}
     breach_confirmation = BreachConfirmationState()
-    print(f"watchdog started: root={cfg.project_root} action={cfg.action}")
+    print(f"watchdog started: root={cfg.project_root} action={cfg.action}", flush=True)
     while True:
-        breach = check_once(cfg)
+        warning_details = []
+        breach = check_once(cfg, warning_details=warning_details)
         now = time.time()
         if not breach and now - last_journal_check >= cfg.journal_check_interval_sec:
             last_journal_check = now
@@ -1941,7 +1988,7 @@ def main(argv: list[str]) -> int:
             last_warning_at = float(last_warning_at_by_reason.get(warning_key, 0.0) or 0.0)
             if now - last_warning_at >= WARNING_REPEAT_SEC:
                 last_warning_at_by_reason[warning_key] = now
-                perform_warning(cfg, env, breach)
+                perform_warning(cfg, env, breach, details=warning_details)
             reset_breach_confirmation(breach_confirmation)
             time.sleep(cfg.interval_sec)
             continue
