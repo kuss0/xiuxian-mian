@@ -1584,7 +1584,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("concubine")
             changed = module_changed or changed
-        if family.startswith("hehuan_") or (not family and hehuan_mod.looks_like_hehuan_text(raw_text)):
+        if ((family.startswith("hehuan_") and not (
+                family == "hehuan_dual" and _routed_reply_already_handled(reply_context)))
+                or (not family and hehuan_mod.looks_like_hehuan_text(raw_text))):
             module_changed = hehuan_mod.apply_hehuan_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("hehuan")

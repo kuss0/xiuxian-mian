@@ -71,7 +71,7 @@ from .features.guanxing import (
 )
 from .features.formation import handle_formation_event, is_formation_reply_text, run_formation_scheduler
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
-from .features.hehuan import run_hehuan_scheduler
+from .features.hehuan import apply_hehuan_passive, parse_hehuan_text, run_hehuan_scheduler
 from .features.concubine import (
     handle_concubine_affinity_event,
     handle_concubine_dream_reply,
@@ -3410,6 +3410,20 @@ async def _handle_routed_reply_event(
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
+        if matched_family == "hehuan_dual":
+            parsed_hehuan = parse_hehuan_text(text, now=now, family=matched_family)
+            if (parsed_hehuan and parsed_hehuan.get("path") == "同参道"
+                    and parsed_hehuan.get("action") in {"双修", "双修 温养"}
+                    and parsed_hehuan.get("result") in {
+                        "pending", "success", "cooldown", "contract_invalid", "realm_blocked",
+                    }):
+                observed_at = float((routed_identity_state.get("hehuan_observation") or {}).get("last_observed_at") or 0)
+                reply_at = float(reply_context["server_event_at"] or now)
+                if reply_at >= observed_at:
+                    handled_any = apply_hehuan_passive(text, now=reply_at, family=matched_family)
+                else:
+                    handled_any = True
+                is_nonterminal_waiting_reply = parsed_hehuan.get("result") == "pending"
         if not already_consumed and str(matched_family or "").startswith("tianxing_"):
             handled_any = apply_tianxing_passive(
                 text, now=now, family=matched_family,
