@@ -2462,6 +2462,10 @@ async def run_wanxin_scheduler(now):
                 _schedule_next(observed, now, 30 * 60, error="咒契缺少真实接取证据，需重新发布并接取")
             commit()
             return
+        if _next_due_action(observed, now, (WANXIN_ACTION_MOON_GREET,)):
+            await _send_owner_action(observed, WANXIN_ACTION_MOON_GREET, now)
+            commit()
+            return
         if bool(commission.get("accepted")):
             assist_action = _next_due_action(observed, now, WANXIN_ASSIST_ACTIONS)
             if assist_action:

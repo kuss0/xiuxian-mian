@@ -637,6 +637,39 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".探望南宫婉", send_mock.await_args.args[0])
             self.assertEqual("visit", state_module.state["wanxin_observation"]["pending"]["action"])
 
+    async def test_due_moon_greet_is_not_starved_by_assist_retry(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_051.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "moon_awakened": True,
+                "auto_next_time": now - 1,
+                "next_moon_greet_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "assist": {
+                    "identify_enabled": False, "banner_enabled": True,
+                    "strip_enabled": False, "next_banner_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "_commission_accept_evidence_valid", return_value=True),
+                patch.object(wanxin, "_owner_needs_cancel", return_value=False),
+                patch.object(wanxin, "_owner_needs_commission", return_value=False),
+                patch.object(wanxin, "_owner_needs_accept", return_value=False),
+                patch.object(wanxin, "_send_owner_action", new=AsyncMock()) as owner_send,
+                patch.object(wanxin, "_send_assist_action", new=AsyncMock()) as assist_send,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+        owner_send.assert_awaited_once()
+        self.assertEqual(wanxin.WANXIN_ACTION_MOON_GREET, owner_send.await_args.args[1])
+        assist_send.assert_not_awaited()
+
     async def test_owner_action_send_timeout_retains_unknown_without_cooldown(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_055.0
