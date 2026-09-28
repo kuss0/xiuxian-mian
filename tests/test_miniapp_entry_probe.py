@@ -2030,6 +2030,41 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)
 
+    async def test_trial_recovery_hold_does_not_block_unrelated_background_action(self):
+        now = datetime(2026, 7, 7, 9, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        state_module.ensure_identity_registered(1003)
+        state_module.get_identity_state(1003)["trial_operation"] = {
+            "checkpoint": {"phase": "complete", "pending": {"action": "finish"}},
+        }
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_trial_enabled": True,
+            "cave_public_deep_status_enabled": True,
+            "trial_daily_wave1_last_batch_id": "unknown-batch",
+            "trial_daily_wave1_last_status": "retry_pending",
+            "trial_daily_wave1_last_progress_day": "2026-07-07",
+            "trial_daily_wave1_last_retry_reason": "trial_previous_outcome_unknown",
+            "trial_daily_wave1_last_steps": [
+                {"identity_id": 1003, "action": "trial"},
+            ],
+        }
+        background_result = {
+            "started": True,
+            "kind": "background",
+            "identity_id": 1001,
+            "action": "deep_start",
+        }
+        with patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock(return_value={"started": False})), \
+                patch.object(ui, "_run_cave_public_background_scheduler", new=AsyncMock(return_value=background_result)) as background_mock, \
+                patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock()) as trial_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual(background_result, result)
+        background_mock.assert_awaited_once()
+        trial_mock.assert_not_awaited()
+
     async def test_trial_daily_retry_resumes_only_failed_steps_after_deadline(self):
         now = datetime(2026, 7, 7, 9, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         batch_snapshot = dict(ui._cave_public_batch_state)

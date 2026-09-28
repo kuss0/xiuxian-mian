@@ -9859,8 +9859,9 @@ async def run_miniapp_daily_scheduler(now):
         and not active_wave.get("done_today")
         and active_wave.get("retry_due", True)
     )
+    trial_hold = None
     if active_wave and not active_wave.get("done_today") and not active_wave.get("retry_due", True):
-        return {
+        trial_hold = {
             "started": False,
             "reason": "trial_recovery_hold" if active_wave.get("recovery_hold") else "trial_retry_hold",
             "wave": wave_key,
@@ -9913,6 +9914,8 @@ async def run_miniapp_daily_scheduler(now):
     background = await _run_cave_public_background_scheduler(now, raw_config)
     if background.get("started"):
         return background
+    if trial_hold is not None:
+        return trial_hold
     if not config.get("trial_daily_effective_enabled"):
         return {"started": False, "reason": "disabled"}
     if config.get("trial_daily_done_today"):
