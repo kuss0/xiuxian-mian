@@ -8609,6 +8609,21 @@ async def _run_cave_public_entry_batch(
             display = get_identity_display_name(identity_id)
             current = f"{index}/{total} {display} {action}"
             _set_cave_public_batch_state(current=current)
+            if action == "trial" and trial_daily_context:
+                archive_result = trial_operations.archive_cross_day_unknown(
+                    identity_id,
+                    trial_daily_context["day_key"],
+                    now=time.time(),
+                )
+                if archive_result.get("archived"):
+                    await send_audit_log(
+                        f"🧊 洞府天机试炼旧未知操作已归档：{display}｜"
+                        f"{archive_result['source_day']} → {archive_result['archived_for_day']}；"
+                        "保留旧证据并开始本日新操作。",
+                        scope="global",
+                        priority="low",
+                        limit=280,
+                    )
             ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
             shared_pause = isinstance(extra, dict) and extra.get("shared_rate_limit")
             if not ok and (_is_cave_public_batch_pause(message) or shared_pause):

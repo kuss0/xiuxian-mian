@@ -28,6 +28,7 @@ from .tree_score_policy import normalize_tree_score_records
 
 FISHING_OPERATION_MAX_BYTES = 256 * 1024
 TRIAL_OPERATION_MAX_BYTES = 256 * 1024
+TRIAL_OPERATION_ARCHIVE_MAX_BYTES = 256 * 1024
 TREASURE_RESULT_MAX_BYTES = 256 * 1024
 TREASURE_OPERATION_MAX_BYTES = 256 * 1024
 TREE_OPERATION_MAX_BYTES = 256 * 1024
@@ -111,6 +112,8 @@ IDENTITY_JSON_COLUMNS.add("fishing_operation")
 IDENTITY_RUNTIME_COLUMNS.append("fishing_operation")
 IDENTITY_JSON_COLUMNS.add("trial_operation")
 IDENTITY_RUNTIME_COLUMNS.append("trial_operation")
+IDENTITY_JSON_COLUMNS.add("trial_operation_archive")
+IDENTITY_RUNTIME_COLUMNS.append("trial_operation_archive")
 IDENTITY_JSON_COLUMNS.add("treasure_result")
 IDENTITY_RUNTIME_COLUMNS.append("treasure_result")
 IDENTITY_JSON_COLUMNS.add("treasure_operation")
@@ -783,6 +786,7 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_result_pending": {},
     "fishing_operation": {},
     "trial_operation": {},
+    "trial_operation_archive": [],
     "treasure_result": {},
     "treasure_operation": {},
     "tree_operation": {},

@@ -10,7 +10,8 @@ import time
 import uuid
 
 from ..persistence import _bounded_miniapp_operation, mark_dirty, save_state
-from ..state import TRIAL_OPERATION_MAX_BYTES
+from ..state import TRIAL_OPERATION_ARCHIVE_MAX_BYTES, TRIAL_OPERATION_MAX_BYTES
+from ..timing import get_day_key
 from ..webapp_core import sanitize_webapp_secret_text
 from .miniapp_common import MiniAppIdentityOwner
 from .trial_miniapp import _trial_round_key
@@ -18,8 +19,10 @@ from .trial_receipts import normalize_trial_player_id, parse_trial_finish_receip
 
 
 STATE_KEY = "trial_operation"
+ARCHIVE_STATE_KEY = "trial_operation_archive"
 CHECKPOINT_TIMEOUT_SEC = 30
 MAX_RECEIPTS = 99
+MAX_ARCHIVE_ENTRIES = 64
 EVIDENCE_FIELDS = {"action_dispatched", "pending", "outcome_unknown", "round_receipts",
                    "request_resolution", "retry_after_sec", "status", "error"}
 REQUEST_ACTIONS = {"start", "finish", "next"}
@@ -126,6 +129,132 @@ def valid_record(value):
                 and len(_encoded(value).encode()) <= TRIAL_OPERATION_MAX_BYTES)
     except (ValueError, TypeError, OverflowError, RecursionError):
         return False
+
+
+def valid_archive_entry(value):
+    fields = {
+        "version", "operation_id", "identity_id", "account_id", "source_day",
+        "archived_for_day", "archived_at", "reason", "record",
+    }
+    return (
+        isinstance(value, dict)
+        and set(value) == fields
+        and type(value["version"]) is int
+        and value["version"] == 1
+        and _key(value["operation_id"], 32)
+        and type(value["identity_id"]) is int
+        and value["identity_id"] > 0
+        and type(value["account_id"]) is int
+        and value["account_id"] >= 0
+        and isinstance(value["source_day"], str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value["source_day"]) is not None
+        and isinstance(value["archived_for_day"], str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value["archived_for_day"]) is not None
+        and value["source_day"] < value["archived_for_day"]
+        and _time(value["archived_at"])
+        and value["reason"] == "cross_day_outcome_unknown"
+        and valid_record(value["record"])
+        and value["record"]["operation_id"] == value["operation_id"]
+        and value["record"]["identity_id"] == value["identity_id"]
+        and value["record"]["account_id"] == value["account_id"]
+    )
+
+
+def valid_archive(value):
+    if (
+        not isinstance(value, list)
+        or len(value) > MAX_ARCHIVE_ENTRIES
+        or any(not valid_archive_entry(item) for item in value)
+        or len({item["operation_id"] for item in value}) != len(value)
+    ):
+        return False
+    try:
+        return (
+            _bounded_miniapp_operation(value)
+            and len(_encoded(value).encode()) <= TRIAL_OPERATION_ARCHIVE_MAX_BYTES
+        )
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return False
+
+
+def archive_cross_day_unknown(identity_id, day_key, *, now=None):
+    """Archive an older game-day unknown mutation before a fresh daily run."""
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    current_day = str(day_key or "").strip()
+    if owner is None or re.fullmatch(r"\d{4}-\d{2}-\d{2}", current_day) is None:
+        return {"archived": False, "status": "invalid_context"}
+
+    record = deepcopy(owner.identity.get(STATE_KEY, {}))
+    if record == {}:
+        return {"archived": False, "status": "idle"}
+    if not _owned(owner, record):
+        return {"archived": False, "status": "invalid_record"}
+
+    checkpoint = record["checkpoint"]
+    request = checkpoint.get("pending") if isinstance(checkpoint.get("pending"), dict) else {}
+    if (
+        checkpoint.get("outcome_unknown") is not True
+        or checkpoint.get("action_dispatched") is not True
+        or request.get("action") not in REQUEST_ACTIONS
+    ):
+        return {"archived": False, "status": "not_archivable"}
+
+    source_day = get_day_key(record["created_at"])
+    if source_day >= current_day:
+        return {"archived": False, "status": "same_day_hold", "source_day": source_day}
+
+    previous_archive = deepcopy(owner.identity.get(ARCHIVE_STATE_KEY, []))
+    if not valid_archive(previous_archive):
+        return {"archived": False, "status": "archive_invalid"}
+
+    matching = [item for item in previous_archive if item["operation_id"] == record["operation_id"]]
+    if matching:
+        if len(matching) != 1 or not _same(matching[0]["record"], record):
+            return {"archived": False, "status": "archive_conflict"}
+        staged_archive = previous_archive
+    else:
+        if len(previous_archive) >= MAX_ARCHIVE_ENTRIES:
+            return {"archived": False, "status": "archive_full"}
+        archived_at = float(now if now is not None else time.time())
+        entry = {
+            "version": 1,
+            "operation_id": record["operation_id"],
+            "identity_id": record["identity_id"],
+            "account_id": record["account_id"],
+            "source_day": source_day,
+            "archived_for_day": current_day,
+            "archived_at": archived_at,
+            "reason": "cross_day_outcome_unknown",
+            "record": deepcopy(record),
+        }
+        staged_archive = [*previous_archive, entry]
+        if not valid_archive(staged_archive):
+            return {"archived": False, "status": "archive_invalid"}
+
+    owner.identity[ARCHIVE_STATE_KEY] = deepcopy(staged_archive)
+    owner.identity[STATE_KEY] = {}
+    mark_dirty()
+    try:
+        saved = save_state() is True
+    except Exception:
+        saved = False
+    if (
+        not saved
+        or not owner.is_current()
+        or owner.identity.get(STATE_KEY) != {}
+        or not _same(owner.identity.get(ARCHIVE_STATE_KEY), staged_archive)
+    ):
+        owner.identity[ARCHIVE_STATE_KEY] = previous_archive
+        owner.identity[STATE_KEY] = record
+        mark_dirty()
+        return {"archived": False, "status": "persistence_pending", "source_day": source_day}
+    return {
+        "archived": True,
+        "status": "archived",
+        "operation_id": record["operation_id"],
+        "source_day": source_day,
+        "archived_for_day": current_day,
+    }
 
 
 def pending(identity):

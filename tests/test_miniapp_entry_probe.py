@@ -5,7 +5,7 @@ import copy
 import time
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from model import ui
 from model import state as state_module
@@ -1647,6 +1647,54 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ui._trial_daily_retry_hold(context, now=now + 60)["recovery_hold"])
             self.assertTrue(any(
                 "未知结果已冻结" in str(call.args[0])
+                for call in audit_mock.await_args_list
+            ))
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+
+    async def test_trial_daily_batch_archives_cross_day_unknown_before_network(self):
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        order = []
+
+        def archive(identity_id, day_key, *, now=None):
+            order.append(("archive", identity_id, day_key))
+            return {
+                "archived": True,
+                "status": "archived",
+                "source_day": "2026-07-06",
+                "archived_for_day": day_key,
+            }
+
+        async def run_entry(identity_id, action, _url):
+            order.append(("run", identity_id, action))
+            return True, "试炼完成", {"settled_count": 1}
+
+        try:
+            with patch.object(ui.trial_operations, "archive_cross_day_unknown", new=Mock(side_effect=archive)), \
+                    patch.object(ui, "get_identity_display_name", return_value="角色1002"), \
+                    patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
+                    patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                    patch.object(ui, "save_state", return_value=True):
+                await ui._run_cave_public_entry_batch(
+                    "trial-wave2-cross-day",
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    [1002],
+                    ["trial"],
+                    0,
+                    trial_daily_context={
+                        "wave_key": "wave2",
+                        "wave_label": "第二批",
+                        "day_key": "2026-07-07",
+                    },
+                )
+
+            self.assertEqual(
+                [("archive", 1002, "2026-07-07"), ("run", 1002, "trial")],
+                order,
+            )
+            self.assertTrue(any(
+                "旧未知操作已归档" in str(call.args[0])
                 for call in audit_mock.await_args_list
             ))
         finally:

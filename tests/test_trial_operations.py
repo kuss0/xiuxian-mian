@@ -166,6 +166,64 @@ def test_interrupted_settlement_recovers_locally_once(trial_db):
     assert operations.recover_local(IDENTITY) is None
 
 
+def test_cross_day_unknown_is_archived_before_a_fresh_operation(trial_db):
+    h = trial_db
+
+    def transport(request):
+        if request["safe_summary"]["endpoint"] == "finish":
+            raise OSError("fixture connection reset")
+        return {"ok": True, "challenge": challenge()}
+
+    async def create_unknown():
+        writer, result = await owned_run(h, transport=transport)
+        assert writer.finish(result)
+
+    asyncio.run(create_unknown())
+    record = deepcopy(h.owner[operations.STATE_KEY])
+    source_day = operations.get_day_key(record["created_at"])
+    same_day = operations.archive_cross_day_unknown(IDENTITY, source_day, now=h.now)
+    assert same_day["status"] == "same_day_hold"
+    assert h.owner[operations.STATE_KEY] == record
+
+    next_day = operations.get_day_key(h.now + 86400)
+    archived = operations.archive_cross_day_unknown(IDENTITY, next_day, now=h.now + 86400)
+    assert archived["archived"] and archived["source_day"] == source_day
+    assert h.owner[operations.STATE_KEY] == {}
+    assert operations.valid_archive(h.owner[operations.ARCHIVE_STATE_KEY])
+    assert h.owner[operations.ARCHIVE_STATE_KEY][0]["record"] == record
+
+    assert operations.admission_allowed(MiniAppIdentityOwner.capture(IDENTITY))
+    assert persistence.load_state()
+    restored = state_module.get_identity_state(IDENTITY)
+    assert restored[operations.STATE_KEY] == {}
+    assert restored[operations.ARCHIVE_STATE_KEY][0]["record"] == record
+
+
+def test_cross_day_archive_save_failure_keeps_unknown_active(trial_db, monkeypatch):
+    h = trial_db
+
+    def transport(request):
+        if request["safe_summary"]["endpoint"] == "finish":
+            raise OSError("fixture connection reset")
+        return {"ok": True, "challenge": challenge()}
+
+    async def create_unknown():
+        writer, result = await owned_run(h, transport=transport)
+        assert writer.finish(result)
+
+    asyncio.run(create_unknown())
+    record = deepcopy(h.owner[operations.STATE_KEY])
+    monkeypatch.setattr(operations, "save_state", Mock(return_value=False))
+    result = operations.archive_cross_day_unknown(
+        IDENTITY,
+        operations.get_day_key(h.now + 86400),
+        now=h.now + 86400,
+    )
+    assert result["status"] == "persistence_pending"
+    assert h.owner[operations.STATE_KEY] == record
+    assert h.owner[operations.ARCHIVE_STATE_KEY] == []
+
+
 @pytest.mark.parametrize("malformed", ["{broken", "[]", "null", "false", "1", '{"bad":NaN}'])
 def test_malformed_journal_does_not_decode_to_idle(malformed):
     decoded = persistence._deserialize_db_value(operations.STATE_KEY, malformed)
@@ -177,6 +235,13 @@ def test_malformed_journal_does_not_decode_to_idle(malformed):
 def test_bad_or_oversized_journal_serializes_as_a_hold(value):
     encoded = persistence._serialize_db_value(operations.STATE_KEY, value)
     assert encoded == '{"invalid":true}' or json.loads(encoded) == {"invalid": True}
+
+
+@pytest.mark.parametrize("value", [None, False, {}, {"invalid": True}, [float("nan")]])
+def test_bad_trial_archive_serializes_as_a_hold(value):
+    encoded = persistence._serialize_db_value(operations.ARCHIVE_STATE_KEY, value)
+    assert json.loads(encoded) == {"invalid": True}
+    assert persistence._deserialize_db_value(operations.ARCHIVE_STATE_KEY, encoded) == {"invalid": True}
 
 
 @pytest.mark.parametrize("caller", ["public", "command"])

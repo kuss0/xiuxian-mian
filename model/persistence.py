@@ -15,6 +15,7 @@ from .delayed_actions import (
 )
 from .state import (
     FISHING_OPERATION_MAX_BYTES,
+    TRIAL_OPERATION_ARCHIVE_MAX_BYTES,
     TRIAL_OPERATION_MAX_BYTES,
     TREASURE_RESULT_MAX_BYTES,
     TREASURE_OPERATION_MAX_BYTES,
@@ -842,6 +843,7 @@ _SCHEMA_COLUMNS = {
         ("fishing_result_pending", "TEXT NOT NULL DEFAULT '{}'"),
         ("fishing_operation", "TEXT NOT NULL DEFAULT '{}'"),
         ("trial_operation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("trial_operation_archive", "TEXT NOT NULL DEFAULT '[]'"),
         ("treasure_result", "TEXT NOT NULL DEFAULT '{}'"),
         ("treasure_operation", "TEXT NOT NULL DEFAULT '{}'"),
         ("tree_operation", "TEXT NOT NULL DEFAULT '{}'"),
@@ -1739,6 +1741,7 @@ def init_db():
             fishing_result_pending TEXT NOT NULL DEFAULT '{}',
             fishing_operation TEXT NOT NULL DEFAULT '{}',
             trial_operation TEXT NOT NULL DEFAULT '{}',
+            trial_operation_archive TEXT NOT NULL DEFAULT '[]',
             treasure_result TEXT NOT NULL DEFAULT '{}',
             treasure_operation TEXT NOT NULL DEFAULT '{}',
             tree_operation TEXT NOT NULL DEFAULT '{}',
@@ -2010,6 +2013,18 @@ def _serialize_db_value(key, value):
         return json.dumps(value, ensure_ascii=False)
     if key == "yinluo_observation" and not isinstance(value, dict):
         return '{"legacy_pending_invalid":true}'
+    if key == "trial_operation_archive":
+        try:
+            encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            if (
+                not isinstance(value, list)
+                or not _bounded_miniapp_operation(value)
+                or len(encoded.encode()) > TRIAL_OPERATION_ARCHIVE_MAX_BYTES
+            ):
+                return '{"invalid":true}'
+            return encoded
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return '{"invalid":true}'
     if key in {"fishing_result_pending", "fishing_operation", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
         try:
             limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "trial_operation": TRIAL_OPERATION_MAX_BYTES,
@@ -2059,6 +2074,19 @@ def _deserialize_db_value(key, value):
         except (TypeError, ValueError, RecursionError):
             parsed = None
         return parsed if isinstance(parsed, dict) else {"legacy_pending_invalid": True}
+    if key == "trial_operation_archive":
+        try:
+            if (
+                not isinstance(value, (str, bytes))
+                or len(value.encode() if isinstance(value, str) else value) > TRIAL_OPERATION_ARCHIVE_MAX_BYTES
+            ):
+                return {"invalid": True}
+            parsed = json.loads(value)
+            if not isinstance(parsed, list) or not _bounded_miniapp_operation(parsed):
+                return {"invalid": True}
+            return parsed
+        except (TypeError, ValueError, RecursionError):
+            return {"invalid": True}
     if key in {"fishing_result_pending", "fishing_operation", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
         try:
             limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "trial_operation": TRIAL_OPERATION_MAX_BYTES,
