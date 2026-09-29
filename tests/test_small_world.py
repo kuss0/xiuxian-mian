@@ -165,8 +165,72 @@ class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual(expected_next, state_module.state["next_small_world_time"])
             dirty_mock.assert_not_called()
 
+    def test_elapsed_cached_prayer_deadline_preserves_future_retry(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        for elapsed in (0, 25 * 60):
+            with self.subTest(elapsed=elapsed), state_module.use_identity(1001):
+                state_module.state["small_world_phase"] = "idle"
+                state_module.state["next_small_world_time"] = now + 30 * 60
+                state_module.state["small_world_panel_snapshot"] = {
+                    "has_wait": True,
+                    "wait_sec": 6 * 3600,
+                    "updated_at": now - 6 * 3600 - small_world.CD_BUFFER_SEC - elapsed,
+                }
+                with patch.object(small_world, "mark_dirty") as dirty_mock:
+                    changed = small_world._reconcile_cached_prayer_deadline(now)
+
+                self.assertFalse(changed)
+                self.assertEqual(now + 30 * 60, state_module.state["next_small_world_time"])
+                dirty_mock.assert_not_called()
+
 
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_query_timeout_retry_is_not_rewound_by_expired_cached_panel(self):
+        now = 1_700_000_000.0
+        identity_id = 301299112
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            for key, value in {
+                "small_world_enabled": True,
+                "small_world_manifest_enabled": True,
+                "small_world_barrier_enabled": False,
+                "small_world_refine_enabled": False,
+                "small_world_harvest_enabled": False,
+                "small_world_pending_god_action": "",
+                "small_world_barrier_due_at": 0,
+                "small_world_phase": "query_pending",
+                "small_world_query_msg_id": 1222496,
+                "next_small_world_time": now - 8,
+                "small_world_panel_snapshot": {
+                    "has_wait": True,
+                    "has_prayer": False,
+                    "wait_sec": 21599,
+                    "updated_at": now - (6 * 3600 + 25 * 60 + 5),
+                },
+            }.items():
+                state_module.state[key] = value
+            with (
+                patch.object(small_world.random, "uniform", return_value=817),
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "send_audit_log", new=AsyncMock()),
+                patch.object(small_world, "_recover_current_small_world_pending_from_log", new=AsyncMock(return_value=False)) as recover,
+                patch.object(small_world, "_send_query", new=AsyncMock()) as send,
+            ):
+                await small_world._run_small_world_scheduler(now)
+                retry_at = state_module.state["next_small_world_time"]
+                self.assertEqual(now + 817, retry_at)
+                self.assertEqual("idle", state_module.state["small_world_phase"])
+                recover.assert_awaited_once_with(now, "query_pending")
+
+                await small_world._run_small_world_scheduler(now + 11)
+                await small_world._run_small_world_scheduler(retry_at - 1)
+                send.assert_not_awaited()
+                self.assertEqual(retry_at, state_module.state["next_small_world_time"])
+
+                await small_world._run_small_world_scheduler(retry_at)
+                send.assert_awaited_once_with(retry_at, "周期自查")
+
     async def test_real_message_fixture_covers_barrier_resource_shortage(self):
         samples = list(iter_real_message_samples(FIXTURE_PATH, family="small_world_barrier"))
 

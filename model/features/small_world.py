@@ -455,6 +455,9 @@ def _reconcile_cached_prayer_deadline(now):
     if updated_at <= 0 or wait_sec <= 0 or current_next <= 0:
         return False
     prayer_due_at = float(updated_at + wait_sec + CD_BUFFER_SEC)
+    # An elapsed panel countdown cannot override a newer retry/backoff timer.
+    if prayer_due_at <= float(now):
+        return False
     if current_next <= prayer_due_at + SMALL_WORLD_JITTER_MAX_SEC:
         return False
     state["next_small_world_time"] = prayer_due_at + SMALL_WORLD_JITTER_MIN_SEC
