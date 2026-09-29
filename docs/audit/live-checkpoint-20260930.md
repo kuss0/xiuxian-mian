@@ -100,3 +100,41 @@ changing shared transport or recovery:
 
 This repairs a scheduling defect; it does not assert that the missing original
 reply was ever received, or that query retry is free of in-game cost.
+
+## Post-Deploy Acceptance: 07:47 Follow-Up
+
+- Fix `b86550f7` was deployed by one explicit service restart at 03:34:35 and
+  pushed to `xiuxian-mian/main`. The worktree was clean on the resumed check.
+- Small-world timers and both refinement-off switches survived deployment.
+  WA's natural query `1239655` at 04:05:42 received panel `1239656` two seconds
+  later. Baji's query `12558068` at 07:16:54 received panel `12558071` three
+  seconds later. No forced live timeout was injected to exercise the fix.
+- The 03:40:25 `iceeet1` entrance failure was an explicit HTTP 429
+  `external_action_rate_limited`. The existing backoff recovered at 03:45:37;
+  it was not an unexplained protocol or state failure.
+- At 03:48:09 all 24 fate quests were complete. One daily report recorded
+  cultivation +760 and trace +72. Capture grouping by exact identity source
+  and draw/interpret/choose/settle step found no duplicate mutation requests.
+- Trial wave 2 completed at 05:12:50: 12/12 identities, 36 rounds, trace +516.
+  Both waves now have `2026-09-30` completed state. The old `xuruode8` archive
+  remains one entry and the current operation ID is unchanged.
+- WA prediction `1239924` at 04:53:04 was confirmed by reply `1239925` at
+  04:53:06. Rift `1239964` was sent at 05:03:04; final edit `1239965` at
+  05:03:14 confirms prediction hit, Tianji +1, contribution +30, change-fate
+  still valid for 19h49m, and fire/wood/earth law fragments. The handler
+  reported completion at 05:03:15.
+- Baji voyage return was settled at 06:36:02, WA's at 07:09:01; both then
+  started another Moon Palace voyage. Their persisted return times are now
+  12:36:07 and 13:09:08 respectively, with no voyage error.
+- The later service restart at 04:24:46 is attributed by journald to
+  `xiuxian-r2-backup.sh`: stop for consistent snapshot, then restart the
+  service and its monitors. It is not an automatic crash restart.
+- At 07:44-07:47 the main service and both monitors are active, `NRestarts=0`,
+  watchdog is OK and observer status is OK. The 19-channel send freeze remains
+  informational; listener sidecar remains inactive. Foreground observation
+  was restarted on resume; intervening claims above are based on retained
+  events and state, not claimed continuous foreground supervision.
+
+The next natural checkpoint is the 08:12 onward deep-retreat/yuanying window.
+The four frozen Tianxing-channel wild routes are still not completed, and
+the earlier whole-project restrictions remain unchanged.
