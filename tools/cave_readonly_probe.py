@@ -133,7 +133,15 @@ async def probe(args, report):
         if args.read == "fishing_context":
             context = result.get("context") or {}
             report["context_keys"] = sorted(context)
-            report["context"] = {key: context.get(key) for key in ("enabled", "unavailable", "quota", "conflict", "rod")}
+            report["context"] = {key: context[key] for key in ("enabled", "unavailable", "quota", "conflict", "rod") if key in context}
+            if "baits" in context:
+                baits = context["baits"]
+                if not isinstance(baits, list) or any(not isinstance(bait, dict) for bait in baits):
+                    raise ValueError("invalid_fishing_baits")
+                report["context"]["baits"] = [
+                    {key: bait[key] for key in ("itemId", "name", "count", "unlocked") if key in bait}
+                    for bait in baits
+                ]
             remote = result.get("session")
             report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId")} if isinstance(remote, dict) else None
         else:
