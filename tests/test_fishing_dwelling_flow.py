@@ -49,6 +49,17 @@ def test_full_round_runs_checkpoints_and_settles_once():
     assert calls.count("checkpoint") >= 2
 
 
+def test_full_round_accepts_official_checkpoint_reply_without_echo():
+    store = Store()
+    def transport(action, request, clock):
+        return {"context": context(), "cast": response(), "hook": fighting(),
+                "checkpoint": fighting(), "fight": response(settled=True)}[action]
+    result, calls = run(store, transport=transport)
+    assert result["ok"] and result["data"]["catches"] == {"fish": 2}
+    assert calls.count("cast") == calls.count("hook") == calls.count("fight") == 1
+    assert calls.count("checkpoint") >= 2
+
+
 @pytest.mark.parametrize("failed", ["cast", "hook", "checkpoint", "fight"])
 @pytest.mark.parametrize("failure", ["timeout", "429", "unadvanced"])
 def test_uncertain_mutation_never_retries_or_recasts(failed, failure):
@@ -60,6 +71,10 @@ def test_uncertain_mutation_never_retries_or_recasts(failed, failure):
                 raise TimeoutError("fixture")
             if failure == "429":
                 return SimpleNamespace(status_code=429, headers={"Retry-After": "60"}, json=lambda: {"ok": False})
+            if action == "checkpoint":
+                reply = fighting()
+                reply["session"]["fight"]["checkpoint"] = {"durationMs": 0, "events": [], "details": {}}
+                return reply
             return {"ok": True, "session": None} if action == "cast" else response() if action == "hook" else fighting()
         return {"context": context(), "cast": response(), "hook": fighting(), "checkpoint": {"ok": True}}[action]
 

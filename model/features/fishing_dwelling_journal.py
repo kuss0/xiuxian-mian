@@ -230,13 +230,16 @@ def reconcile(record, query, payload):
     root = protocol._response(payload)
     if "playerId" in root and (type(root["playerId"]) is not int or root["playerId"] != record["player_id"]):
         raise protocol.ProtocolError("player_mismatch")
-    if query.action == "checkpoint" and "session" not in root:
-        updated = deepcopy(record)
-        pending = updated["pending_payload"]
-        updated["remote"]["fight"]["checkpoint"] = {
+    submitted_checkpoint = None
+    if record["pending_action"] == "checkpoint":
+        pending = record["pending_payload"]
+        submitted_checkpoint = {
             "durationMs": pending["fishingProof"]["durationMs"],
             "events": deepcopy(pending["fishingProof"]["events"]), "details": deepcopy(pending["checkpointState"]),
         }
+    if query.action == "checkpoint" and "session" not in root:
+        updated = deepcopy(record)
+        updated["remote"]["fight"]["checkpoint"] = submitted_checkpoint
         updated.update(pending_action="", pending_payload={}, revision=record["revision"] + 1)
         return validate(updated), deepcopy(updated["remote"])
     remote = protocol._mapping(root.get("session"), "session")
@@ -251,6 +254,15 @@ def reconcile(record, query, payload):
     # First binding is only from a captured cast response or exact cast-ID state
     # query. Once bound, every response must match the original session ID.
     parsed = protocol.parse_owned_session(root, session_id=session_id, site_id=record["site_id"])
+    if (query.action == "checkpoint" and parsed["phase"] == "fighting"
+            and "checkpoint" not in remote["fight"]):
+        # The official checkpoint endpoint acknowledges the submitted proof
+        # without echoing it. Only its direct reply may confirm that input;
+        # a later state read still needs the matching server checkpoint.
+        previous_fight = record["remote"]["fight"]
+        if {k: v for k, v in previous_fight.items() if k != "checkpoint"} != parsed["fight"]:
+            raise protocol.ProtocolError("native_checkpoint_challenge_changed")
+        parsed["fight"]["checkpoint"] = submitted_checkpoint
     settled = parsed["phase"] == "settled"
     next_phase = "settled" if settled else "session_owned"
     catches = parsed.get("catches") if settled else None

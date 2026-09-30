@@ -229,3 +229,19 @@ def test_other_identity_daily_report_preserves_native_receipt_basis(fishing_env,
         assert not asyncio.run(lifecycle.REAL_DAILY_REPORT(now))
     assert h.identity == before
     h.audit.assert_not_awaited()
+
+
+def test_accounted_canary_clears_old_error_without_advancing_timer(fishing_env, monkeypatch):
+    h = fishing_env
+    configure(h)
+    h.identity.update(fishing_last_error="operation_pending", fishing_last_result="old pending result")
+    timer = h.identity["next_fishing_time"]
+    monkeypatch.setattr(native.persistence, "save_state", lambda: True)
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", AsyncMock(return_value={
+        "ok": True, "committed": True, "status": "settled", "data": {"catches": {"fish": 1}},
+    }))
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url, native_canary=True))
+    assert result["ok"]
+    assert h.identity["fishing_last_error"] == ""
+    assert h.identity["fishing_last_result"] == result["message"]
+    assert h.identity["next_fishing_time"] == timer

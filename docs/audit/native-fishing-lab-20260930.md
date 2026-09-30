@@ -260,6 +260,36 @@ Acceptance fixes now tested:
   rollout prerequisites, not completed migrations. Do not change voyages or
   reuse old opening endpoints to make the acceptance appear complete.
 
+### 00:04 Controlled Checkpoint Follow-Up (October 1)
+
+- `3c48b6f2` deployed at 23:39:35, PID `3712300`, NRestarts 0, and pushed
+  to main. The v3 settlement projection is now live on the canary surface only.
+- A second September 30 cast on `7538826434` completed cast/hook, then stopped
+  after one HTTP-200 checkpoint. The reply contains the original fighting
+  session but no `fight.checkpoint` echo. Local reconciliation incorrectly
+  required the echo, so no final fight was sent. Do not call this a catch.
+- The official controller's checkpoint handler acknowledges the exact submitted
+  duration after its direct successful call without requiring a snapshot echo.
+  New reconciliation follows that rule only for the captured direct checkpoint
+  response with the same session/site/mode and unchanged challenge. A later
+  state query, explicit mismatching checkpoint, foreign owner or stale query
+  does not get this allowance. Tests cover repeated checkpoints and final fight.
+- One read-only original-session query confirmed `missed/timeout`, quota 2/5,
+  bait 18/18, chum remaining 2, and `bonusLoot` of one waterweed ball. One
+  recovery invocation then queried that same session and accounted the empty
+  rod plus `水草团x1`; no new cast/hook/checkpoint/fight was sent during recovery.
+  This verifies v3 extra loot, bait/chum and daily totals, not full fishing.
+- Evidence: `/root/xiuxian-native-fishing-canary-v3-20260930.json`,
+  `/root/xiuxian-native-fishing-checkpoint-state-20260930.json`, and
+  `/root/xiuxian-native-fishing-checkpoint-recovery-20260930.json`.
+- Successful timer-neutral canary recovery also clears its current diagnostic
+  error when the caller still owns the plan; the original timer is retained.
+- Final candidate regression: 2276 passed, 264 subtests; compile and diff checks
+  passed. No normal-route enablement or voyage configuration change is included.
+- Health observer remained ok through midnight; unrelated cleanup and normal
+  native routing are still held. A new single-rod acceptance is required after
+  the checkpoint fix, never an automatic retry of the previous failed rod.
+
 - Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
 - This batch: 194 native tests after unsent-intent compensation.
 - Expanded fishing/persistence/state/cave/UI run: 2144 passed, 264 subtests,

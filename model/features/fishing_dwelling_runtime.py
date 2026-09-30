@@ -95,7 +95,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
             message += "；额外 " + fishing._format_count_map(rewards)
         if supplied:
             message = "洞府钓鱼补给已确认：" + str(data.get("supply_action") or "补给") + "，未抛竿"
-        if not committed and can_continue() and cancelled is None:
+        if (not committed or not update_schedule) and can_continue() and cancelled is None:
             before = {key: operation.owner.identity.get(key) for key in ("next_fishing_time", "fishing_last_result", "fishing_last_error")}
             with use_identity(identity_id):
                 now = time.time()
@@ -104,7 +104,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                     delay = max(delay, 1800)
                 if reason in {"fishing_bait_missing", "fishing_rod_missing", "fishing_companion_sailing"}:
                     delay = max(delay, 1800)
-                operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if supplied else reason)
+                operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if committed or supplied else reason)
                 if update_schedule:
                     operation.owner.identity["next_fishing_time"] = now + delay
                 if persistence.save_state() is not True:

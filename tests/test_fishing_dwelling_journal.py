@@ -443,6 +443,50 @@ def test_lost_checkpoint_ack_requires_matching_server_checkpoint():
     assert store.record["remote"]["fight"]["checkpoint"]["durationMs"] == proof["durationMs"]
 
 
+def test_direct_checkpoint_reply_without_echo_advances_exact_submitted_proof():
+    store, ledger = hooked()
+    original = fighting()
+    snapshot = deepcopy(original)
+    for final, proof, details in fight_steps(store.record["remote"]["fight"]):
+        if final:
+            break
+        query, _ = ledger.prepare("checkpoint", proof=proof, details=details)
+        ledger.accept(query, original)
+        assert not store.record["pending_action"]
+        assert store.record["remote"]["fight"]["checkpoint"] == {
+            "durationMs": proof["durationMs"], "events": proof["events"], "details": details,
+        }
+        with pytest.raises(ProtocolError, match="stale_native_query"):
+            ledger.accept(query, original)
+    assert original == snapshot
+
+
+@pytest.mark.parametrize("change", ["session", "player", "site", "mode", "challenge", "power", "checkpoint"])
+def test_direct_checkpoint_ack_cannot_overwrite_conflicting_evidence(change):
+    store, ledger = hooked()
+    _, proof, details = next(fight_steps(store.record["remote"]["fight"]))
+    query, _ = ledger.prepare("checkpoint", proof=proof, details=details)
+    before = deepcopy(store.record)
+    reply = fighting()
+    remote = reply["session"]
+    if change in {"session", "player", "site", "mode"}:
+        key, value = {"session": ("sessionId", "foreign"), "player": ("playerId", 999),
+                      "site": ("siteId", "east-shore"), "mode": ("mode", "foreign")}[change]
+        remote[key] = value
+    elif change == "challenge":
+        remote["fight"]["challengeId"] = "foreign"
+    elif change == "power":
+        remote["fight"]["fishPower"] = 2.0
+    else:
+        remote["fight"]["checkpoint"] = {"durationMs": 0, "events": [], "details": {}}
+    if change == "checkpoint":
+        ledger.accept(query, reply)
+    else:
+        with pytest.raises(ProtocolError):
+            ledger.accept(query, reply)
+    assert store.record == before
+
+
 def test_lost_fight_ack_can_only_poll_and_accept_settling_or_final():
     store, ledger = hooked()
     _, proof, details = list(fight_steps(store.record["remote"]["fight"]))[-1]
