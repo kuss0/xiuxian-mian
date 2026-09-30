@@ -40,6 +40,13 @@ def _identifier(value, name):
     return value
 
 
+def session_identifier(value):
+    # Current dwelling sessions use numeric IDs; keep their JSON type intact.
+    if type(value) is int:
+        return _number(value, "session_id", 1, 2**53 - 1, integer=True)
+    return _identifier(value, "session_id")
+
+
 def _mapping(value, name):
     if not isinstance(value, dict):
         raise ProtocolError("invalid_" + name)
@@ -127,11 +134,12 @@ def cast_block_reason(context, bait_item_id):
 
 def parse_owned_session(payload, *, session_id, site_id):
     """Only a caller-owned, exact session may advance or project settlement."""
-    _identifier(session_id, "session_id")
+    session_identifier(session_id)
     if not isinstance(site_id, str) or site_id not in SITES:
         raise ProtocolError("invalid_site")
     remote = _mapping(_response(payload).get("session"), "session")
-    if remote.get("sessionId") != session_id or remote.get("siteId") != site_id:
+    remote_id = session_identifier(remote.get("sessionId"))
+    if type(remote_id) is not type(session_id) or remote_id != session_id or remote.get("siteId") != site_id:
         raise ProtocolError("session_mismatch")
     if remote.get("mode") != MODE:
         raise ProtocolError("mode_mismatch")

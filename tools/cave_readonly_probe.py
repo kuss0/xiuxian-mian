@@ -17,7 +17,8 @@ from telethon.crypto import AuthKey
 from telethon.sessions import MemorySession
 
 
-READS = (".天机盘", ".我的阵法", ".我的灵兽", "fishing_context")
+COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽")
+READS = (*COMMAND_READS, "fishing_context", "fishing_state")
 BASE = "https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/"
 
 
@@ -82,6 +83,17 @@ def fishing_context_report(context):
     return report
 
 
+def fishing_state_scope(root, identity, owner, player):
+    with sqlite3.connect(f"file:{root}/data/state/chaogu_state.db?mode=ro", uri=True) as db:
+        row = db.execute("SELECT fishing_native_operation FROM identity_runtime_state WHERE send_as_id=?", (identity,)).fetchone()
+    record = json.loads(row[0]) if row else None
+    if (not isinstance(record, dict) or tuple(record.get(k) for k in ("identity_id", "account_id", "player_id"))
+            != (identity, owner, player) or record.get("site_id") not in ("west-shore", "waterfall-pool", "east-shore")
+            or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("cast_id", "")))):
+        raise ValueError("native_state_scope_missing")
+    return {"siteId": record["site_id"], "castOperationId": record["cast_id"], "refreshContext": True}
+
+
 async def probe(args, report):
     root = args.project_root.resolve()
     owner, account, config = load_owner(root, args.identity)
@@ -123,11 +135,13 @@ async def probe(args, report):
             if player is not None:
                 payload["playerId"] = player
             if endpoint == "command-center":
-                if args.read not in READS[:-1]:
+                if args.read not in COMMAND_READS:
                     raise ValueError("command_not_read_only")
                 payload["command"] = args.read
             elif endpoint == "fishing/context":
                 payload["siteId"] = "west-shore"
+            elif endpoint == "fishing/state" and args.read == "fishing_state":
+                payload.update(fishing_state_scope(root, args.identity, owner, player))
             elif endpoint not in {"start", "details"}:
                 raise ValueError("endpoint_not_read_only")
             time.sleep(2)
@@ -165,16 +179,24 @@ async def probe(args, report):
         report["entries"] = [
             {key: row.get(key) for key in ("key", "status", "title", "commands")}
             for row in entries if isinstance(row, dict) and (
-                args.read in (row.get("commands") or []) or args.read == "fishing_context" and row.get("key") == "fishing"
+                args.read in (row.get("commands") or []) or args.read.startswith("fishing_") and row.get("key") == "fishing"
             )
         ]
-        result = request("fishing/context" if args.read == "fishing_context" else "command-center", player)
-        if args.read == "fishing_context":
+        endpoint = {"fishing_context": "fishing/context", "fishing_state": "fishing/state"}.get(args.read, "command-center")
+        result = request(endpoint, player)
+        if args.read in ("fishing_context", "fishing_state"):
             context = result.get("context") or {}
             report["context_keys"] = sorted(context)
             report["context"] = fishing_context_report(context)
             remote = result.get("session")
-            report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId")} if isinstance(remote, dict) else None
+            report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId", "mode", "result")} if isinstance(remote, dict) else None
+            if isinstance(remote, dict):
+                session_id = remote.get("sessionId")
+                report["session_id_shape"] = {"type": type(session_id).__name__, "length": len(str(session_id)),
+                                              "punctuation": sorted(set(re.sub(r"[a-zA-Z0-9]", "", str(session_id))))}
+                if isinstance(report["session"].get("result"), dict):
+                    report["session"]["result"] = {k: remote["result"][k] for k in
+                                                   ("ready", "caught", "reason", "status", "fish", "expGain", "bonusLoot") if k in remote["result"]}
         else:
             action = result.get("actionResult") or {}
             report["action"] = {key: action.get(key) for key in ("ok", "completed", "command", "rawMessage", "message")}

@@ -1,4 +1,6 @@
 import runpy
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,8 @@ def probe(monkeypatch):
 
 
 def test_probe_has_only_scoped_reads(probe):
-    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", "fishing_context"}
+    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", "fishing_context", "fishing_state"}
+    assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽"}
 
 
 @pytest.mark.parametrize("url", [
@@ -57,3 +60,29 @@ def test_fishing_report_rejects_malformed_supply(probe, context):
 
 def test_fishing_report_does_not_invent_missing_fields(probe):
     assert probe["fishing_context_report"]({"shop": {}}) == {"shop": {}}
+
+
+@pytest.mark.parametrize("change", ["none", "owner", "player", "cast", "site", "missing"])
+def test_state_read_must_use_identity_owned_cast(probe, tmp_path, change):
+    folder = tmp_path / "data" / "state"
+    folder.mkdir(parents=True)
+    record = {"identity_id": 1, "account_id": 2, "player_id": 3, "cast_id": "a" * 32, "site_id": "west-shore"}
+    if change == "owner":
+        record["account_id"] = 4
+    elif change == "player":
+        record["player_id"] = 4
+    elif change == "cast":
+        record["cast_id"] = "arbitrary"
+    elif change == "site":
+        record["site_id"] = "unknown"
+    with sqlite3.connect(folder / "chaogu_state.db") as db:
+        db.execute("CREATE TABLE identity_runtime_state (send_as_id INTEGER, fishing_native_operation TEXT)")
+        if change != "missing":
+            db.execute("INSERT INTO identity_runtime_state VALUES (1, ?)", (json.dumps(record),))
+    if change == "none":
+        assert probe["fishing_state_scope"](tmp_path, 1, 2, 3) == {
+            "siteId": "west-shore", "castOperationId": "a" * 32, "refreshContext": True,
+        }
+    else:
+        with pytest.raises(ValueError, match="native_state_scope_missing"):
+            probe["fishing_state_scope"](tmp_path, 1, 2, 3)

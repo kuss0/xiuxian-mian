@@ -66,6 +66,50 @@ def test_intent_is_persisted_before_a_cast_payload_is_released():
     assert "token" not in json.dumps(store.record)
 
 
+def test_numeric_session_id_binds_and_survives_exact_recovery():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    payload = response()
+    payload["session"]["sessionId"] = 12345
+    ledger.accept(query, payload)
+    assert store.record["session_id"] == 12345 and type(store.record["session_id"]) is int
+    query, request = store.open().recovery()
+    assert request["sessionId"] == 12345 and type(request["sessionId"]) is int
+    with pytest.raises(ProtocolError):
+        j.query_payload(store.record, replace(query, session_id="12345"))
+
+
+def test_numeric_missed_session_recovers_original_cast_without_recast():
+    store = Store()
+    ledger = store.open()
+    start(ledger)
+    ledger = store.open()
+    query, request = ledger.recovery()
+    assert request["castOperationId"] == store.record["cast_id"]
+    payload = response(settled=True)
+    payload["session"].update(sessionId=12345, status="missed", phase="missed", result={
+        "ready": True, "caught": False, "reason": "timeout", "status": "missed", "fish": None,
+        "expGain": 1, "bonusLoot": [],
+    })
+    ledger.accept(query, payload)
+    assert store.record["phase"] == "settled" and store.record["catches"] == {}
+    assert store.record["settlement_quota"]["used"] == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 12345.0, 2**53, None, {}, "", "x:y"])
+def test_invalid_session_identifiers_do_not_bind(value):
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    original = deepcopy(store.record)
+    payload = response()
+    payload["session"]["sessionId"] = value
+    with pytest.raises(ProtocolError):
+        ledger.accept(query, payload)
+    assert store.record == original
+
+
 @pytest.mark.parametrize("save_result", [False, None, 1])
 def test_save_must_explicitly_succeed(save_result):
     store = Store()

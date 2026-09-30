@@ -154,7 +154,7 @@ def test_supply_keeps_original_config_and_is_not_a_completed_rod(fishing_env, mo
 
     monkeypatch.setattr(native, "run_native_fishing_production_flow", flow)
     result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url, native_canary=True))
-    assert not result["ok"] and result["extra"]["supply_committed"]
+    assert result["ok"] and result["extra"]["supply_committed"]
     assert not result["extra"]["committed"]
     assert h.identity["next_fishing_time"] == before_timer
     h.daily.assert_not_awaited()

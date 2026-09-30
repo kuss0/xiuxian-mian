@@ -108,7 +108,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                     operation.owner.identity.update(before)
                     persistence.mark_dirty()
                     message = "原生钓鱼状态保存失败，待核对"
-        response = {"ok": committed, "message": message, "extra": {
+        response = {"ok": committed or supplied, "message": message, "extra": {
             "status": "settled" if committed else result.get("status", "blocked"), "native": True,
             "outcome_unknown": bool(result.get("outcome_unknown")), "committed": committed,
             "supply_committed": supplied,

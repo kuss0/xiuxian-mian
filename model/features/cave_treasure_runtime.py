@@ -4596,7 +4596,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
             response = await native_fishing.run_selected_identity(
                 operation, session, token=token, can_continue=can_continue, update_schedule=not native_canary,
             )
-            return await report(response, priority="low" if response.get("ok") else "normal", daily=bool(response.get("ok")))
+            return await report(response, priority="low" if response.get("ok") else "normal",
+                                daily=bool((response.get("extra") or {}).get("committed")))
         external_app = _find_fishing_external_app_in_cave_payload(raw)
         if not external_app:
             with use_identity(identity_id):

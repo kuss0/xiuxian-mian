@@ -7,14 +7,16 @@ Branch: `lab/native-fishing-20260930`, base `8a04ebaa`.
 
 The branch now contains a complete single-round worker, a version-2 native
 journal, checked SQLite persistence, atomic result accounting and an explicit
-public-entry canary action. **It has not been deployed or enabled for scheduled
-production fishing.** Production stays at `8a04ebaa`.
+public-entry canary action. **The canary surface was deployed as `4fbefa7f`
+at 21:02 CST; ordinary scheduled production fishing has not been migrated.**
 
 The new record is `fishing_native_operation`, not the legacy `fishing_operation`.
 Normal public-entry calls retain their existing path until acceptance; only the
 explicit `fishing_native_canary` action or an unresolved native record enters the
 new runner. Original UI pond/bait settings and the fishing toggle remain in use.
-No live cast or purchase has been sent.
+Three controlled supply actions and one cast were sent on `7538826434`.
+The cast exposed a numeric-session-ID parsing defect and timed out without a
+catch. It is not a successful end-to-end fishing acceptance; see below.
 
 User sequencing constraint: finish and stabilize this rollout first, then
 clean debt. Do not combine unrelated cleanup with the deployment. The canary
@@ -67,7 +69,8 @@ code being testable is not evidence of live catch acceptance.
   while disabled UI settings retain gains without rescheduling. Save failure
   rolls back inventory and keeps the receipt.
 - `fishing_dwelling_miniapp.py`: one cast only, shared HTTP budget/global limiter,
-  no automatic mutation retries. Request timing excludes local queue/limiter
+  or one supply action (added in the supply batch), no automatic mutation retries.
+  Request timing excludes local queue/limiter
   waits from RTT. Cancelled callers drain the in-flight worker and retain its
   confirmed receipt; cancellation cannot release locks before HTTP returns.
 - `fishing_dwelling_runtime.py`: explicit public-entry canary, verified directory
@@ -160,6 +163,36 @@ identity's failed attempt. No shared observer patch was applied in this batch.
   never restore a stale DB backup or an old sender over unresolved operations.
   Disable further canary invocation and investigate the retained receipt first.
 
+## Controlled Live Evidence
+
+Identity/account/player `7538826434` only; no WA/Baji gameplay, no switch changes.
+Original next-fishing time stayed `2026-10-01 00:00:02 CST` throughout.
+
+| Action | Confirmed Result |
+| --- | --- |
+| Buy spirit-rice bait | 20 received; stones 157015 -> 156315; accounted |
+| Buy plain bait | 20 received; 240 stones consumed; accounted |
+| Rice chum | 2 plain bait + 30 stones consumed; daily used 1; active for 4 casts; accounted |
+| One cast | HTTP 200, but native parser rejected the integer session ID; no hook, checkpoint or fight sent; original cast ID retained |
+| Exact cast-ID state read | `missed`, ready=true, caught=false, reason=timeout; quota used 1/5; spirit-rice bait 19; active chum 3 casts |
+
+Evidence: `/root/xiuxian-native-fishing-canary-state-20260930.json` and sanitized
+`data/state/miniapp_capture/fishing-2026-09-30.jsonl`. The read-only tool obtains
+the query's cast ID from the matching live identity/account/player record, not a
+caller-supplied session or an unscoped context. It does not change the live ledger.
+
+Acceptance fixes now tested:
+
+- Preserve numeric session IDs as bounded positive JSON integers, while retaining
+  string compatibility. Reject booleans, floats, zero/negative/oversized IDs and
+  cross-type matches. Recovery still queries only the original cast/session.
+- Report confirmed supply as success without treating it as a completed rod or
+  invoking the daily rod-completion path. Initial canary HTTP 400 responses for
+  successful purchases were this UI-status defect, not rejected purchases.
+- Broader rollout remains held. The first cast timed out before hook/fight, so
+  server acceptance of control proofs remains unverified. Do not spend the
+  remaining four casts by automatically retrying this failed acceptance.
+
 ## Verification
 
 - Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
@@ -168,6 +201,8 @@ identity's failed attempt. No shared observer patch was applied in this batch.
   including the final two compensation cases (33.42 seconds).
 - Supply batch plus final timer boundary: expanded suite 2200 passed,
   264 subtests (39.13 seconds). Live shop fixture validates without mutations.
+- Numeric-session and supply-status fixes: expanded suite 2212 passed,
+  264 subtests (39.24 seconds); final read-only scope suite 22 passed.
 - JavaScript syntax, Python compileall and diff whitespace checks passed.
 - Isolated protocol/journal imports load no `model.runtime`, `model.state`, `model.config`,
   `requests` or `telethon`.

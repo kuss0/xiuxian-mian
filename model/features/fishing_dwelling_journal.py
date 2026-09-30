@@ -60,7 +60,8 @@ def _validate_remote(record):
             raise protocol.ProtocolError("premature_native_remote")
         return
     protocol._mapping(remote, "remote")
-    if remote.get("session_id") != record["session_id"] or remote.get("site_id") != record["site_id"]:
+    if (type(remote.get("session_id")) is not type(record["session_id"])
+            or remote.get("session_id") != record["session_id"] or remote.get("site_id") != record["site_id"]):
         raise protocol.ProtocolError("native_remote_mismatch")
     phase = remote.get("phase")
     if phase not in _RANK:
@@ -112,7 +113,7 @@ def validate(record):
         if record["session_id"] != "":
             raise protocol.ProtocolError("invalid_cast_pending")
     else:
-        protocol._identifier(record["session_id"], "session_id")
+        protocol.session_identifier(record["session_id"])
         if record["revision"] < 2:
             raise protocol.ProtocolError("invalid_session_revision")
     catches = record["catches"]
@@ -175,7 +176,7 @@ class Query:
     account_id: int
     player_id: int
     cast_id: str
-    session_id: str
+    session_id: str | int
     site_id: str
     revision: int
     action: str
@@ -188,7 +189,8 @@ def _query(record, action):
 
 def query_payload(record, query):
     validate(record)
-    if not isinstance(query, Query) or query.action not in ("cast", "state", "hook", "checkpoint", "fight") or query != _query(record, query.action):
+    if (not isinstance(query, Query) or query.action not in ("cast", "state", "hook", "checkpoint", "fight")
+            or type(query.session_id) is not type(record["session_id"]) or query != _query(record, query.action)):
         raise protocol.ProtocolError("stale_native_query")
     if query.action != "state" and query.action != record["pending_action"]:
         raise protocol.ProtocolError("native_action_not_pending")
@@ -228,7 +230,7 @@ def reconcile(record, query, payload):
             raise protocol.ProtocolError("cast_operation_mismatch")
     if query.action == "cast" and "operationId" in remote and remote["operationId"] != record["cast_id"]:
         raise protocol.ProtocolError("cast_operation_mismatch")
-    session_id = record["session_id"] or protocol._identifier(remote.get("sessionId"), "session_id")
+    session_id = record["session_id"] or protocol.session_identifier(remote.get("sessionId"))
     # First binding is only from a captured cast response or exact cast-ID state
     # query. Once bound, every response must match the original session ID.
     parsed = protocol.parse_owned_session(root, session_id=session_id, site_id=record["site_id"])
