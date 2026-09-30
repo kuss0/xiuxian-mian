@@ -16,7 +16,9 @@ explicit `fishing_native_canary` action or an unresolved native record enters th
 new runner. Original UI pond/bait settings and the fishing toggle remain in use.
 Three controlled supply actions and one cast were sent on `7538826434`.
 The cast exposed a numeric-session-ID parsing defect and timed out without a
-catch. It is not a successful end-to-end fishing acceptance; see below.
+catch. Fix `a01fa46e` was deployed at 21:50:54 CST; a single scoped state query
+then accounted that original empty catch. It is not a successful end-to-end
+fishing acceptance; see below.
 
 User sequencing constraint: finish and stabilize this rollout first, then
 clean debt. Do not combine unrelated cleanup with the deployment. The canary
@@ -123,6 +125,10 @@ Additional enabled-identity preflight, all four reads HTTP 200 each:
    Confirm server checkpoint/proof acceptance, not just offline success.
 4. Verify voyage-return scheduling and original daily follow-up behavior before
    scheduled rollout. WA/Baji must not skip or interrupt voyages to force a test.
+   Include bait/chum consumption mirrors and `result.bonusLoot` in this review;
+   the current single-rod projection only commits fish gains and quota. The
+   observed missed cast had no bonus loot; do not infer a complete reward path
+   from this empty result or assume upstream's fish-only projection covers it.
 5. Only then enable integrated-directory routing by default and observe natural
    execution. Retain legacy unresolved recovery; delete old paths in a separate
    cleanup after stability, as requested.
@@ -175,6 +181,7 @@ Original next-fishing time stayed `2026-10-01 00:00:02 CST` throughout.
 | Rice chum | 2 plain bait + 30 stones consumed; daily used 1; active for 4 casts; accounted |
 | One cast | HTTP 200, but native parser rejected the integer session ID; no hook, checkpoint or fight sent; original cast ID retained |
 | Exact cast-ID state read | `missed`, ready=true, caught=false, reason=timeout; quota used 1/5; spirit-rice bait 19; active chum 3 casts |
+| Production recovery after `a01fa46e` | One `state` request only; integer session bound, original record `accounted`, quota 1/5, catches `{}`, no pending action; timer unchanged |
 
 Evidence: `/root/xiuxian-native-fishing-canary-state-20260930.json` and sanitized
 `data/state/miniapp_capture/fishing-2026-09-30.jsonl`. The read-only tool obtains
@@ -203,6 +210,11 @@ Acceptance fixes now tested:
   264 subtests (39.13 seconds). Live shop fixture validates without mutations.
 - Numeric-session and supply-status fixes: expanded suite 2212 passed,
   264 subtests (39.24 seconds); final read-only scope suite 22 passed.
+- 21:54 post-deploy observer ok. PID `3678694`, NRestarts 0. Native capture
+  totals: context 4, buy-bait 2, chum 1, cast 1, state 1; all HTTP 200. No hook,
+  checkpoint, fight, second cast or forced game-session cancellation was sent.
+- Both main and Lab branches were pushed through `a01fa46e`. Background health
+  and safety observers remain active. Unrelated debt cleanup has not started.
 - JavaScript syntax, Python compileall and diff whitespace checks passed.
 - Isolated protocol/journal imports load no `model.runtime`, `model.state`, `model.config`,
   `requests` or `telethon`.
