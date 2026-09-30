@@ -33,20 +33,50 @@
 - 不核销 pending、不改变 timer/配置/时间线、不增加命中收益；保存失败回滚内存。
 - **这是手动只读校准入口，不是天星推命、定命、改命自动迁移完成。**
 
+### 个人阵法只读面板
+
+`.我的阵法` 接入独立 `cave_personal_formation` MiniApp 快照及 UI “个人阵法”动作。
+保留已学阵法和当前防护的原文描述，不猜测消耗、有效期或冷却。
+它不是星宫多人合阵：不读写 `formation_enabled`、助阵等待、启阵 CD 等原模块状态，
+也不自动布阵/撤阵。只接受完整面板、匹配身份与原命令的完成回包；并发新快照和
+保存失败不会被旧结果覆盖。
+
+2026-09-30 真实只读验证：
+
+- `/root/xiuxian-tianxing-panel-20260930.json`：频道选身份及 `.天机盘` 四次 HTTP 均 200，
+  `playerId=-1003765328695`，动作确认完成；天机 40、无推命/改命。未写生产状态。
+- `/root/xiuxian-formation-panel-20260930.json`：同频道个人阵法为空，接口可用。
+- `/root/xiuxian-wa-formation-panel-20260930.json`：WA 已学大庚剑阵、四象御法阵、
+  三才微尘阵、五行颠倒阵；防护无。查询没有布阵或消费道具。
+- `/root/xiuxian-native-fishing-context-20260930.json`：频道 `fishing` 目录已为
+  `integrated`，原生 `/fishing/context` 可用，有青竹钓竿，配额 0/5、剩余 5，
+  无活动 session。该频道生产钓鱼开关本来关闭，不能把此次 0/5 归因为调度失败。
+- 一次性工具 `tools/cave_readonly_probe.py` 只允许上述只读命令及 fishing/context；
+  不导入生产 runtime，不写生产 DB，不发送群消息，不抛竿/买饵。
+  独占创建输出文件以防中断重放；Telegram 使用只读会话的内存副本，报告不含认证数据。
+
 ## 接下来逐项迁移
 
 | 项目 | 上游/本地差异 | 本轮处理 |
 | --- | --- | --- |
-| 洞府原生钓鱼 | `3c77db65` 新增 context/cast/hook/checkpoint/fight、operationId、持久回执；`3c220736` 补远航后恢复 | 已核对协议；尚未接入本地运行器。需要先采集当前 context/session 合同，再接本地操作账本和结算计数，不能直接替换现有钓鱼 |
+| 洞府原生钓鱼 | `3c77db65` 新增 context/cast/hook/checkpoint/fight、operationId、持久回执；`3c220736` 补远航后恢复 | context 已实测，尚未接入本地运行器。下一步对接新 session/动作回执与本地操作账本，再做单竿验收；不能拿旧 start/finish/next 账本冒充新协议 |
 | 天星前置 | 上游 `model/features/tianxing.py` 仍通过 Telegram CommandCandidate 发送 | 不可据此宣称上游已有 HTTP 推改。先交付查盘桥接；消费动作须逐条建立 HTTP 所有权、未知结果及路线互斥 |
 | 分身管理 | 上游新增大规模分身状态与调度 | 不与本地 19 个频道身份模型混合迁移 |
-| 灵兽/阵法等状态 | 本地已有部分命令入口或 Lab 证据，尚无完整状态桥接 | 保留待办，不将读到文本误报为自动化完成 |
+| 灵兽等状态 | 本地已有部分命令入口或 Lab 证据，尚无完整状态桥接 | 保留待办，不将读到文本误报为自动化完成 |
 
 ## 验证和边界
 
 - 初次天机盘集成关联回归：3414 passed、124 subtests。
 - 补充异常结构、所有权、调度锁和失败保存后：55 项天机盘专项通过。
 - 新版按钮专项：5 passed、15 subtests。
-- 扩大回归和部署后观察结果在下方续记。
+- 第一批扩大回归：3607 passed、153 subtests；UI 冒烟 18 项通过，JS 语法和 compileall 通过。
+- 第一批 `80398561` 已提交、推送 `xiuxian-mian/main`，09:03 显式重启上线。
+  16:29 核对仍为同一 PID `3450554`、`NRestarts=0`，健康观察持续为 ok。
+- 第二批关联回归 3010 passed、161 subtests；补充 WA 实测面板后的最终专项
+  260 passed，UI 冒烟仍为 18 项通过，JS/compileall/diff 检查通过。
+- 17:13 前后两账号 Telegram 重连超时，17:18 后恢复收消息；17:26 健康恢复 ok，
+  PID 未变、NRestarts=0、pending 队列为空。WA 17:05 已完成裂缝推命结算（天机 +1、贡献 +30）。
+  没有为这次网络短断添加发送或恢复补丁。
+- 第二批个人阵法、一次性探测工具及传输错误保真补充待部署后观察。
 - World Boss 保持关闭；两号香火转神识保持关闭；频道发送冻结不变。
 - 不改 CommandAttempt 控制权，不增加库存自动查询，不批量启用高风险动作。

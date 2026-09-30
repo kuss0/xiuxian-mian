@@ -440,6 +440,7 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tianti_status">天阶状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yinluo_status">阴罗幡状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tianxing_status">天机盘</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="personal_formation_status">个人阵法</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="concubine_status">侍妾状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="beast_status">灵兽状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_status">闭关状态</button>'

@@ -119,6 +119,7 @@ CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
+    ".我的阵法",
     CMD_CONCUBINE_VOYAGE_STATUS,
 })
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
@@ -129,6 +130,7 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
+    ".我的阵法",
     CMD_CONCUBINE_VOYAGE_STATUS,
     CMD_CONCUBINE_VOYAGE_RETURN,
     f"{CMD_CONCUBINE_VOYAGE} {CONCUBINE_VOYAGE_MOON_ROUTE}",
@@ -264,6 +266,39 @@ def build_cave_treasure_miniapp_request(endpoint, *, token, init_data_session=No
         init_data_session=init_data_session,
         init_data=init_data,
     )
+
+
+def parse_cave_personal_formation_panel(message):
+    """Keep personal formation descriptions separate from Xinggong group raids."""
+    text = str(message or "")
+    if len(text) > 8000:
+        return {}
+    lines = [line.translate(str.maketrans("", "", "*_`")).strip() for line in text.splitlines() if line.strip()]
+    if not lines or not re.fullmatch(r"@\S+ 的阵法心得", lines[0]):
+        return {}
+    headings = ("已掌握的阵法:", "当前激活的防护阵:")
+    lines = [line.replace("：", ":") for line in lines]
+    if any(lines.count(heading) != 1 for heading in headings):
+        return {}
+    learned_at, active_at = (lines.index(heading) for heading in headings)
+    if learned_at != 1 or active_at <= learned_at + 1:
+        return {}
+    learned_rows, active_rows = lines[learned_at + 1:active_at], lines[active_at + 1:]
+    if active_rows and re.fullmatch(r"使用\s*\.布阵\s*<阵法名>\s*来激活防护。", active_rows[-1]):
+        active_rows = active_rows[:-1]
+    if not active_rows or any(not re.fullmatch(r"-\s+\S.*", row) for row in learned_rows + active_rows):
+        return {}
+    learned = [row[2:].strip() for row in learned_rows]
+    active = [row[2:].strip() for row in active_rows]
+    empty_learned = "你尚未学习任何阵法。"
+    if (empty_learned in learned and len(learned) != 1) or ("无" in active and len(active) != 1):
+        return {}
+    if learned == [empty_learned]:
+        learned = []
+    return {
+        "learned_count": len(learned), "learned_descriptions": learned,
+        "active_defense_descriptions": active, "snapshot_only": True,
+    }
 
 
 def normalize_cave_tianjige_command(command):

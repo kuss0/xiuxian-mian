@@ -25,7 +25,7 @@ from ..inventory_delta import prepare_inventory_delta, record_inventory_delta, s
 from ..miniapp_state import prepare_miniapp_state, record_miniapp_state
 from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
-from ..state import get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
+from ..state import get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_miniapp_state_records, set_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, get_day_key
 from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppRequestBudget, miniapp_retry_after_sec, require_miniapp_operation
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tianxing, tree_runtime, yinluo, yuanying
@@ -45,6 +45,7 @@ from .cave_treasure_miniapp import (
     merge_cave_dwelling_snapshot_data,
     parse_cave_inventory_snapshot,
     parse_cave_dwelling_overview,
+    parse_cave_personal_formation_panel,
     request_cave_treasure_miniapp_init_data,
     run_cave_deep_seclusion_action_production_flow,
     run_cave_dwelling_start_production_flow,
@@ -4974,8 +4975,31 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
     """Apply supported Tianjige panels through status-only module bridges."""
-    if command not in {CMD_TIANTI_STATUS, CMD_TIANXING_PANEL, ".我的阴罗幡", ".我的侍妾", CMD_CONCUBINE_VOYAGE_STATUS}:
+    if command not in {CMD_TIANTI_STATUS, CMD_TIANXING_PANEL, ".我的阴罗幡", ".我的侍妾", ".我的阵法", CMD_CONCUBINE_VOYAGE_STATUS}:
         return {"supported": False, "handled": False, "summary": {}}
+
+    if command == ".我的阵法":
+        summary = parse_cave_personal_formation_panel(message)
+        if not summary:
+            return {"supported": True, "handled": False, "reason": "incomplete_personal_formation", "summary": {}}
+        previous = deepcopy(get_miniapp_state_records())
+        recorded = record_miniapp_state(
+            identity_id, "cave_personal_formation", summary, now=now,
+            source="cave_tianjige_read_only", source_id=f"personal_formation:{identity_id}:{now}",
+            outputs=["个人阵法"], replaces_commands=[command], persist=False,
+        )
+        try:
+            saved = save_state() if recorded.get("changed") else True
+        except Exception:
+            set_miniapp_state_records(previous)
+            raise
+        if saved is False or not recorded.get("record"):
+            set_miniapp_state_records(previous)
+            return {"supported": True, "handled": False, "reason": "save_failed", "summary": {}}
+        return {
+            "supported": True, "handled": True, "summary": summary,
+            "detail": f"已学 {summary['learned_count']} 种｜防护 {'；'.join(summary['active_defense_descriptions'])}",
+        }
 
     with use_identity(identity_id):
         if command == CMD_TIANXING_PANEL:
@@ -5092,7 +5116,7 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
     }.get(normalized_command)
 
     def business_snapshot():
-        return {
+        snapshot = {
             key: deepcopy(value) for key, value in owner.identity.items()
             if prefix and (key.startswith(prefix) or key.startswith(f"next_{prefix}") or (
                 normalized_command == CMD_TIANXING_PANEL and (
@@ -5100,10 +5124,22 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 )
             ))
         }
+        if normalized_command == ".我的阵法":
+            snapshot["personal_formation"] = deepcopy(get_miniapp_state_records().get(f"{identity_id}:cave_personal_formation"))
+        return snapshot
 
     snapshot = business_snapshot()
 
     def module_block_reason():
+        if normalized_command == ".我的阵法":
+            previous = get_miniapp_state_records().get(f"{identity_id}:cave_personal_formation", {})
+            try:
+                stamp = float(previous.get("updated_at", 0))
+                if not math.isfinite(stamp) or not math.isfinite(now) or now <= 0 or stamp >= now:
+                    return "stale_observation"
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                return "invalid_observation"
+            return ""
         with use_identity(identity_id):
             if normalized_command == CMD_TIANXING_PANEL:
                 return tianxing.tianxing_miniapp_status_block_reason(now)
@@ -5189,13 +5225,6 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 "extra": _miniapp_result_extra({"status": "identity_unverified"}, session, result),
             }
         message = extract_cave_tianjige_command_message(data)
-        if normalized_command == CMD_TIANXING_PANEL:
-            action_result = data.get("actionResult")
-            if not isinstance(action_result, dict) or action_result.get("command") != normalized_command or action_result.get("ok") is not True or action_result.get("completed") is not True:
-                return {
-                    "ok": False, "message": "洞府天机盘回包命令或完成状态未确认",
-                    "extra": _miniapp_result_extra({"reason": "unverified_command_result"}, session, result),
-                }
         if result.get("ok") is not True or not _cave_tianjige_action_succeeded(data) or not message:
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
             response = {
@@ -5204,6 +5233,13 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             }
             await _audit_cave_tianjige_read_only(identity_id, response)
             return response
+        if normalized_command in {CMD_TIANXING_PANEL, ".我的阵法"}:
+            action_result = data.get("actionResult")
+            if not isinstance(action_result, dict) or action_result.get("command") != normalized_command or action_result.get("ok") is not True or action_result.get("completed") is not True:
+                return {
+                    "ok": False, "message": f"洞府天机阁回包命令或完成状态未确认：{normalized_command}",
+                    "extra": _miniapp_result_extra({"reason": "unverified_command_result"}, session, result),
+                }
         if normalized_command == ".我的灵兽":
             observation = _unbridged_cave_tianjige_observation(normalized_command, message)
             final_message = "洞府天机阁灵兽面板已读取，但本地尚无对应 reducer；仅观察，不更新放养状态"

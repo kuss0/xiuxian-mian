@@ -30,6 +30,10 @@ TIANXING_PANEL = (
     "今日已定命星: 未定命\n当前推命: 无\n当前改命: 无\n"
     "天机值: 40\n逆命劫: 0\n命中 / 落空 / 改命: 190 / 1 / 43"
 )
+PERSONAL_FORMATION_PANEL = (
+    "**@xueuode5 的阵法心得**\n\n**已掌握的阵法:**\n  - 你尚未学习任何阵法。\n\n"
+    "**当前激活的防护阵:**\n  - 无\n\n使用 `.布阵 <阵法名>` 来激活防护。"
+)
 
 
 @pytest.fixture
@@ -71,6 +75,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(yinluo, "save_state", save)
     monkeypatch.setattr(concubine, "save_state", save)
     monkeypatch.setattr(tianxing, "save_state", save)
+    monkeypatch.setattr(cave_treasure_runtime, "save_state", save)
     try:
         yield SimpleNamespace(identity=identity, session=session, flow=flow, save=save, audit=audit)
     finally:
@@ -149,6 +154,16 @@ def test_tianxing_public_panel_requires_exact_command_receipt(tianxing_runtime, 
     env = tianxing_runtime
     env.flow.return_value["data"]["actionResult"][field] = value
     assert not read(".天机盘")["ok"]
+    env.save.assert_not_called()
+
+
+def test_tianxing_public_panel_retains_transport_error_without_retry(tianxing_runtime):
+    env = tianxing_runtime
+    env.flow.return_value = {"ok": False, "status": "failed", "error": "HTTP 429"}
+    result = read(".天机盘")
+    assert not result["ok"]
+    assert "HTTP 429" in result["message"]
+    env.flow.assert_awaited_once()
     env.save.assert_not_called()
 
 
@@ -280,6 +295,99 @@ def test_tianxing_public_panel_ui_runner_uses_read_only_path(monkeypatch):
     monkeypatch.setattr(ui, "run_cave_public_tianjige_read_only", runner)
     asyncio.run(ui._cave_public_entry_runner(1001, "tianxing_status")(ENTRY))
     runner.assert_awaited_once_with(1001, ENTRY, ".天机盘")
+
+
+@pytest.fixture
+def personal_formation_runtime(runtime):
+    state_module.set_miniapp_state_records({})
+    runtime.flow.return_value["data"]["actionResult"] = {
+        "ok": True, "completed": True, "command": ".我的阵法", "rawMessage": PERSONAL_FORMATION_PANEL,
+    }
+    return runtime
+
+
+def test_personal_formation_is_independent_of_group_formation(personal_formation_runtime):
+    env = personal_formation_runtime
+    env.identity.update(formation_enabled=True, formation_pending_assist_msg_id=42)
+    before = copy.deepcopy(env.identity)
+    result = read(".我的阵法")
+    assert result["ok"]
+    assert env.identity == before
+    panel = state_module.get_miniapp_state_records()["1001:cave_personal_formation"]["state"]
+    assert panel["learned_count"] == 0
+    assert panel["active_defense_descriptions"] == ["无"]
+    assert panel["snapshot_only"] is True
+    env.save.assert_called_once_with()
+
+
+def test_personal_formation_wa_known_formations_sample(personal_formation_runtime):
+    env = personal_formation_runtime
+    env.flow.return_value["data"]["actionResult"]["rawMessage"] = PERSONAL_FORMATION_PANEL.replace(
+        "  - 你尚未学习任何阵法。",
+        "  - 【大庚剑阵】\n  - 【四象御法阵】\n  - 【三才微尘阵】\n  - 【五行颠倒阵】",
+    ).replace("@xueuode5", "@WalterWA2000")
+    result = read(".我的阵法")
+    assert result["ok"]
+    assert result["extra"]["sync"]["learned_count"] == 4
+    assert result["extra"]["sync"]["active_defense_descriptions"] == ["无"]
+
+
+@pytest.mark.parametrize("message", [
+    "【周天星斗大阵-成】参与者: @fixture", "布阵成功！",
+    PERSONAL_FORMATION_PANEL.replace("**当前激活的防护阵:**", "未知标题:"),
+    PERSONAL_FORMATION_PANEL.replace("  - 无", ""),
+    PERSONAL_FORMATION_PANEL + "\n已掌握的阵法:",
+    PERSONAL_FORMATION_PANEL.replace("  - 无", "  - 无\n  - 测试阵"),
+    PERSONAL_FORMATION_PANEL.replace("  - 你尚未学习任何阵法。", "  - 你尚未学习任何阵法。\n  - 测试阵"),
+])
+def test_personal_formation_rejects_incomplete_or_group_panels(personal_formation_runtime, message):
+    env = personal_formation_runtime
+    env.flow.return_value["data"]["actionResult"]["rawMessage"] = message
+    assert not read(".我的阵法")["ok"]
+    assert not state_module.get_miniapp_state_records()
+    env.save.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["session", "flow"])
+def test_personal_formation_preserves_newer_http_snapshot(personal_formation_runtime, stage):
+    env = personal_formation_runtime
+    current = {"1001:cave_personal_formation": {"updated_at": NOW + 1, "state": {"learned_count": 2}}}
+    async def update(*args, **kwargs):
+        state_module.set_miniapp_state_records(copy.deepcopy(current))
+        return getattr(env, stage).return_value
+    getattr(env, stage).side_effect = update
+    assert not read(".我的阵法")["ok"]
+    assert state_module.get_miniapp_state_records() == current
+    env.save.assert_not_called()
+
+
+def test_personal_formation_save_failure_rolls_back_only_snapshot(personal_formation_runtime):
+    env = personal_formation_runtime
+    env.save.return_value = False
+    assert not read(".我的阵法")["ok"]
+    assert not state_module.get_miniapp_state_records()
+
+
+def test_personal_formation_requires_exact_http_command(personal_formation_runtime):
+    env = personal_formation_runtime
+    env.flow.return_value["data"]["actionResult"]["command"] = ".布阵 测试阵"
+    assert not read(".我的阵法")["ok"]
+    env.save.assert_not_called()
+
+
+def test_personal_formation_stale_snapshot_is_not_requested(personal_formation_runtime):
+    env = personal_formation_runtime
+    state_module.set_miniapp_state_records({"1001:cave_personal_formation": {"updated_at": NOW}})
+    assert not read(".我的阵法")["ok"]
+    env.session.assert_not_awaited()
+
+
+def test_personal_formation_ui_uses_http_read_only_runner(monkeypatch):
+    from model import ui
+    runner = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(ui, "run_cave_public_tianjige_read_only", runner)
+    asyncio.run(ui._cave_public_entry_runner(1001, "personal_formation_status")(ENTRY))
+    runner.assert_awaited_once_with(1001, ENTRY, ".我的阵法")
 
 
 def test_public_tianjige_voyage_status_reconciles_returned_state(runtime):

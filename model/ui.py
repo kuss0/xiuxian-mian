@@ -7612,6 +7612,7 @@ def _cave_public_entry_runner(identity_id, action, *, tree_operation=None):
         "concubine_status": ".我的侍妾", "concubine": ".我的侍妾",
         "beast_status": ".我的灵兽", "beast": ".我的灵兽",
         "tianxing_status": ".天机盘",
+        "personal_formation_status": ".我的阵法",
     }
     if action in commands:
         return lambda url: run_cave_public_tianjige_read_only(identity_id, url, commands[action])

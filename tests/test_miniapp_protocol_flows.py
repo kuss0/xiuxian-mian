@@ -448,7 +448,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         self.assertEqual(".天阶状态", tianti_request["payload"]["command"])
 
-        for command in (".我的阴罗幡", ".我的侍妾", ".我的灵兽", ".天机盘"):
+        for command in (".我的阴罗幡", ".我的侍妾", ".我的灵兽", ".天机盘", ".我的阵法"):
             read_only_request = cave_treasure_miniapp.build_cave_tianjige_command_request(
                 command,
                 token="df_SECRET999",
