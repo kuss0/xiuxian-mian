@@ -858,7 +858,11 @@ def _button_text(button):
 
 
 def _button_url(button):
-    for source in (button, getattr(button, "button", None)):
+    # Telethon 1.45 moves URL/WebView fields into the raw button's type.
+    # Adapted from wxjerry/xiuxian cac8ab6; retain our nested WebApp support.
+    raw = getattr(button, "button", None)
+    typed = getattr(raw if raw is not None else button, "type", None)
+    for source in (typed, button, raw):
         if source is None:
             continue
         for attr in ("url", "webview", "web_view"):

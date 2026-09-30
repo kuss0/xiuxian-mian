@@ -259,9 +259,19 @@ def _tianxing_effect_record(observed, effect):
         or type(record.get("chat_id")) is not int or type(record.get("msg_id")) is not int
         or record["msg_id"] < 0 or bool(record["chat_id"]) != bool(record["msg_id"])
         or not isinstance(record.get("event_type"), str)
-        or record.get("event_type") not in {"message", "edit"}
+        or record.get("event_type") not in {"message", "edit", "miniapp"}
         or not isinstance(signature, list) or len(signature) != 4
         or any(value is not None and not isinstance(value, str) for value in signature[:3])
+    ):
+        return None
+    if record["event_type"] == "miniapp" and (
+        record["chat_id"] != 0 or record["msg_id"] != 0
+        or record.get("command") != CMD_TIANXING_PANEL
+        or type(record.get("identity_id")) is not int
+        or record["identity_id"] != get_current_identity_id()
+        or type(record.get("account_id")) is not int
+        or record["account_id"] <= 0
+        or record["account_id"] != get_identity_account(get_current_identity_id())
     ):
         return None
     duration, dirty = _parse_observation_float(signature[3])
@@ -2491,6 +2501,126 @@ def _note_tianxing_effect_evidence(observed, effect, now, reply_context, parsed,
         "event_type": "edit" if context.get("event_type") == "edit" else "message",
         "signature": _tianxing_effect_signature(effect, parsed, now),
     }
+
+
+def tianxing_miniapp_status_block_reason(now):
+    now, dirty = _parse_observation_float(now)
+    if dirty or now <= 0:
+        return "invalid_time"
+    observed = state.get("tianxing_observation")
+    if not isinstance(observed, dict) or _dirty_tianxing_time_fields(observed):
+        return "invalid_observation"
+    if not get_identity_account(get_current_identity_id()):
+        return "invalid_owner"
+    floors = [observed.get(key, 0) for key in (
+        "last_observed_at", "current_prediction_set_at", "current_change_set_at",
+        "prediction_consumed_at", "stale_change_cleared_at",
+    )]
+    floors.extend((_tianxing_effect_record(observed, effect) or {}).get("at", 0) for effect in ("prediction", "change"))
+    for value in floors:
+        timestamp, dirty = _parse_observation_float(value)
+        if dirty:
+            return "invalid_observation"
+        if timestamp > 0 and timestamp >= now:
+            return "stale_observation"
+    pending = state.get("pending_tasks")
+    if not isinstance(pending, dict):
+        return "invalid_pending"
+    if pending or any(observed.get(key) for key in (
+        "auto_pending_action", "auto_pending_command", "auto_pending_op_id",
+        "auto_pending_msg_id", "auto_pending_sent_at", "auto_pending_due_at",
+    )) or observed.get("last_result") == "unknown_result":
+        return "active_pending"
+    timeline = state.get("tianxing_timeline_state")
+    if not isinstance(timeline, dict):
+        return "invalid_timeline"
+    steps = timeline.get("steps", [])
+    active = timeline.get("active_step", {})
+    if not isinstance(steps, list) or not isinstance(active, dict) or any(not isinstance(step, dict) for step in steps):
+        return "invalid_timeline"
+    for step in [active, *steps]:
+        if not isinstance(step.get("status", ""), str):
+            return "invalid_timeline"
+        if step.get("status") in {"sending", "sent_waiting_ack", "ack_timeout"}:
+            return "active_pending"
+    released = timeline.get("released_routes", {})
+    if not isinstance(released, dict) or any(not isinstance(item, dict) for item in released.values()):
+        return "invalid_timeline"
+    for name, field in (("craft_farm", "pending_craft"), ("retreat_farm", "pending_command")):
+        farm = timeline.get(name, {})
+        if not isinstance(farm, dict) or not isinstance(farm.get(field, {}), dict):
+            return "invalid_timeline"
+        if farm.get(field):
+            return "active_pending"
+    from .wild_training import _WILD_TRAINING_LOCKS
+
+    for locks in (_TIANXING_AUTO_LOCKS, _TIANXING_TIMELINE_LOCKS, _TIANXING_CRAFT_LOCKS, _TIANXING_RETREAT_LOCKS, _WILD_TRAINING_LOCKS):
+        lock = locks.get(get_current_identity_id())
+        if lock is not None and lock.locked():
+            return "active_pending"
+    try:
+        if any(_tianxing_route_has_pending_downstream(route) for route in TIANXING_ROUTES) or _active_tianxing_route_lease(now):
+            return "active_pending"
+    except (TypeError, ValueError, OverflowError):
+        return "invalid_pending"
+    return ""
+
+
+def sync_tianxing_miniapp_status(text, now):
+    """Apply a complete, owner-verified HTTP panel without settling any action."""
+    reason = tianxing_miniapp_status_block_reason(now)
+    if reason:
+        return {"handled": False, "reason": reason, "summary": {}}
+    now = float(now)
+    lines = [line.translate(str.maketrans("", "", "*_`")).strip() for line in str(text or "").splitlines() if line.strip()]
+    patterns = (
+        r"【天机盘】", r"今日可选命星[:：]\s*(.+)", r"今日已定命星[:：]\s*(.+)",
+        r"当前推命[:：]\s*(.+)", r"当前改命[:：]\s*(.+)",
+        RE_TIANJI_VALUE, RE_CALAMITY, RE_COUNTS,
+    )
+    # Reject partial, duplicated or concatenated replies before the permissive
+    # Telegram parser can turn omitted fields into an authoritative empty effect.
+    if len(lines) != len(patterns) or any(sum(bool(re.fullmatch(pattern, line)) for line in lines) != 1 for pattern in patterns):
+        return {"handled": False, "reason": "incomplete_panel", "summary": {}}
+    parsed = parse_tianxing_text("\n".join(lines), now, "tianxing_panel")
+    fields = ("available_stars", "fixed_star", "current_prediction", "current_prediction_until", "current_change", "current_change_until", "tianji_value", "calamity_count", "hit_count", "miss_count", "change_count")
+    if not parsed or any(key not in parsed for key in fields):
+        return {"handled": False, "reason": "incomplete_panel", "summary": {}}
+    stars = parsed["available_stars"]
+    if not stars or len(set(stars)) != len(stars) or any(star not in TIANXING_STARS for star in stars) or (parsed["fixed_star"] and parsed["fixed_star"] not in stars):
+        return {"handled": False, "reason": "invalid_stars", "summary": {}}
+    fixed_line = next(line for line in lines if line.startswith("今日已定命星"))
+    if not re.fullmatch(r"今日已定命星[:：]\s*(?:无|未定|未定命|【(?:紫微|天府|太阴|贪狼)】)", fixed_line):
+        return {"handled": False, "reason": "invalid_stars", "summary": {}}
+    for effect in ("prediction", "change"):
+        if parsed[f"current_{effect}"] and not now < parsed[f"current_{effect}_until"] < math.inf:
+            return {"handled": False, "reason": "incomplete_effect", "summary": {}}
+    previous = state["tianxing_observation"]
+    observed = copy.deepcopy(previous)
+    observed.update({key: copy.deepcopy(parsed[key]) for key in fields})
+    observed.update(
+        last_observed_at=now, last_action="天机盘", last_result="panel", last_summary="天机盘状态（MiniApp）",
+        available_stars_source="panel", available_stars_day=get_day_key(now),
+        fixed_star_day=get_day_key(now) if parsed["fixed_star"] else "",
+    )
+    for effect in ("prediction", "change"):
+        observed[f"current_{effect}_set_at"] = now if parsed[f"current_{effect}"] else 0
+        observed.setdefault("effect_evidence", {})[effect] = {
+            "at": now, "event_type": "miniapp", "chat_id": 0, "msg_id": 0, "complete": True,
+            "command": CMD_TIANXING_PANEL, "identity_id": get_current_identity_id(),
+            "account_id": get_identity_account(get_current_identity_id()),
+            "signature": _tianxing_effect_signature(effect, parsed, now),
+        }
+    state["tianxing_observation"] = observed
+    try:
+        saved = save_state()
+    except Exception:
+        state["tianxing_observation"] = previous
+        raise
+    if saved is False:
+        state["tianxing_observation"] = previous
+        return {"handled": False, "reason": "save_failed", "summary": {}}
+    return {"handled": True, "reason": "", "summary": {key: copy.deepcopy(parsed[key]) for key in fields}}
 
 
 def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):

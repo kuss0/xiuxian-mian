@@ -15,6 +15,7 @@ from ..config import (
     CMD_CONCUBINE_VOYAGE,
     CONCUBINE_VOYAGE_MOON_ROUTE,
     CMD_TIANTI_STATUS,
+    CMD_TIANXING_PANEL,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     MESSAGES_DIR,
@@ -114,6 +115,7 @@ CAVE_WILD_EXPERIENCE_MODES = frozenset({"cautious", "balanced", "deep"})
 CAVE_ENCOUNTER_MODES = frozenset({"cautious", "balanced", "plunder", "off"})
 CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
+    CMD_TIANXING_PANEL,
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
@@ -121,6 +123,7 @@ CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
 })
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
+    CMD_TIANXING_PANEL,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     ".我的阴罗幡",

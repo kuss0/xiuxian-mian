@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from model import state as state_module
-from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, yinluo
+from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, tianxing, yinluo
 from model.real_message_replay import get_real_message_text
 from model.webapp_core import MiniAppHttpResult, MiniAppRequestAborted, require_miniapp_operation
 
@@ -25,6 +25,11 @@ PANEL = (
     "- **3号槽：** `[空闲]`"
 )
 CONCUBINE_PANEL = "你的道心侍妾：【南宫婉】（状态：随行中）\n情缘值：184"
+TIANXING_PANEL = (
+    "【天机盘】\n今日可选命星: 【太阴】、【紫微】、【贪狼】\n"
+    "今日已定命星: 未定命\n当前推命: 无\n当前改命: 无\n"
+    "天机值: 40\n逆命劫: 0\n命中 / 落空 / 改命: 190 / 1 / 43"
+)
 
 
 @pytest.fixture
@@ -65,6 +70,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(cave_treasure_runtime, "console_log", Mock())
     monkeypatch.setattr(yinluo, "save_state", save)
     monkeypatch.setattr(concubine, "save_state", save)
+    monkeypatch.setattr(tianxing, "save_state", save)
     try:
         yield SimpleNamespace(identity=identity, session=session, flow=flow, save=save, audit=audit)
     finally:
@@ -76,6 +82,204 @@ def runtime(monkeypatch):
 
 def read(command=".我的阴罗幡"):
     return asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_read_only(1001, ENTRY, command, now=NOW))
+
+
+@pytest.fixture
+def tianxing_runtime(runtime):
+    runtime.identity["tianxing_observation"] = tianxing.normalize_tianxing_observation({
+        "auto_next_time": NOW + 3600, "auto_last_error": "retain_error",
+        "prediction_consumed_route": "探索", "prediction_consumed_at": NOW - 20,
+    })
+    runtime.flow.return_value["data"]["actionResult"] = {
+        "ok": True, "completed": True, "command": ".天机盘", "rawMessage": TIANXING_PANEL,
+    }
+    return runtime
+
+
+def test_tianxing_public_panel_has_owned_http_evidence_without_completing_actions(tianxing_runtime, monkeypatch):
+    env = tianxing_runtime
+    before = copy.deepcopy(env.identity)
+    passive = Mock(side_effect=AssertionError("HTTP panel cannot settle Telegram work"))
+    monkeypatch.setattr(tianxing, "apply_tianxing_passive", passive)
+    response = read(".天机盘")
+    assert response["ok"], response
+    observed = env.identity["tianxing_observation"]
+    assert observed["tianji_value"] == 40
+    assert observed["hit_count"] == 190
+    assert observed["auto_next_time"] == NOW + 3600
+    assert observed["auto_last_error"] == "retain_error"
+    assert observed["prediction_consumed_at"] == NOW - 20
+    assert {key: value for key, value in env.identity.items() if key != "tianxing_observation"} == {
+        key: value for key, value in before.items() if key != "tianxing_observation"
+    }
+    with state_module.use_identity(1001):
+        for effect in ("prediction", "change"):
+            evidence = tianxing._tianxing_effect_record(observed, effect)
+            assert evidence["event_type"] == "miniapp"
+            assert evidence["msg_id"] == evidence["chat_id"] == 0
+            assert evidence["identity_id"] == 1001
+            assert evidence["account_id"] == 11
+    passive.assert_not_called()
+    env.flow.assert_awaited_once()
+    env.save.assert_called_once_with()
+
+
+@pytest.mark.parametrize("message", [
+    "【天机盘】\n天机值: 40", TIANXING_PANEL + "\n天机值: 99",
+    TIANXING_PANEL.replace("当前推命: 无", "当前推命: 探索"),
+    TIANXING_PANEL.replace("当前改命: 无", "当前改命: 探索（剩余：0秒）"),
+    TIANXING_PANEL.replace("未定命", "【天府】"),
+    TIANXING_PANEL.replace("未定命", "【太阴】、【紫微】"),
+    TIANXING_PANEL.replace("【贪狼】", "【未知命星】"),
+    TIANXING_PANEL.replace("天机值: 40", "天机值: 40.5"),
+    TIANXING_PANEL.replace("天机值: 40", "天机值: -40"),
+    "你为【探索】推下一段命数。", "你并非天星宗弟子，不能使用司命盘",
+])
+def test_tianxing_public_panel_rejects_incomplete_or_other_replies(tianxing_runtime, message):
+    env = tianxing_runtime
+    env.flow.return_value["data"]["actionResult"]["rawMessage"] = message
+    before = copy.deepcopy(env.identity)
+    assert not read(".天机盘")["ok"]
+    assert env.identity == before
+    env.save.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [("command", ".推命 探索"), ("command", None), ("completed", False), ("completed", 1), ("ok", False)])
+def test_tianxing_public_panel_requires_exact_command_receipt(tianxing_runtime, field, value):
+    env = tianxing_runtime
+    env.flow.return_value["data"]["actionResult"][field] = value
+    assert not read(".天机盘")["ok"]
+    env.save.assert_not_called()
+
+
+@pytest.mark.parametrize("path,value", [
+    (("pending_tasks",), {42: {"cmd": ".推命 探索"}}),
+    (("tianxing_observation", "auto_pending_action"), "panel"),
+    (("tianxing_observation", "auto_pending_msg_id"), 42),
+    (("tianxing_observation", "last_result"), "unknown_result"),
+    (("tianxing_observation", "last_observed_at"), NOW),
+    (("tianxing_observation", "current_change_set_at"), NOW + 10),
+    (("tianxing_observation", "last_observed_at"), float("inf")),
+    (("tianxing_timeline_state", "active_step"), {"action": "predict", "status": "ack_timeout"}),
+    (("tianxing_timeline_state", "craft_farm"), {"pending_craft": {"status": "unknown"}}),
+    (("tianxing_timeline_state", "retreat_farm"), {"pending_command": {"command": ".闭关修炼"}}),
+    (("tianxing_timeline_state", "steps"), [None]),
+    (("tianxing_timeline_state", "active_step"), {"status": {}}),
+    (("tianxing_timeline_state", "released_routes"), []),
+    (("duel_reply_to_msg_id",), 42),
+    (("explore_rift_reply_to_msg_id",), 42),
+])
+def test_tianxing_public_panel_does_not_overwrite_unsettled_or_newer_state(tianxing_runtime, path, value):
+    env = tianxing_runtime
+    target = env.identity if len(path) == 1 else env.identity[path[0]]
+    target[path[-1]] = value
+    before = copy.deepcopy(env.identity)
+    assert not read(".天机盘")["ok"]
+    assert env.identity == before
+    env.session.assert_not_awaited()
+    env.flow.assert_not_awaited()
+    env.save.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["session", "flow"])
+@pytest.mark.parametrize("change", ["account", "observation", "downstream", "pending"])
+def test_tianxing_public_panel_rechecks_owner_and_business_after_await(tianxing_runtime, stage, change):
+    env = tianxing_runtime
+    runner = getattr(env, stage)
+    async def changed(*args, **kwargs):
+        if change == "account":
+            state_module.set_identity_account(1001, 22)
+        elif change == "observation":
+            env.identity["tianxing_observation"]["tianji_value"] = 50
+        elif change == "downstream":
+            env.identity["wild_training_last_completed_at"] = NOW + 1
+        else:
+            env.identity["pending_tasks"][42] = {"cmd": ".斗法 @fixture"}
+        return runner.return_value
+    runner.side_effect = changed
+    response = read(".天机盘")
+    assert not response["ok"]
+    assert response["extra"]["status"] == "cancelled"
+    env.save.assert_not_called()
+
+
+def test_tianxing_public_panel_effect_expiry_and_old_reply_ordering(tianxing_runtime):
+    env = tianxing_runtime
+    env.flow.return_value["data"]["actionResult"]["rawMessage"] = TIANXING_PANEL.replace(
+        "当前推命: 无", "当前推命: 探索（剩余：1小时）",
+    )
+    assert read(".天机盘")["ok"]
+    observed = copy.deepcopy(env.identity["tianxing_observation"])
+    assert observed["current_prediction_until"] == NOW + 3600
+    with state_module.use_identity(1001):
+        assert tianxing._has_fresh_prediction_evidence("探索", observed, {}, NOW + 1)
+        assert not tianxing._has_fresh_prediction_evidence("探索", observed, {}, NOW + 3600)
+        older = tianxing.parse_tianxing_text(TIANXING_PANEL, NOW - 1, "tianxing_panel")
+        assert not tianxing._tianxing_effect_evidence_is_newer(observed, "prediction", NOW - 1, {}, older)
+        state_module.set_identity_account(1001, 22)
+        assert tianxing._tianxing_effect_record(observed, "prediction") is None
+
+
+def test_tianxing_public_panel_save_failure_rolls_back(tianxing_runtime):
+    env = tianxing_runtime
+    env.save.return_value = False
+    before = copy.deepcopy(env.identity)
+    response = read(".天机盘")
+    assert not response["ok"]
+    assert response["extra"]["reason"] == "save_failed"
+    assert env.identity == before
+
+
+@pytest.mark.parametrize("kind", ["auto", "timeline", "craft", "retreat", "wild"])
+def test_tianxing_public_panel_cannot_race_active_scheduler(tianxing_runtime, monkeypatch, kind):
+    from model.features import wild_training
+    owner = wild_training if kind == "wild" else tianxing
+    attribute = "_WILD_TRAINING_LOCKS" if kind == "wild" else f"_TIANXING_{kind.upper()}_LOCKS"
+    lock = Mock()
+    lock.locked.return_value = True
+    monkeypatch.setattr(owner, attribute, {1001: lock})
+    assert not read(".天机盘")["ok"]
+    tianxing_runtime.flow.assert_not_awaited()
+
+
+def test_tianxing_public_panel_channel_identity_has_no_telegram_dispatch(tianxing_runtime):
+    env = tianxing_runtime
+    env.session.return_value["player_id"] = -1000000001001
+    env.session.return_value["result"]["data"]["raw"]["account"]["playerId"] = -1000000001001
+    env.flow.return_value["data"]["account"]["playerId"] = -1000000001001
+    assert read(".天机盘")["ok"]
+    assert env.flow.call_args.kwargs["player_id"] == -1000000001001
+
+
+@pytest.mark.parametrize("player_id", [None, 99, -1000000000099, True])
+def test_tianxing_public_panel_rejects_unverified_identity(tianxing_runtime, player_id):
+    env = tianxing_runtime
+    env.flow.return_value["data"]["account"]["playerId"] = player_id
+    assert not read(".天机盘")["ok"]
+    env.save.assert_not_called()
+
+
+def test_tianxing_public_panel_does_not_allow_arbitrary_commands(tianxing_runtime):
+    for command in (".天机盘 extra", ".天机盘\n.推命 探索", ".推命 探索", ".定命 太阴"):
+        assert not read(command)["ok"]
+    tianxing_runtime.flow.assert_not_awaited()
+
+
+def test_tianxing_public_panel_save_exception_restores_previous_state(tianxing_runtime):
+    env = tianxing_runtime
+    env.save.side_effect = OSError("fixture disk failure")
+    before = copy.deepcopy(env.identity)
+    with pytest.raises(OSError):
+        read(".天机盘")
+    assert env.identity == before
+
+
+def test_tianxing_public_panel_ui_runner_uses_read_only_path(monkeypatch):
+    from model import ui
+    runner = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(ui, "run_cave_public_tianjige_read_only", runner)
+    asyncio.run(ui._cave_public_entry_runner(1001, "tianxing_status")(ENTRY))
+    runner.assert_awaited_once_with(1001, ENTRY, ".天机盘")
 
 
 def test_public_tianjige_voyage_status_reconciles_returned_state(runtime):

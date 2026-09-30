@@ -7611,6 +7611,7 @@ def _cave_public_entry_runner(identity_id, action, *, tree_operation=None):
         "yinluo_status": ".我的阴罗幡", "yinluo_banner": ".我的阴罗幡",
         "concubine_status": ".我的侍妾", "concubine": ".我的侍妾",
         "beast_status": ".我的灵兽", "beast": ".我的灵兽",
+        "tianxing_status": ".天机盘",
     }
     if action in commands:
         return lambda url: run_cave_public_tianjige_read_only(identity_id, url, commands[action])

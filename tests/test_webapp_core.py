@@ -58,6 +58,45 @@ class WebAppCoreTests(unittest.TestCase):
         row = SimpleNamespace(buttons=[button])
         return SimpleNamespace(message=SimpleNamespace(reply_markup=SimpleNamespace(rows=[row])))
 
+    def test_typed_telethon_buttons_keep_public_entry_discovery(self):
+        url = "https://t.me/hantianzun21_bot?startapp=df_TYPED999"
+        for field in ("url", "webview", "web_view", "web_app"):
+            for wrapped in (False, True):
+                with self.subTest(field=field, wrapped=wrapped):
+                    value = SimpleNamespace(url=url) if field == "web_app" else url
+                    raw = SimpleNamespace(text="洞府公共入口", type=SimpleNamespace(**{field: value}))
+                    button = SimpleNamespace(button=raw) if wrapped else raw
+                    message = SimpleNamespace(message=url, buttons=[[button]])
+                    event = SimpleNamespace(message=message)
+                    self.assertEqual([("洞府公共入口", url)], list(webapp_core.iter_webapp_entry_links(event)))
+                    self.assertEqual([("洞府公共入口", url)], list(webapp_core.iter_webapp_entry_links(message)))
+                    launch = cave_treasure_miniapp.extract_cave_treasure_miniapp_launch(event)
+                    self.assertEqual(url, launch["webview_url"])
+
+    def test_typed_telethon_reply_markup_rows_work_without_custom_buttons(self):
+        url = "https://t.me/fanrenxiuxian_bot?startapp=df_TYPED999"
+        button = SimpleNamespace(text="洞府", type=SimpleNamespace(webview=SimpleNamespace(url=url)))
+        message = SimpleNamespace(message="", reply_markup=SimpleNamespace(rows=[SimpleNamespace(buttons=[button])]))
+        self.assertEqual([("洞府", url)], list(webapp_core.iter_webapp_entry_links(message)))
+
+    def test_typed_button_payload_takes_precedence_over_wrapper_cache(self):
+        current = "https://t.me/fanrenxiuxian_bot?startapp=df_CURRENT999"
+        button = SimpleNamespace(url="https://example.invalid/stale", button=SimpleNamespace(type=SimpleNamespace(url=current)))
+        self.assertEqual(current, webapp_core._button_url(button))
+
+    def test_typed_button_does_not_bypass_public_entry_bot_validation(self):
+        for url in ("https://evil.invalid/?startapp=df_TYPED999", "https://t.me/untrusted_bot?startapp=df_TYPED999"):
+            with self.subTest(url=url):
+                button = SimpleNamespace(text="洞府公共入口", type=SimpleNamespace(url=url))
+                event = SimpleNamespace(message=SimpleNamespace(buttons=[[button]]))
+                self.assertFalse(cave_treasure_miniapp.extract_cave_treasure_miniapp_launch(event))
+
+    def test_callback_or_malformed_typed_button_is_not_a_webapp_entry(self):
+        for payload in (None, "url", SimpleNamespace(data=b"callback"), SimpleNamespace(url=True), SimpleNamespace(url=123)):
+            with self.subTest(payload=payload):
+                button = SimpleNamespace(type=payload)
+                self.assertEqual("", webapp_core._button_url(button))
+
     def test_summarize_webapp_url_redacts_start_param_and_init_data(self):
         summary = webapp_core.summarize_webapp_url(
             "https://example.com/app?startapp=stk_SECRET9999#tgWebAppData=query_id%3Dabc%26hash%3Dhidden",

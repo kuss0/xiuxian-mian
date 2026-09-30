@@ -18,6 +18,7 @@ from ..config import (
     CMD_CONCUBINE_VOYAGE_RETURN,
     CMD_CONCUBINE_VOYAGE_STATUS,
     CMD_TIANTI_STATUS,
+    CMD_TIANXING_PANEL,
     STATE_DIR,
 )
 from ..inventory_delta import prepare_inventory_delta, record_inventory_delta, stable_payload_digest
@@ -27,7 +28,7 @@ from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, con
 from ..state import get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, get_day_key
 from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppRequestBudget, miniapp_retry_after_sec, require_miniapp_operation
-from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
+from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tianxing, tree_runtime, yinluo, yuanying
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
     _calc_refine_amount,
@@ -4973,10 +4974,17 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
     """Apply supported Tianjige panels through status-only module bridges."""
-    if command not in {CMD_TIANTI_STATUS, ".我的阴罗幡", ".我的侍妾", CMD_CONCUBINE_VOYAGE_STATUS}:
+    if command not in {CMD_TIANTI_STATUS, CMD_TIANXING_PANEL, ".我的阴罗幡", ".我的侍妾", CMD_CONCUBINE_VOYAGE_STATUS}:
         return {"supported": False, "handled": False, "summary": {}}
 
     with use_identity(identity_id):
+        if command == CMD_TIANXING_PANEL:
+            result = tianxing.sync_tianxing_miniapp_status(message, now)
+            summary = dict(result.get("summary") or {})
+            return {
+                "supported": True, **result,
+                "detail": f"天机 {summary.get('tianji_value', '-')}｜逆命劫 {summary.get('calamity_count', '-')}",
+            }
         if command == CMD_TIANTI_STATUS:
             sync_result = tianti.sync_tianti_miniapp_status(message, now=now)
             progress = int(state.get("tianti_progress_current", 0) or 0)
@@ -5080,18 +5088,25 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
     prefix = {
         CMD_TIANTI_STATUS: "tianti_", ".我的阴罗幡": "yinluo_", ".我的侍妾": "concubine_",
         CMD_CONCUBINE_VOYAGE_STATUS: "concubine_",
+        CMD_TIANXING_PANEL: "tianxing_",
     }.get(normalized_command)
 
     def business_snapshot():
         return {
             key: deepcopy(value) for key, value in owner.identity.items()
-            if prefix and (key.startswith(prefix) or key.startswith(f"next_{prefix}"))
+            if prefix and (key.startswith(prefix) or key.startswith(f"next_{prefix}") or (
+                normalized_command == CMD_TIANXING_PANEL and (
+                    key == "pending_tasks" or key.startswith(("explore_rift_", "wild_training_", "duel_"))
+                )
+            ))
         }
 
     snapshot = business_snapshot()
 
     def module_block_reason():
         with use_identity(identity_id):
+            if normalized_command == CMD_TIANXING_PANEL:
+                return tianxing.tianxing_miniapp_status_block_reason(now)
             if normalized_command == CMD_TIANTI_STATUS:
                 return tianti.tianti_miniapp_status_block_reason(now)
             if normalized_command == ".我的侍妾":
@@ -5174,6 +5189,13 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 "extra": _miniapp_result_extra({"status": "identity_unverified"}, session, result),
             }
         message = extract_cave_tianjige_command_message(data)
+        if normalized_command == CMD_TIANXING_PANEL:
+            action_result = data.get("actionResult")
+            if not isinstance(action_result, dict) or action_result.get("command") != normalized_command or action_result.get("ok") is not True or action_result.get("completed") is not True:
+                return {
+                    "ok": False, "message": "洞府天机盘回包命令或完成状态未确认",
+                    "extra": _miniapp_result_extra({"reason": "unverified_command_result"}, session, result),
+                }
         if result.get("ok") is not True or not _cave_tianjige_action_succeeded(data) or not message:
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
             response = {
