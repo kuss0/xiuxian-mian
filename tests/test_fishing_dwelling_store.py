@@ -15,6 +15,8 @@ from model.features.fishing_dwelling_miniapp import run_native_fishing_productio
 from model.features.miniapp_common import MiniAppFlowCancelled
 import test_fishing_caller_lifecycle as lifecycle
 from test_fishing_dwelling_journal import context, response, fighting
+from test_fishing_dwelling_supply import shop_context, SETTINGS
+from model.features import fishing_dwelling_supply as supply
 
 
 fishing_env = lifecycle.fishing_env
@@ -29,6 +31,195 @@ def persisted(identity_id):
     with sqlite3.connect(persistence.DB_FILE) as conn:
         return json.loads(conn.execute("SELECT fishing_native_operation FROM identity_runtime_state WHERE send_as_id=?",
                                        (identity_id,)).fetchone()[0])
+
+
+@pytest.mark.parametrize("phase", ["pending", "confirmed", "accounted"])
+def test_supply_real_sqlite_restart_retains_phase_and_prevents_duplicate(fishing_db, phase):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.supply_journal()
+        _, expected, body = ledger.prepare(context=shop_context(), site_id="west-shore", model_id="ngw",
+                                           basis=store.basis()["inventory"], **SETTINGS)
+        with sqlite3.connect(persistence.DB_FILE) as conn:
+            saved = json.loads(conn.execute("SELECT fishing_native_supply FROM identity_runtime_state WHERE send_as_id=?",
+                                            (h.identity_id,)).fetchone()[0])
+        assert saved["operation_id"] == body["operationId"] and saved["phase"] == "pending"
+        if phase != "pending":
+            ledger.accept(expected, shop_context(rice=20, stone=4300))
+        if phase == "accounted":
+            assert store.project_supply()
+            assert store.project_supply() is False
+
+    asyncio.run(scenario())
+    original = deepcopy(h.identity[supply.STATE_KEY])
+    state_module._meta_state["identity_states"] = {}
+    assert persistence.load_state()
+    assert state_module.get_identity_state(h.identity_id)[supply.STATE_KEY] == original
+    supply.validate(original)
+    assert original["phase"] == phase
+
+
+@pytest.mark.parametrize("failure", ["timeout", "foreign", "disabled", "save", "context_read"])
+def test_native_supply_flow_cannot_cast_or_duplicate_purchase(fishing_db, monkeypatch, failure):
+    h = fishing_db
+    calls, allowed = [], [True]
+
+    def transport(request):
+        action = request["safe_summary"]["endpoint"]
+        calls.append(action)
+        if action == "context":
+            return shop_context()
+        assert action == "buy-bait"
+        assert h.identity[supply.STATE_KEY]["phase"] == "pending"
+        assert h.identity[native.STATE_KEY] == {}
+        if failure == "timeout":
+            raise TimeoutError("response lost")
+        result = shop_context(rice=20, stone=4300)
+        if failure == "foreign":
+            result["playerId"] = 3
+        elif failure == "context_read":
+            result = {"ok": True}
+        elif failure == "disabled":
+            allowed[0] = False
+        elif failure == "save":
+            monkeypatch.setattr(persistence, "save_state", lambda: False)
+        return result
+
+    async def run():
+        return await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="rice", transport=transport, operation_check=lambda: allowed[0],
+            supply_settings=SETTINGS,
+        )
+    result = asyncio.run(run())
+    assert calls == ["context", "buy-bait"] and not result.get("committed")
+    if failure == "disabled":
+        assert result["supply_committed"] and h.identity[supply.STATE_KEY]["phase"] == "accounted"
+        return
+    assert h.identity[supply.STATE_KEY]["phase"] == "pending"
+    original = deepcopy(h.identity[supply.STATE_KEY])
+    calls.clear()
+    result = asyncio.run(run())
+    assert not calls and not result.get("committed") and not result.get("supply_committed")
+    assert h.identity[supply.STATE_KEY] == original
+
+
+def test_supply_projection_save_failure_preserves_confirmed_receipt(fishing_db, monkeypatch):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.supply_journal()
+        _, expected, _ = ledger.prepare(context=shop_context(), site_id="west-shore", model_id="ngw",
+                                        basis=store.basis()["inventory"], **SETTINGS)
+        ledger.accept(expected, shop_context(rice=20, stone=4300))
+        from model.features import fishing_runtime as fishing
+        inventory = deepcopy(fishing.get_storage_bag_records())
+        monkeypatch.setattr(persistence, "save_state", lambda: False)
+        with pytest.raises(ProtocolError, match="projection_save_failed"):
+            store.project_supply()
+        assert fishing.get_storage_bag_records() == inventory
+        assert h.identity[supply.STATE_KEY]["phase"] == "confirmed"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["removed", "replaced", "rebound"])
+def test_supply_old_owner_cannot_confirm_or_project(fishing_db, change):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.supply_journal()
+        _, expected, _ = ledger.prepare(context=shop_context(), site_id="west-shore", model_id="ngw", **SETTINGS)
+        lifecycle.invalidate(h, change)
+        original = deepcopy(state_module._meta_state)
+        with pytest.raises(ProtocolError):
+            ledger.accept(expected, shop_context(rice=20, stone=4300))
+        with pytest.raises(ProtocolError):
+            store.project_supply()
+        assert state_module._meta_state == original
+
+    asyncio.run(scenario())
+
+
+def test_previous_accounted_rod_does_not_mark_a_later_failed_request_successful(fishing_db):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait", projection_basis=store.basis())
+        ledger.accept(query, response(settled=True))
+        store.project(1700000000)
+        assert h.identity[native.STATE_KEY]["phase"] == "accounted"
+        def transport(request):
+            raise TimeoutError("next context unavailable")
+        result = await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="bait", transport=transport, operation_check=lambda: True,
+        )
+        assert not result.get("committed") and not result["ok"]
+    asyncio.run(scenario())
+
+
+def test_supply_cancel_drains_inflight_purchase_and_projects_exactly_once(fishing_db):
+    h = fishing_db
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def transport(request):
+        action = request["safe_summary"]["endpoint"]
+        calls.append(action)
+        if action == "context":
+            return shop_context()
+        assert action == "buy-bait"
+        entered.set()
+        assert release.wait(5)
+        return shop_context(rice=20, stone=4300)
+
+    async def scenario():
+        before_timer = h.identity["next_fishing_time"]
+        task = asyncio.create_task(run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="rice", transport=transport, operation_check=lambda: True,
+            supply_settings=SETTINGS,
+        ))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(.01)
+        assert not task.done()
+        release.set()
+        with pytest.raises(MiniAppFlowCancelled) as caught:
+            await task
+        assert caught.value.result["supply_committed"]
+        assert h.identity["next_fishing_time"] == before_timer
+        assert h.identity[supply.STATE_KEY]["phase"] == "accounted"
+        assert h.identity[native.STATE_KEY] == {}
+        assert calls == ["context", "buy-bait"]
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY])
+def test_supply_and_cast_mutations_are_mutually_exclusive(fishing_db, key):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        cast, supplies = store.journal(), store.supply_journal()
+        def buy():
+            return supplies.prepare(context=shop_context(), site_id="west-shore", model_id="ngw", **SETTINGS)
+        if key == native.STATE_KEY:
+            start(cast)
+            with pytest.raises(ProtocolError, match="other_operation_unresolved"):
+                buy()
+        else:
+            buy()
+            with pytest.raises(ProtocolError, match="other_operation_unresolved"):
+                start(cast)
+    asyncio.run(scenario())
 
 
 def test_store_persists_mutation_before_worker_receives_permission(fishing_db, monkeypatch):

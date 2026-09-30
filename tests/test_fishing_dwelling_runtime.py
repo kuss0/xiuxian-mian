@@ -11,6 +11,7 @@ from model.features.miniapp_common import MiniAppFlowCancelled
 from model import ui
 import test_fishing_caller_lifecycle as lifecycle
 from test_fishing_dwelling_journal import Store, start
+from model.features import fishing_dwelling_supply as supply
 
 
 fishing_env = lifecycle.fishing_env
@@ -34,6 +35,7 @@ def test_native_requires_explicit_canary_and_keeps_both_existing_locks(fishing_e
         assert kwargs["player_id"] == h.session["player_id"]
         assert kwargs["site_id"] == "west-shore" and kwargs["model_id"] == "ngw"
         assert kwargs["bait_choice"] == "凡饵"
+        assert kwargs["update_schedule"] is False
         assert kwargs["operation_check"]()
         return {"ok": True, "committed": True, "status": "settled", "data": {"catches": {"fish": 2}}}
 
@@ -120,3 +122,39 @@ def test_canary_cancelled_result_does_not_emit_a_second_summary(fishing_env, mon
 def test_manual_canary_alias_is_not_in_scheduled_action_list(fishing_env):
     assert ui._cave_public_entry_runner(fishing_env.identity_id, "fishing_native_canary") is not None
     assert "fishing_native_canary" not in ui._cave_public_actions_from_config()
+
+
+def test_pending_supply_also_blocks_legacy_routes(fishing_env, monkeypatch):
+    h = fishing_env
+    configure(h)
+    h.identity[supply.STATE_KEY] = {"invalid": True}
+    assert native.pending(h.identity)
+    assert fishing.recover_fishing_result_pending(h.identity_id)["extra"]["status"] == "native_operation_pending"
+    worker = AsyncMock()
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
+    assert not result["ok"]
+    h.flow.assert_not_awaited()
+    h.external.assert_not_awaited()
+
+
+def test_supply_keeps_original_config_and_is_not_a_completed_rod(fishing_env, monkeypatch):
+    h = fishing_env
+    configure(h)
+    h.identity.update(fishing_auto_buy_bait_enabled=True, fishing_auto_buy_bait_count=11,
+                      fishing_auto_chum_enabled=True, fishing_chum_names='["米糠小窝"]')
+    before_timer = h.identity["next_fishing_time"]
+
+    async def flow(identity_id, **kwargs):
+        assert kwargs["supply_settings"] == {"bait_choice": "凡饵", "auto_buy": True, "buy_count": 11, "chum_names": ("米糠小窝",)}
+        assert kwargs["operation_check"]()
+        h.identity["fishing_auto_buy_bait_count"] = 8
+        assert not kwargs["operation_check"]()
+        return {"status": "supplied", "supply_committed": True, "data": {"supply_action": "buy-bait"}}
+
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", flow)
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url, native_canary=True))
+    assert not result["ok"] and result["extra"]["supply_committed"]
+    assert not result["extra"]["committed"]
+    assert h.identity["next_fishing_time"] == before_timer
+    h.daily.assert_not_awaited()

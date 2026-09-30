@@ -109,10 +109,9 @@ Additional enabled-identity preflight, all four reads HTTP 200 each:
 
 ## Required Before Rollout Completion
 
-1. Migrate `buy-bait`/`chum` with the existing auto-buy settings and operation-ID
-   receipts. Current runner deliberately exposes neither purchase endpoint;
-   all enabled accounts lack bait. Do not silently ignore the auto-buy setting
-   or call this finished automation. Obtain actual shop-cost/response evidence.
+1. Validate the implemented `buy-bait`/`chum` receipts against one controlled
+   live supply response. Offline implementation and cost evidence are complete;
+   purchase acceptance is not implied by successful context reads.
 2. Deploy only the validated canary surface, preserve a backup and rollback
    boundary. A rollback after a live mutation must retain the native ledger;
    older production code does not understand its unresolved records.
@@ -129,16 +128,52 @@ Deferred monitoring debt: the 18:57:59 journal line about an unowned external
 Xuangu question timing out caused a generic observer warning. It was not our
 identity's failed attempt. No shared observer patch was applied in this batch.
 
+## Supply Batch and Canary Boundary
+
+- Single-cast persistence batch committed/pushed as `1c9dfd07` on the Lab branch.
+- `fishing_dwelling_supply.py` validates actual shop prices, materials, counts,
+  eligibility, active chum and daily limits. It reserves the total planned bait
+  purchases plus chum cost before the first purchase. It does not reuse legacy
+  price constants or purchase rods or arbitrary materials.
+- A separate bounded `fishing_native_supply` record saves the exact operation ID,
+  owner, placement, before/after evidence and inventory basis. Unknown replies
+  remain pending without purchase replay, cast, legacy fallback or ledger erasure.
+- Direct scoped purchase confirmation requires the exact affected resource
+  changes; chum also requires the daily counter and active effect. Inventory
+  projection and its accounted marker share one checked save. Restart, owner
+  replacement, save failure and in-flight cancellation are covered with SQLite.
+- Each invocation performs at most one supply action or one cast. Manual canary
+  invocations retain the original next-fishing timestamp. A supplied result is
+  not a completed rod. An old accounted rod cannot mark a later failed request
+  as successful. Ordinary scheduled routing remains unchanged before acceptance.
+- Read-only shop evidence:
+  `/root/xiuxian-native-fishing-shop-7538826434-20260930.json` (all four HTTP 200).
+  Actual configured plan: spirit-rice bait, auto-buy 20, rice chum. The first
+  purchases would be 20 spirit-rice bait (700 stones) and 20 plain bait (240
+  stones), then rice chum (2 plain bait plus 30 stones). These are observed
+  prices, not hard-coded future prices. Each action re-reads the live context.
+- Existing enabled identities are due around 2026-10-01 00:00. A manual canary
+  must not pull those timers forward, enable other identities or interrupt WA's
+  01:29 wild-training preparation. Supply/cast locks remain shared with production.
+- Rollback: before any gameplay mutation, return to `8a04ebaa` if necessary.
+  After a mutation, retain both native records and their recovery-aware code;
+  never restore a stale DB backup or an old sender over unresolved operations.
+  Disable further canary invocation and investigate the retained receipt first.
+
 ## Verification
 
 - Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
 - This batch: 194 native tests after unsent-intent compensation.
 - Expanded fishing/persistence/state/cave/UI run: 2144 passed, 264 subtests,
   including the final two compensation cases (33.42 seconds).
+- Supply batch plus final timer boundary: expanded suite 2200 passed,
+  264 subtests (39.13 seconds). Live shop fixture validates without mutations.
 - JavaScript syntax, Python compileall and diff whitespace checks passed.
 - Isolated protocol/journal imports load no `model.runtime`, `model.state`, `model.config`,
   `requests` or `telethon`.
 - Production observer remained ok through 19:59; PID `3597994`, NRestarts 0.
+- Before canary deployment, 20:55 observer and watchdog were both ok; the main
+  checkout remained clean at `8a04ebaa`, with no pending tasks.
 - 8-hour defensive preflight: pending queue empty. WA wild training due
   2026-10-01 01:29 CST, not yet in its Tianxing preparation window. Listener
   sidecar inactive remains a known watch item; main listener is active.

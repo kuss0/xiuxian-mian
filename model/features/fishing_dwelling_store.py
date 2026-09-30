@@ -10,6 +10,7 @@ from .. import persistence
 from .miniapp_common import MiniAppIdentityOwner
 from .fishing_dwelling_journal import NativeCastJournal, validate
 from .fishing_dwelling_protocol import ProtocolError
+from . import fishing_dwelling_supply as supply
 
 
 STATE_KEY = "fishing_native_operation"
@@ -71,31 +72,38 @@ class NativeFishingStore:
         return self._on_loop(load)
 
     def compare_and_save(self, expected, updated):
+        return self._compare_and_save(STATE_KEY, validate, expected, updated)
+
+    def _compare_and_save(self, key, validator, expected, updated):
         expected, updated = deepcopy(expected), deepcopy(updated)
 
         def save():
             self._check()
-            owned = validate(updated if updated != {} else expected)
-            if updated == {} and owned["phase"] != "cast_pending":
+            owned = validator(updated if updated != {} else expected)
+            if updated == {} and owned["phase"] != ("cast_pending" if key == STATE_KEY else "pending"):
                 raise ProtocolError("cannot_clear_native_session")
+            other_key, other_validator = (supply.STATE_KEY, supply.validate) if key == STATE_KEY else (STATE_KEY, validate)
+            other = self.owner.identity.get(other_key, {})
+            if other != {} and other_validator(other)["phase"] != "accounted":
+                raise ProtocolError("native_other_operation_unresolved")
             if (owned["identity_id"], owned["account_id"], owned["player_id"]) != (
                     self.owner.identity_id, self.owner.account_id, self.player_id):
                 raise ProtocolError("native_record_owner_mismatch")
-            current = self.owner.identity.get(STATE_KEY, {})
+            current = self.owner.identity.get(key, {})
             if current != expected:
                 raise ProtocolError("native_record_changed")
-            self.owner.identity[STATE_KEY] = deepcopy(updated)
+            self.owner.identity[key] = deepcopy(updated)
             persistence.mark_dirty()
             try:
                 if persistence.save_state() is not True:
                     raise ProtocolError("native_save_failed")
             except BaseException:
-                if self.owner.is_current() and self.owner.identity.get(STATE_KEY) == updated:
-                    self.owner.identity[STATE_KEY] = deepcopy(expected)
+                if self.owner.is_current() and self.owner.identity.get(key) == updated:
+                    self.owner.identity[key] = deepcopy(expected)
                     persistence.mark_dirty()
                 self.closed = True
                 raise
-            if not self._owned() or self.owner.identity.get(STATE_KEY) != updated:
+            if not self._owned() or self.owner.identity.get(key) != updated:
                 self.closed = True
                 raise ProtocolError("native_owner_changed")
             return True
@@ -106,6 +114,61 @@ class NativeFishingStore:
         return NativeCastJournal(owner=(self.owner.identity_id, self.owner.account_id, self.player_id),
                                  read_current=self.read, compare_and_save=self.compare_and_save,
                                  is_owner_current=self.is_current)
+
+    def read_supply(self):
+        def read():
+            self._check()
+            return deepcopy(self.owner.identity.get(supply.STATE_KEY, {}))
+        return self._on_loop(read)
+
+    def supply_journal(self):
+        return supply.SupplyJournal(
+            owner=(self.owner.identity_id, self.owner.account_id, self.player_id),
+            read_current=self.read_supply, is_owner_current=self.is_current,
+            compare_and_save=lambda expected, updated: self._compare_and_save(supply.STATE_KEY, supply.validate, expected, updated),
+        )
+
+    def project_supply(self):
+        """The captured HTTP receipt, not a later inventory query, closes supply."""
+        def apply():
+            from . import fishing_runtime as fishing, storage_bag
+            self._check()
+            record = deepcopy(self.read_supply())
+            supply.validate(record)
+            if (record["identity_id"], record["account_id"], record["player_id"]) != (
+                    self.owner.identity_id, self.owner.account_id, self.player_id):
+                raise ProtocolError("native_record_owner_mismatch")
+            if record["phase"] == "accounted":
+                return False
+            if record["phase"] != "confirmed" or record["basis"] != self.basis()["inventory"]:
+                raise ProtocolError("native_supply_projection_held")
+            before_shop, after_shop = supply.parse_shop(record["before"]), supply.parse_shop(record["after"])
+            affected = supply.supply_deltas(before_shop, record["action"], record["payload"])
+            before = deepcopy(self.owner.identity)
+            inventory = deepcopy(fishing.get_storage_bag_records())
+            records = deepcopy(inventory)
+            try:
+                for item_id in affected:
+                    item = after_shop["resources"][item_id]
+                    current = ((records.get(str(self.owner.identity_id)) or {}).get("items") or {}).get(item["name"], 0)
+                    storage_bag._adjust_storage_bag_identity_item(
+                        records, self.owner.identity_id, item["name"], item["count"] - int(current))
+                fishing.set_storage_bag_records(records)
+                self.owner.identity[supply.STATE_KEY] = {**record, "phase": "accounted", "revision": record["revision"] + 1}
+                supply.validate(self.owner.identity[supply.STATE_KEY])
+                persistence.mark_dirty()
+                if persistence.save_state() is not True:
+                    raise ProtocolError("native_supply_projection_save_failed")
+            except BaseException:
+                if self.owner.is_current():
+                    self.owner.identity.clear()
+                    self.owner.identity.update(before)
+                    fishing.set_storage_bag_records(inventory)
+                    persistence.mark_dirty()
+                self.closed = True
+                raise
+            return True
+        return self._on_loop(apply)
 
     def basis(self):
         def capture():

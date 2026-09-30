@@ -11,7 +11,7 @@ from . import fishing_dwelling_protocol as protocol
 
 
 API_PATH = "/api/miniapp/xianxia-dwelling/fishing/"
-ENDPOINTS = ("context", "state", "cast", "hook", "checkpoint", "fight")
+ENDPOINTS = ("context", "state", "cast", "hook", "checkpoint", "fight", "buy-bait", "chum")
 
 
 def build_adapter():
@@ -30,8 +30,9 @@ class _RequestFailed(Exception):
 
 def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bait_id,
                             transport, operation_check, monotonic=time.monotonic, sleeper=time.sleep,
-                            capture_sink=None, capture_source="", request_budget=None, basis_provider=None, bait_choice=""):
-    """No blind retries, purchases, next cast or legacy fallback.
+                            capture_sink=None, capture_source="", request_budget=None, basis_provider=None, bait_choice="",
+                            supply_journal=None, supply_settings=None):
+    """One supply or cast, without blind retries, next cast or legacy fallback.
 
     The production caller must hold its public-entry/fishing locks, supply a
     verified selected player and drain this blocking worker on cancellation.
@@ -46,15 +47,18 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
     def finish(status, error=""):
         record = journal.record
         settled = bool(record and record["phase"] == "settled")
+        supply = supply_journal.record if supply_journal is not None else {}
         return {"ok": settled and status == "settled", "status": status,
                 "error": sanitize_webapp_secret_text(str(error)), "retry_after_sec": retry_after,
                 "data": {"settled_count": 1 if settled else 0,
                          "catches": deepcopy(record["catches"]) if settled else {},
-                         "context": deepcopy(context)},
-                "outcome_unknown": bool(record and record["pending_action"]), "events": events}
+                         "context": deepcopy(context), "supply_action": supply.get("action", "")},
+                "outcome_unknown": bool(record and record["pending_action"] or supply.get("phase") == "pending"), "events": events}
 
     def check():
         journal._check()
+        if supply_journal is not None:
+            supply_journal._check()
         return operation_check() is True
 
     def wait(delay):
@@ -67,12 +71,13 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
         if monotonic() - start + 1e-9 < delay:
             raise protocol.ProtocolError("native_wait_incomplete")
 
-    def request(action, payload, query=None, *, hook_clock=None):
+    def request(action, payload, query=None, *, hook_clock=None, supply_expected=None):
         nonlocal context, retry_after
         expected = deepcopy(journal.record)
 
         def current():
-            if not check() or expected != journal.record:
+            if (not check() or expected != journal.record
+                    or supply_expected is not None and supply_expected != supply_journal.record):
                 return False
             return hook_clock is None or protocol.next_session_action(
                 expected["remote"], hook_clock, monotonic())[0] == "hook"
@@ -97,11 +102,16 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                        "error_type": result.error_type, "attempts": result.attempts})
         retry_after = max(retry_after, float(result.retry_after_sec or 0))
         if not result.ok:
+            if (supply_expected is not None and result.attempts == 0
+                    and result.error_type in {"preparation", "request_budget", "operation_cancelled"}):
+                supply_journal.cancel_undispatched(supply_expected)
             if (query is not None and query.action != "state" and result.attempts == 0
                     and result.error_type in {"preparation", "request_budget", "operation_cancelled"}):
                 journal.cancel_undispatched(query)
             raise _RequestFailed(result)
         data = result.data
+        if supply_expected is not None:
+            supply_journal.accept(supply_expected, data)
         if query is not None:
             # Persist a confirmed response even if the UI toggled automation off
             # while HTTP was in flight. Owner replacement still rejects it.
@@ -115,6 +125,10 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
     try:
         if not check():
             return finish("cancelled")
+        if supply_journal is not None and supply_journal.record:
+            phase = supply_journal.record["phase"]
+            if phase != "accounted":
+                return finish("supplied" if phase == "confirmed" else "supply_pending")
         if journal.record == {} or journal.record["phase"] == "accounted":
             initial, _, _, _ = request("context", {"siteId": site_id})
             if not check():
@@ -124,6 +138,16 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 if selected is None:
                     raise protocol.ProtocolError("fishing_bait_unavailable")
                 bait_id = selected["itemId"]
+            if supply_settings is not None:
+                if supply_journal is None:
+                    raise protocol.ProtocolError("native_supply_store_missing")
+                action, expected_supply, body = supply_journal.prepare(
+                    context=initial, site_id=site_id, model_id=model_id,
+                    basis=basis_provider()["inventory"] if basis_provider is not None else "", **supply_settings,
+                )
+                if action:
+                    request(action, body, supply_expected=expected_supply)
+                    return finish("supplied")
             query, body = journal.start(context=initial, site_id=site_id, model_id=model_id, bait_id=bait_id,
                                        projection_basis=basis_provider() if basis_provider is not None else None)
             data, parsed, start, received = request("cast", body, query)
@@ -174,16 +198,19 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 raise protocol.ProtocolError("native_unhandled_phase")
         return finish("wait_state")
     except _RequestFailed as exc:
-        return finish("operation_pending" if journal.record and journal.record["pending_action"] else "request_failed",
+        return finish("supply_pending" if supply_journal is not None and supply_journal.record.get("phase") == "pending"
+                      else "operation_pending" if journal.record and journal.record["pending_action"] else "request_failed",
                       exc.result.error)
     except Exception as exc:
-        return finish("operation_pending" if journal.record and journal.record["pending_action"] else "blocked", exc)
+        return finish("supply_pending" if supply_journal is not None and supply_journal.record.get("phase") == "pending"
+                      else "operation_pending" if journal.record and journal.record["pending_action"] else "blocked", exc)
 
 
 async def run_native_fishing_production_flow(identity_id, *, player_id, token, init_data,
                                              site_id, model_id, bait_id, operation_check,
                                              transport=None, sleeper=None, monotonic=time.monotonic,
-                                             capture_sink=None, capture_source="", bait_choice=""):
+                                             capture_sink=None, capture_source="", bait_choice="", supply_settings=None,
+                                             update_schedule=True):
     """Caller supplies verified entry ownership and holds the fishing/public locks."""
     from .fishing_dwelling_store import NativeFishingStore
     from .miniapp_common import MiniAppFlowCancelled, build_pooled_miniapp_transport, run_miniapp_blocking_flow
@@ -200,6 +227,7 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
             operation_check=operation.check, monotonic=monotonic, sleeper=operation.sleep,
             capture_sink=capture_sink, capture_source=capture_source,
             bait_choice=bait_choice,
+            supply_journal=store.supply_journal(), supply_settings=supply_settings,
         )
 
     try:
@@ -210,11 +238,13 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
     except Exception as exc:
         result = {"ok": False, "status": "blocked", "error": sanitize_webapp_secret_text(str(exc)), "data": {}}
     try:
+        supply_record = store.read_supply()
+        if supply_record and supply_record["phase"] == "confirmed":
+            store.project_supply()
+            result["supply_committed"] = True
         record = store.read()
         if record and record["phase"] == "settled" and record["settlement_quota"] is not None:
-            store.project(time.time(), update_schedule=cancelled is None and operation_check() is True)
-            result["committed"] = True
-        elif record and record["phase"] == "accounted":
+            store.project(time.time(), update_schedule=update_schedule and cancelled is None and operation_check() is True)
             result["committed"] = True
     except Exception as exc:
         result.update(ok=False, status="persistence_pending", error=sanitize_webapp_secret_text(str(exc)), committed=False)

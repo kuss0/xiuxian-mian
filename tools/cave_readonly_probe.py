@@ -43,6 +43,45 @@ def load_owner(root, identity):
     return owner, meta["accounts"][str(owner)], meta["miniapp_auto_config"]
 
 
+def fishing_context_report(context):
+    """Allowlist supply facts without retaining credentials or unknown fields."""
+    if not isinstance(context, dict):
+        raise ValueError("invalid_fishing_context")
+
+    def fields(value, keys):
+        if not isinstance(value, dict):
+            raise ValueError("invalid_fishing_shop_row")
+        return {key: value[key] for key in keys if key in value}
+
+    def rows(value, keys, *, costs=False):
+        if not isinstance(value, list) or len(value) > 100:
+            raise ValueError("invalid_fishing_shop_rows")
+        result = []
+        for row in value:
+            item = fields(row, keys)
+            if costs and "cost" in row:
+                item["cost"] = rows(row["cost"], ("itemId", "name", "qty", "owned"))
+            result.append(item)
+        return result
+
+    report = fields(context, ("enabled", "unavailable", "quota", "conflict", "rod", "serverNow"))
+    if "baits" in context:
+        report["baits"] = rows(context["baits"], ("itemId", "name", "count", "unlocked"))
+    if "shop" in context:
+        shop = context["shop"]
+        report["shop"] = fields(shop, ("castActive",))
+        if "activeChum" in shop:
+            report["shop"]["activeChum"] = (None if shop["activeChum"] is None else
+                                             fields(shop["activeChum"], ("key", "name", "remaining")))
+        for key, keys in (
+            ("baits", ("itemId", "name", "count", "unlocked")),
+            ("chums", ("key", "name", "usedToday", "remainingToday", "dailyLimit", "affordable", "casts")),
+        ):
+            if key in shop:
+                report["shop"][key] = rows(shop[key], keys, costs=True)
+    return report
+
+
 async def probe(args, report):
     root = args.project_root.resolve()
     owner, account, config = load_owner(root, args.identity)
@@ -133,15 +172,7 @@ async def probe(args, report):
         if args.read == "fishing_context":
             context = result.get("context") or {}
             report["context_keys"] = sorted(context)
-            report["context"] = {key: context[key] for key in ("enabled", "unavailable", "quota", "conflict", "rod") if key in context}
-            if "baits" in context:
-                baits = context["baits"]
-                if not isinstance(baits, list) or any(not isinstance(bait, dict) for bait in baits):
-                    raise ValueError("invalid_fishing_baits")
-                report["context"]["baits"] = [
-                    {key: bait[key] for key in ("itemId", "name", "count", "unlocked") if key in bait}
-                    for bait in baits
-                ]
+            report["context"] = fishing_context_report(context)
             remote = result.get("session")
             report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId")} if isinstance(remote, dict) else None
         else:
