@@ -258,13 +258,17 @@ def validate_settlement_resources(resources):
 class ServerClock:
     stamp_ms: float
     received_monotonic: float
+    round_trip_ms: float = 0
 
     @classmethod
     def capture(cls, stamp_ms, started_monotonic, received_monotonic):
         _number(stamp_ms, "server_time", 1, 10**15)
         _number(started_monotonic, "clock_start", 0, 10**12)
         _number(received_monotonic, "clock_end", started_monotonic, 10**12)
-        return cls(stamp_ms + min(250, (received_monotonic - started_monotonic) * 500), received_monotonic)
+        round_trip_ms = (received_monotonic - started_monotonic) * 1000
+        # The browser's 250 ms cap leaves a multi-second VPS response stale.
+        # Use the midpoint estimate, retaining a full RTT as the hook budget.
+        return cls(stamp_ms + round_trip_ms / 2, received_monotonic, round_trip_ms)
 
     def now_ms(self, monotonic_now):
         _number(monotonic_now, "clock_now", self.received_monotonic, 10**12)
@@ -283,6 +287,8 @@ def next_session_action(session, clock, monotonic_now):
         return "state", 0
     if now_ms < session["biteAt"]:
         return "wait", (session["biteAt"] - now_ms) / 1000
+    if now_ms + clock.round_trip_ms >= session["expiresAt"]:
+        return "state", 0
     return "hook", 0
 
 

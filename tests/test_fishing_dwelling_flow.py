@@ -60,6 +60,29 @@ def test_full_round_accepts_official_checkpoint_reply_without_echo():
     assert calls.count("checkpoint") >= 2
 
 
+def test_slow_asymmetric_transport_can_still_hook_inside_four_second_window():
+    store = Store()
+    window = {}
+    def transport(action, request, clock):
+        if action == "cast":
+            clock.sleep(.950)
+            stamp = 10000 + clock.now * 1000
+            window.update(biteAt=stamp + 15000, expiresAt=stamp + 19000)
+            data = response()
+            data["session"].update(serverNow=stamp, **window)
+            clock.sleep(2.312)
+            return data
+        if action == "hook":
+            clock.sleep(2.7)
+            received = 10000 + clock.now * 1000
+            assert window["biteAt"] <= received < window["expiresAt"]
+            clock.sleep(.68)
+            return fighting()
+        return {"context": context(), "checkpoint": fighting(), "fight": response(settled=True)}[action]
+    result, calls = run(store, transport=transport)
+    assert result["ok"] and calls.count("cast") == calls.count("hook") == calls.count("fight") == 1
+
+
 @pytest.mark.parametrize("failed", ["cast", "hook", "checkpoint", "fight"])
 @pytest.mark.parametrize("failure", ["timeout", "429", "unadvanced"])
 def test_uncertain_mutation_never_retries_or_recasts(failed, failure):

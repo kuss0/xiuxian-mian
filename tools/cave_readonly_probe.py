@@ -83,6 +83,13 @@ def fishing_context_report(context):
     return report
 
 
+def fishing_session_timing_report(remote):
+    return {
+        key: remote[key] for key in ("serverNow", "startedAt", "biteAt", "expiresAt")
+        if type(remote.get(key)) is int and 0 < remote[key] < 10**15
+    }
+
+
 def fishing_state_scope(root, identity, owner, player):
     with sqlite3.connect(f"file:{root}/data/state/chaogu_state.db?mode=ro", uri=True) as db:
         row = db.execute("SELECT fishing_native_operation FROM identity_runtime_state WHERE send_as_id=?", (identity,)).fetchone()
@@ -191,6 +198,7 @@ async def probe(args, report):
             remote = result.get("session")
             report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId", "mode", "result")} if isinstance(remote, dict) else None
             if isinstance(remote, dict):
+                report["session_timing"] = fishing_session_timing_report(remote)
                 session_id = remote.get("sessionId")
                 report["session_id_shape"] = {"type": type(session_id).__name__, "length": len(str(session_id)),
                                               "punctuation": sorted(set(re.sub(r"[a-zA-Z0-9]", "", str(session_id))))}

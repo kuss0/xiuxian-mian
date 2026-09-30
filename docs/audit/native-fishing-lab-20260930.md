@@ -290,6 +290,45 @@ Acceptance fixes now tested:
   native routing are still held. A new single-rod acceptance is required after
   the checkpoint fix, never an automatic retry of the previous failed rod.
 
+### 00:45 Timing Evidence and Lab Hold (October 1)
+
+- `f69f694e` was deployed/pushed at 00:08:00, PID `3721827`, NRestarts 0.
+  The next invocation only applied the new day's configured rice chum, costing
+  2 plain bait and 30 stones. It did not cast. The following invocation cast
+  exactly one rod and received a confirmed `missed/timeout` from `hook`, before
+  any checkpoint/fight. It accounted `水草团x1`, quota 1/5, plain bait 16,
+  spirit-rice bait 17 and chum remaining 3. No pending native receipt remains.
+- This does **not** validate the checkpoint fix against a real complete catch.
+  No further casts will be made during this observation window. Retain the four
+  remaining daily rods instead of repeating acceptance failures.
+- The original-session read confirms biteAt `1790784784356`, expiresAt
+  `1790784788356`: a 4000 ms window. The captured hook dispatch was about 2024 ms
+  after biteAt, with 3383 ms HTTP elapsed; the response arrived 1407 ms after
+  expiry and explicitly reported timeout. These are client dispatch/receive
+  times, not a claim to know the exact server arrival time.
+- The official browser clock caps RTT compensation at 250 ms. With this cast's
+  3262 ms RTT, that leaves a stale estimate on the VPS. Lab now uses the RTT
+  midpoint estimate and requires a full observed RTT to fit before expiry;
+  otherwise only original-session state reading is allowed. This is an estimate
+  under asymmetric latency, not a guarantee against network stalls or early
+  arrival, and remains **Lab-only**, not deployed or live accepted.
+- Added numeric-only timing fields to the explicit read-only probe; no tokens,
+  session IDs or arbitrary server fields are added to this report. Evidence:
+  `/root/xiuxian-native-fishing-checkpoint-fix-canary-20261001.json` (supply),
+  `/root/xiuxian-native-fishing-checkpoint-fix-rod-20261001.json` (one rod),
+  `/root/xiuxian-native-fishing-hook-settlement-20261001.json`, and
+  `/root/xiuxian-native-fishing-hook-timing-20261001.json`.
+- Lab verification: 137 focused tests; expanded suite 2280 passed plus 264
+  subtests, including asymmetric slow transport and late-hook refusal.
+  Python compile and whitespace checks passed.
+- Live watch: xuruode6 initial-entry timeouts at 00:06/00:08 recovered naturally
+  at 00:40:13 with a confirmed eight-hour yuanying departure. No manual resend.
+  Other transient reads remain visible. Wisemole's 00:29 deep-start timeout is
+  mutation-unknown and must be reconciled by its existing status-first path,
+  not a repeated start. Next observation is its 00:59 recheck, then WA's
+  01:19 preparation for 01:29 wild training. Other identities are returning real
+  wild-training results, not only process heartbeats.
+
 - Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
 - This batch: 194 native tests after unsent-intent compensation.
 - Expanded fishing/persistence/state/cave/UI run: 2144 passed, 264 subtests,
