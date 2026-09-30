@@ -88,8 +88,11 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
     else:
         data = result.get("data") or {}
         catches = data.get("catches") if isinstance(data.get("catches"), dict) else {}
+        rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
         reason = str(result.get("error") or result.get("status") or "unknown")
         message = ("洞府原生钓鱼：" + (fishing._format_count_map(catches) if catches else "空竿")) if committed else "洞府原生钓鱼未完成：" + reason
+        if committed and rewards:
+            message += "；额外 " + fishing._format_count_map(rewards)
         if supplied:
             message = "洞府钓鱼补给已确认：" + str(data.get("supply_action") or "补给") + "，未抛竿"
         if not committed and can_continue() and cancelled is None:

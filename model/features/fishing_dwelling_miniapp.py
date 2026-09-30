@@ -8,6 +8,7 @@ from ..webapp_core import (
     build_miniapp_http_request, execute_miniapp_http_request, sanitize_webapp_secret_text,
 )
 from . import fishing_dwelling_protocol as protocol
+from .fishing_dwelling_journal import settlement_complete
 
 
 API_PATH = "/api/miniapp/xianxia-dwelling/fishing/"
@@ -52,6 +53,7 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 "error": sanitize_webapp_secret_text(str(error)), "retry_after_sec": retry_after,
                 "data": {"settled_count": 1 if settled else 0,
                          "catches": deepcopy(record["catches"]) if settled else {},
+                         "rewards": deepcopy((record.get("settlement_resources") or {}).get("rewards", {})) if settled else {},
                          "context": deepcopy(context), "supply_action": supply.get("action", "")},
                 "outcome_unknown": bool(record and record["pending_action"] or supply.get("phase") == "pending"), "events": events}
 
@@ -152,14 +154,14 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                                        projection_basis=basis_provider() if basis_provider is not None else None)
             data, parsed, start, received = request("cast", body, query)
         else:
-            if journal.record["phase"] == "settled" and journal.record["settlement_quota"] is not None:
+            if journal.record["phase"] == "settled" and settlement_complete(journal.record):
                 return finish("settled")
             settlement_read = journal.record["phase"] == "settled"
             query, body = journal.recovery()
             data, parsed, start, received = request("state", body, query)
         for _ in range(8):
             if journal.record["phase"] == "settled":
-                if journal.record["settlement_quota"] is None:
+                if not settlement_complete(journal.record):
                     if settlement_read or not check():
                         return finish("settlement_context_pending")
                     settlement_read = True
@@ -243,7 +245,7 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
             store.project_supply()
             result["supply_committed"] = True
         record = store.read()
-        if record and record["phase"] == "settled" and record["settlement_quota"] is not None:
+        if record and record["phase"] == "settled" and settlement_complete(record):
             store.project(time.time(), update_schedule=update_schedule and cancelled is None and operation_check() is True)
             result["committed"] = True
     except Exception as exc:

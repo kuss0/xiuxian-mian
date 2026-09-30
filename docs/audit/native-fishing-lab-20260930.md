@@ -5,8 +5,8 @@
 Worktree: `/root/xiuxian-native-fishing-20260930`.
 Branch: `lab/native-fishing-20260930`, base `8a04ebaa`.
 
-The branch now contains a complete single-round worker, a version-2 native
-journal, checked SQLite persistence, atomic result accounting and an explicit
+The branch contains a single-round worker, checked SQLite persistence,
+atomic result accounting and an explicit
 public-entry canary action. **The canary surface was deployed as `4fbefa7f`
 at 21:02 CST; ordinary scheduled production fishing has not been migrated.**
 
@@ -19,6 +19,10 @@ The cast exposed a numeric-session-ID parsing defect and timed out without a
 catch. Fix `a01fa46e` was deployed at 21:50:54 CST; a single scoped state query
 then accounted that original empty catch. It is not a successful end-to-end
 fishing acceptance; see below.
+
+Current Lab-only follow-up adds a version-3 settlement resource receipt; this
+follow-up is not deployed. Production retains version-2 cast records and the
+`a01fa46e` runtime (`810b7eb9` only added the evidence documentation).
 
 User sequencing constraint: finish and stabilize this rollout first, then
 clean debt. Do not combine unrelated cleanup with the deployment. The canary
@@ -199,6 +203,32 @@ Acceptance fixes now tested:
 - Broader rollout remains held. The first cast timed out before hook/fight, so
   server acceptance of control proofs remains unverified. Do not spend the
   remaining four casts by automatically retrying this failed acceptance.
+
+## Lab-Only Settlement Follow-Up
+
+- Official controller lines 172-173 defines extra rewards as `bonusLoot` rows
+  with `name` and `qty`. The one real missed result explicitly contained `[]`.
+- New `parse_settlement_resources` keeps fish, extra gains, bait inventory and
+  active/daily chum facts separate. Missing context remains unknown; malformed
+  or absent bonus rows cannot silently become zero rewards.
+- New casts use a version-3 journal with a bounded settlement-resource field.
+  Existing version-2 records remain readable and are not silently upgraded or
+  assigned fabricated resource evidence. New resource facts stay pinned to the
+  same session/query, and extra gains cannot change on recovery.
+- Version-3 projection atomically applies fish plus extra rewards, then scoped
+  absolute bait counts (including consumed or rewarded bait), daily reward
+  totals and current-day chum state, together with the accounted marker.
+  Two fish still count as one rod. UI disabling, changed inventory basis,
+  failed saves and old-day counter protection retain their existing boundaries.
+- Lab replay of the real read-only result (only its omitted session ID replaced
+  by an integer fixture) yields plain bait 18, spirit-rice bait 19, rice chum
+  3 casts remaining and daily chum usage 1, with no extra rewards.
+- Validation: 276 native tests; expanded suite 2241 passed plus 264 subtests
+  (38.65 seconds); compileall and diff checks passed. Not deployed or live-cast
+  accepted. Production was still healthy through 22:18, PID `3678694` unchanged.
+- Still required: real hook/checkpoint/fight acceptance; scheduler and voyage
+  follow-up review, including the native status of configured fish opening and
+  gift handling. Do not silently call those original options migrated.
 
 ## Verification
 

@@ -178,6 +178,82 @@ def parse_owned_session(payload, *, session_id, site_id):
     return {"session_id": session_id, "site_id": site_id, "phase": phase, **stamps}
 
 
+def parse_settlement_resources(payload, *, session_id, site_id):
+    """Owned settlement facts, separate fish gains from extra drops and stock.
+
+    A missing context leaves stock unknown. It does not mean empty inventory or
+    no active chum. Only the owning cast's response/state query may supply it.
+    """
+    parsed = parse_owned_session(payload, session_id=session_id, site_id=site_id)
+    if parsed["phase"] != "settled":
+        raise ProtocolError("native_settlement_not_ready")
+    result = payload["session"]["result"]
+    loot = result.get("bonusLoot")
+    if not isinstance(loot, list) or len(loot) > 64:
+        raise ProtocolError("invalid_native_bonus_loot")
+    rewards = {}
+    for item in loot:
+        _mapping(item, "bonus_item")
+        name = _text(item.get("name"), "bonus_name")
+        quantity = _number(item.get("qty"), "bonus_quantity", 1, 10**9, integer=True)
+        rewards[name] = _number(rewards.get(name, 0) + quantity, "bonus_total", 1, 10**9, integer=True)
+    context = payload.get("context")
+    resources = {"rewards": rewards, "baits": None, "active_chum": None, "chum_usage": None}
+    if context is None:
+        return resources
+    facts = parse_context(payload)
+    baits = {bait["name"]: bait["count"] for bait in facts["baits"]}
+    if len(baits) != len(facts["baits"]):
+        raise ProtocolError("ambiguous_native_bait_names")
+    shop = _mapping(context.get("shop"), "settlement_shop")
+    if "activeChum" not in shop:
+        raise ProtocolError("missing_settlement_chum")
+    active = shop["activeChum"]
+    if active is not None:
+        _mapping(active, "settlement_chum")
+        active = {"name": _text(active.get("name"), "chum_name"),
+                  "remaining": _number(active.get("remaining"), "chum_remaining", 1, 1000, integer=True)}
+    rows = shop.get("chums")
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise ProtocolError("invalid_settlement_chums")
+    counts = {}
+    for row in rows:
+        _mapping(row, "settlement_chum_row")
+        name = _text(row.get("name"), "chum_name")
+        if name in counts:
+            raise ProtocolError("duplicate_settlement_chum")
+        counts[name] = _number(row.get("usedToday"), "chum_used", 0, 1000, integer=True)
+    resources.update(baits=baits, active_chum=active, chum_usage=counts)
+    return resources
+
+
+def validate_settlement_resources(resources):
+    _mapping(resources, "settlement_resources")
+    if set(resources) != {"rewards", "baits", "active_chum", "chum_usage"}:
+        raise ProtocolError("invalid_settlement_resource_fields")
+    for key, limit in (("rewards", 64), ("baits", 100), ("chum_usage", 100)):
+        values = resources[key]
+        if key != "rewards" and values is None:
+            continue
+        _mapping(values, "settlement_" + key)
+        if len(values) > limit:
+            raise ProtocolError("oversized_settlement_" + key)
+        for name, count in values.items():
+            _text(name, "settlement_resource_name")
+            _number(count, "settlement_resource_count", 1 if key == "rewards" else 0,
+                    1000 if key == "chum_usage" else 10**9, integer=True)
+    if (resources["baits"] is None) != (resources["chum_usage"] is None):
+        raise ProtocolError("incomplete_settlement_stock")
+    active = resources["active_chum"]
+    if active is not None:
+        _mapping(active, "settlement_chum")
+        if set(active) != {"name", "remaining"} or resources["baits"] is None:
+            raise ProtocolError("invalid_settlement_chum")
+        _text(active["name"], "chum_name")
+        _number(active["remaining"], "chum_remaining", 1, 1000, integer=True)
+    return resources
+
+
 @dataclass(frozen=True)
 class ServerClock:
     stamp_ms: float

@@ -395,6 +395,55 @@ def test_native_gains_and_accounted_marker_commit_once_together(fishing_db):
     assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["fish"] == 2
 
 
+def test_v3_fish_bonus_and_consumption_commit_together_without_double_bonus_bait(fishing_db):
+    h = fishing_db
+
+    async def scenario():
+        state_module.set_storage_bag_records({str(h.identity_id): {"identity_id": h.identity_id,
+            "items": {"bait": 5}, "sections": {}, "empty": False}})
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                projection_basis=store.basis())
+        data = response(settled=True)
+        data["context"]["serverNow"] = h.now * 1000
+        data["session"]["result"]["bonusLoot"] = [{"name": "gem", "qty": 3}, {"name": "bait", "qty": 2}]
+        data["context"]["baits"][0]["count"] = 6
+        data["context"]["shop"] = {"activeChum": {"name": "chum", "remaining": 3},
+                                    "chums": [{"name": "chum", "usedToday": 1}]}
+        ledger.accept(query, data)
+        assert store.project(h.now)
+        assert store.project(h.now) is False
+        items = state_module.get_storage_bag_records()[str(h.identity_id)]["items"]
+        assert items == {"fish": 2, "gem": 3, "bait": 6}
+        summary = json.loads(h.identity["fishing_daily_catch_summary_json"])
+        assert summary["rods"] == 1 and summary["fish"] == {"fish": 2}
+        assert summary["rewards"] == {"gem": 3, "bait": 2}
+        assert h.identity["fishing_active_chum_name"] == "chum" and h.identity["fishing_chum_rods_remaining"] == 3
+        assert json.loads(h.identity["fishing_chum_counts"]) == {"chum": 1}
+
+    asyncio.run(scenario())
+    assert persisted(h.identity_id)["version"] == 3 and persisted(h.identity_id)["phase"] == "accounted"
+
+
+def test_v2_recovery_does_not_invent_resources_or_rewrite_old_version(fishing_db):
+    h = fishing_db
+
+    async def scenario():
+        store = settled_store(h)
+        record = h.identity[native.STATE_KEY]
+        record.pop("settlement_resources")
+        record["version"] = 2
+        validate(record)
+        assert persistence.save_state()
+        assert store.project(h.now)
+        assert h.identity[native.STATE_KEY]["version"] == 2
+        assert "settlement_resources" not in h.identity[native.STATE_KEY]
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == {"fish": 2}
+
+    asyncio.run(scenario())
+
+
 def test_projection_failure_rolls_back_inventory_and_keeps_receipt(fishing_db, monkeypatch):
     h = fishing_db
 

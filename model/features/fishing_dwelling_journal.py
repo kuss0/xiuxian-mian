@@ -88,9 +88,13 @@ def _validate_remote(record):
 
 
 def validate(record):
-    if not isinstance(record, dict) or set(record) != FIELDS:
+    if not isinstance(record, dict):
         raise protocol.ProtocolError("invalid_native_record")
-    if type(record["version"]) is not int or record["version"] != 2 or record["mode"] != protocol.MODE:
+    version = record.get("version")
+    expected = FIELDS | ({"settlement_resources"} if version == 3 else set())
+    if set(record) != expected:
+        raise protocol.ProtocolError("invalid_native_record")
+    if type(version) is not int or version not in (2, 3) or record["mode"] != protocol.MODE:
         raise protocol.ProtocolError("invalid_native_version")
     for key in ("identity_id", "account_id"):
         protocol._number(record[key], key, 1, 2**53 - 1, integer=True)
@@ -128,6 +132,14 @@ def validate(record):
             protocol._text(name, "fish_name")
             protocol._number(count, "fish_count", 1, 1000, integer=True)
     _validate_remote(record)
+    if version == 3:
+        resources = record["settlement_resources"]
+        if record["phase"] in ("settled", "accounted"):
+            protocol.validate_settlement_resources(resources)
+            if record["phase"] == "accounted" and (resources["baits"] is None or record["settlement_quota"] is None):
+                raise protocol.ProtocolError("incomplete_accounted_resources")
+        elif resources is not None:
+            raise protocol.ProtocolError("premature_settlement_resources")
     quota = record["settlement_quota"]
     if quota is not None:
         protocol._mapping(quota, "settlement_quota")
@@ -166,6 +178,11 @@ def validate(record):
     if len(json.dumps(record, ensure_ascii=True, allow_nan=False).encode()) > MAX_BYTES:
         raise protocol.ProtocolError("native_record_too_large")
     return record
+
+
+def settlement_complete(record):
+    return (record["settlement_quota"] is not None and
+            (record["version"] == 2 or record["settlement_resources"]["baits"] is not None))
 
 
 @dataclass(frozen=True)
@@ -237,6 +254,12 @@ def reconcile(record, query, payload):
     settled = parsed["phase"] == "settled"
     next_phase = "settled" if settled else "session_owned"
     catches = parsed.get("catches") if settled else None
+    resources = None
+    if settled and record["version"] == 3:
+        resources = protocol.parse_settlement_resources(root, session_id=session_id, site_id=record["site_id"])
+        if root.get("context") is not None and not any(
+                b["itemId"] == record["bait_id"] for b in protocol.parse_context(root)["baits"]):
+            raise protocol.ProtocolError("settlement_bait_missing")
     settlement_quota = record["settlement_quota"]
     if settled and isinstance(root.get("context"), dict):
         facts = protocol.parse_context(root)
@@ -246,10 +269,17 @@ def reconcile(record, query, payload):
     if record["phase"] in ("settled", "accounted"):
         if not settled or catches != record["catches"]:
             raise protocol.ProtocolError("settlement_changed")
+        updated = deepcopy(record)
+        if record["version"] == 3:
+            if resources["rewards"] != record["settlement_resources"]["rewards"]:
+                raise protocol.ProtocolError("settlement_rewards_changed")
+            if record["phase"] == "settled" and record["settlement_resources"]["baits"] is None and resources["baits"] is not None:
+                updated["settlement_resources"] = resources
         if record["phase"] == "settled" and record["settlement_quota"] is None and settlement_quota is not None:
-            return validate({**deepcopy(record), "settlement_quota": settlement_quota,
-                             "revision": record["revision"] + 1}), parsed
-        return deepcopy(record), parsed
+            updated["settlement_quota"] = settlement_quota
+        if updated != record:
+            updated["revision"] += 1
+        return validate(updated), parsed
     previous = record["remote"]
     if previous and _RANK[parsed["phase"]] < _RANK[previous["phase"]]:
         raise protocol.ProtocolError("native_phase_regressed")
@@ -275,6 +305,8 @@ def reconcile(record, query, payload):
         return deepcopy(record), parsed
     updated = {**record, "session_id": session_id, "phase": next_phase, "catches": catches,
                "pending_action": "", "pending_payload": {}, "remote": deepcopy(parsed), "settlement_quota": settlement_quota}
+    if record["version"] == 3:
+        updated["settlement_resources"] = resources
     if updated != record:
         updated["revision"] += 1
     return validate(updated), parsed
@@ -342,13 +374,14 @@ class NativeCastJournal:
         reason = protocol.cast_block_reason(facts, bait_id)
         if reason:
             raise protocol.ProtocolError(reason)
-        record = {"version": 2, "mode": protocol.MODE,
+        record = {"version": 3, "mode": protocol.MODE,
                   "identity_id": self.owner[0], "account_id": self.owner[1], "player_id": self.owner[2],
                   "cast_id": uuid.uuid4().hex, "session_id": "", "site_id": site_id,
                   "model_id": model_id, "bait_id": bait_id, "revision": 1, "phase": "cast_pending", "catches": None,
                   "pending_action": "cast", "pending_payload": {}, "remote": None,
                   "created_at": time.time() if now is None else now,
-                  "projection_basis": deepcopy(projection_basis or {}), "settlement_quota": None}
+                  "projection_basis": deepcopy(projection_basis or {}), "settlement_quota": None,
+                  "settlement_resources": None}
         self.before_cast = deepcopy(self.record)
         self._commit(record)
         query = _query(self.record, "cast")

@@ -16,13 +16,14 @@ def context():
         "enabled": True, "unavailable": "", "quota": {"used": 0, "remaining": 5, "limit": 5},
         "conflict": None, "rod": {"itemId": "rod", "name": "rod"},
         "baits": [{"itemId": "bait", "name": "bait", "count": 5}],
+        "shop": {"activeChum": None, "chums": []},
     }}
 
 
 def response(*, settled=False):
     data = {"ok": True, "session": {"sessionId": "native-session", "siteId": "west-shore", "mode": MODE,
         "status": "active", "phase": "waiting", "serverNow": 10000, "biteAt": 15000, "expiresAt": 18000,
-        "result": {"ready": True, "caught": True, "fish": {"name": "fish", "count": 2}} if settled else None}}
+        "result": {"ready": True, "caught": True, "fish": {"name": "fish", "count": 2}, "bonusLoot": []} if settled else None}}
     if settled:
         data["context"] = context()["context"]
         data["context"].update(serverNow=1700000000000, quota={"used": 1, "remaining": 4, "limit": 5})
@@ -108,6 +109,28 @@ def test_invalid_session_identifiers_do_not_bind(value):
     with pytest.raises(ProtocolError):
         ledger.accept(query, payload)
     assert store.record == original
+
+
+def test_v3_recovery_can_fill_missing_stock_but_cannot_replace_rewards():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    data = response(settled=True)
+    data.pop("context")
+    data["session"]["result"]["bonusLoot"] = [{"name": "gem", "qty": 2}]
+    ledger.accept(query, data)
+    assert not j.settlement_complete(store.record)
+    original = deepcopy(store.record)
+    query, _ = ledger.recovery()
+    data = response(settled=True)
+    data["session"]["result"]["bonusLoot"] = [{"name": "gem", "qty": 3}]
+    with pytest.raises(ProtocolError, match="rewards_changed"):
+        ledger.accept(query, data)
+    assert store.record == original
+    data["session"]["result"]["bonusLoot"] = [{"name": "gem", "qty": 2}]
+    ledger.accept(query, data)
+    assert j.settlement_complete(store.record)
+    assert store.record["settlement_resources"]["baits"] == {"bait": 5}
 
 
 @pytest.mark.parametrize("save_result", [False, None, 1])

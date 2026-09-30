@@ -8,7 +8,7 @@ import json
 
 from .. import persistence
 from .miniapp_common import MiniAppIdentityOwner
-from .fishing_dwelling_journal import NativeCastJournal, validate
+from .fishing_dwelling_journal import NativeCastJournal, settlement_complete, validate
 from .fishing_dwelling_protocol import ProtocolError
 from . import fishing_dwelling_supply as supply
 
@@ -182,7 +182,7 @@ class NativeFishingStore:
     def project(self, now, *, update_schedule=True):
         """Persist confirmed gains and the accounted marker in one state commit."""
         def apply():
-            from . import fishing_runtime as fishing
+            from . import fishing_runtime as fishing, storage_bag
             self._check()
             record = deepcopy(self.owner.identity.get(STATE_KEY, {}))
             validate(record)
@@ -191,7 +191,7 @@ class NativeFishingStore:
                 raise ProtocolError("native_record_owner_mismatch")
             if record["phase"] == "accounted":
                 return False
-            if record["phase"] != "settled" or record["settlement_quota"] is None:
+            if record["phase"] != "settled" or not settlement_complete(record):
                 raise ProtocolError("native_settlement_incomplete")
             basis = self.basis()
             if any(record["projection_basis"].get(key) != basis[key] for key in ("facts", "inventory")):
@@ -210,10 +210,25 @@ class NativeFishingStore:
                             and (fishing.get_global_enabled() or fishing._miniapp_http_allowed_during_pause()))
             before = deepcopy(identity)
             inventory = deepcopy(fishing.get_storage_bag_records())
+            resources = record.get("settlement_resources")
+            rewards = resources["rewards"] if resources is not None else {}
+            gains = deepcopy(record["catches"])
+            for name, count in rewards.items():
+                gains[name] = gains.get(name, 0) + count
             try:
-                if record["catches"] and fishing.apply_storage_bag_item_deltas(
-                        self.owner.identity_id, record["catches"], persist=False) is not True:
+                if gains and fishing.apply_storage_bag_item_deltas(
+                        self.owner.identity_id, gains, persist=False) is not True:
                     raise ProtocolError("native_inventory_not_applied")
+                if resources is not None:
+                    # The settlement context already includes the cast's bait
+                    # consumption and any bonus bait. Apply absolute counts last.
+                    records = deepcopy(fishing.get_storage_bag_records())
+                    for name, count in resources["baits"].items():
+                        current = ((records.get(str(self.owner.identity_id)) or {}).get("items") or {}).get(name, 0)
+                        if type(current) is not int or current < 0:
+                            raise ProtocolError("invalid_native_inventory_count")
+                        storage_bag._adjust_storage_bag_identity_item(records, self.owner.identity_id, name, count - current)
+                    fishing.set_storage_bag_records(records)
                 if quota["day"] == day:
                     summary = fishing._normalize_fishing_daily_catch_summary(identity.get("fishing_daily_catch_summary_json"))
                     if summary["day"] != day:
@@ -221,9 +236,17 @@ class NativeFishingStore:
                     summary["rods"] += 1
                     for name, count in record["catches"].items():
                         summary["fish"][name] = summary["fish"].get(name, 0) + count
+                    for name, count in rewards.items():
+                        summary["rewards"][name] = summary["rewards"].get(name, 0) + count
                     identity.update(fishing_daily_day=day, fishing_daily_count=quota["used"],
                                     fishing_daily_limit=quota["limit"], fishing_basket_calibrated_day="",
                                     fishing_daily_catch_summary_json=json.dumps(summary, ensure_ascii=False, sort_keys=True))
+                    if resources is not None:
+                        active = resources["active_chum"] or {}
+                        identity.update(fishing_active_chum_name=active.get("name", ""),
+                                        fishing_chum_rods_remaining=active.get("remaining", 0),
+                                        fishing_chum_day=day,
+                                        fishing_chum_counts=fishing.fishing_behavior.format_chum_usage_counts(resources["chum_usage"]))
                 if can_schedule:
                     identity.update(fishing_phase="idle", fishing_last_error="",
                                     fishing_last_result="洞府钓鱼：" + (fishing._format_count_map(record["catches"]) if record["catches"] else "空竿"),
