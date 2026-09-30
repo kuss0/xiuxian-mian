@@ -150,13 +150,29 @@ def test_settling_is_not_done_and_empty_catch_is_valid():
     assert owned(data) == {"session_id": "s1", "site_id": "west-shore", "phase": "settled", "catches": {}}
 
 
-def test_monotonic_server_clock_caps_rtt_adjustment():
+def test_monotonic_server_clock_retains_actual_rtt_for_slow_transport():
     assert p.ServerClock.capture(10000, 2, 2.2).now_ms(3.2) == pytest.approx(11100)
-    assert p.ServerClock.capture(10000, 2, 4).now_ms(5) == 11250
+    assert p.ServerClock.capture(10000, 2, 4).now_ms(5) == 12000
+    assert p.ServerClock.capture(10000, 2, 4).round_trip_ms == 2000
     with pytest.raises(p.ProtocolError):
         p.ServerClock.capture(10000, 4, 2)
     with pytest.raises(p.ProtocolError):
         p.ServerClock.capture(10000, 2, 4).now_ms(3)
+
+
+def test_slow_reply_does_not_add_the_browser_cap_lag_to_four_second_bite_window():
+    session = {"phase": "waiting", "serverNow": 10000, "biteAt": 25000, "expiresAt": 29000}
+    clock = p.ServerClock.capture(10000, 0, 3.262)
+    action, delay = p.next_session_action(session, clock, 3.262)
+    assert action == "wait" and delay == pytest.approx(13.369)
+    assert p.next_session_action(session, clock, 3.262 + delay) == ("hook", 0)
+    assert p.next_session_action(session, clock, 3.262 + delay + 1) == ("state", 0)
+
+
+def test_latency_equal_to_bite_window_cannot_authorize_hook():
+    session = {"phase": "bite", "serverNow": 10000, "biteAt": 12000, "expiresAt": 16000}
+    clock = p.ServerClock.capture(10000, 0, 4)
+    assert p.next_session_action(session, clock, 4) == ("state", 0)
 
 
 @pytest.mark.parametrize("changes", [

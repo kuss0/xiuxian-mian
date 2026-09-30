@@ -62,6 +62,18 @@ def test_fishing_report_does_not_invent_missing_fields(probe):
     assert probe["fishing_context_report"]({"shop": {}}) == {"shop": {}}
 
 
+def test_timing_report_keeps_only_numeric_nonsecret_timestamps(probe):
+    assert probe["fishing_session_timing_report"]({
+        "serverNow": 1790785381978, "startedAt": 1790784769356,
+        "biteAt": 1790784784356, "expiresAt": 1790784788356,
+        "sessionId": "secret", "token": "secret", "initData": "secret",
+    }) == {"serverNow": 1790785381978, "startedAt": 1790784769356,
+           "biteAt": 1790784784356, "expiresAt": 1790784788356}
+    assert probe["fishing_session_timing_report"]({
+        "serverNow": True, "startedAt": "secret", "biteAt": -1, "expiresAt": 10**15,
+    }) == {}
+
+
 @pytest.mark.parametrize("change", ["none", "owner", "player", "cast", "site", "missing"])
 def test_state_read_must_use_identity_owned_cast(probe, tmp_path, change):
     folder = tmp_path / "data" / "state"
