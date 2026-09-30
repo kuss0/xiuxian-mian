@@ -438,7 +438,7 @@ def test_notification_await_does_not_enter_replacement_daily_chain(fishing_env, 
 
 
 @pytest.mark.parametrize("target", ["origin", "other"])
-@pytest.mark.parametrize("change", ["removed", "replaced", "rebound", "count", "day", "error"])
+@pytest.mark.parametrize("change", ["removed", "replaced", "rebound", "count", "day", "error", "native_cast", "native_supply"])
 def test_daily_report_ack_does_not_mark_replaced_or_changed_facts(fishing_env, monkeypatch, target, change):
     h = fishing_env
     day = get_day_key(h.now)
@@ -463,7 +463,9 @@ def test_daily_report_ack_does_not_mark_replaced_or_changed_facts(fishing_env, m
             state_module.set_identity_account(target_id, 7999)
         else:
             key, value = {"count": ("fishing_daily_count", 2), "day": ("fishing_daily_day", "later"),
-                          "error": ("fishing_last_error", "newer error")}[change]
+                          "error": ("fishing_last_error", "newer error"),
+                          "native_cast": ("fishing_native_operation", {"phase": "cast_pending"}),
+                          "native_supply": ("fishing_native_supply", {"phase": "pending"})}[change]
             state_module.get_identity_state(target_id)[key] = value
         if state_module.has_identity(target_id):
             changed_state.update(copy.deepcopy(state_module.get_identity_state(target_id)))

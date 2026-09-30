@@ -9138,6 +9138,11 @@ def _cave_public_background_action_due(action, identity_id, now):
         if action == "fishing":
             if int(identity_id) not in set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or []):
                 return False
+            from .features.fishing_dwelling_runtime import pending as native_pending
+            if native_pending(state):
+                # Recover the existing receipt even after the last daily rod;
+                # respect its backoff and never admit a new cast through here.
+                return float(state.get("next_fishing_time", 0) or 0) <= now
             if state.get("fishing_result_pending", {}) != {}:
                 return True
             if fishing_operations.pending(state):

@@ -141,6 +141,16 @@ Deferred monitoring debt: the 18:57:59 journal line about an unowned external
 Xuangu question timing out caused a generic observer warning. It was not our
 identity's failed attempt. No shared observer patch was applied in this batch.
 
+22:20-22:21 observer follow-up: three `pet` retry warning lines were not three
+sends. WA actually sent message `1245854` at 22:19:29, then one retry `1245876`
+at 22:21:13 in group `-1002083016447`. Reply `1245877` at 22:21:16 confirmed
+success, pending cleared, and next pet time became `2026-10-01 00:21:21 CST`.
+No reply to the original command was found in the local log. The interim
+attempts included a quiet-period block. Warning text emitted before actual
+dispatch is a deferred observability debt, not evidence of three game sends or
+a reason to modify the shared retry layer during stabilization. 22:48 observer
+and watchdog were both ok; no production code/state was changed for this alert.
+
 ## Supply Batch and Canary Boundary
 
 - Single-cast persistence batch committed/pushed as `1c9dfd07` on the Lab branch.
@@ -231,6 +241,24 @@ Acceptance fixes now tested:
   gift handling. Do not silently call those original options migrated.
 
 ## Verification
+
+### 23:33 Scheduling and Cross-Day Review
+
+- Found native-receipt omissions in legacy startup/reset, status normalization,
+  and all-identity daily summary. These paths could change a pending cast's
+  projection basis across midnight, or report a day complete before accounting.
+- The same unresolved guard now covers both native cast and supply records,
+  including malformed receipts. Report acknowledgements also re-check these
+  records after notification awaits. Daily quota/done markers no longer hide a
+  selected identity's due native recovery; existing backoff and selection remain.
+- Focused checks: 202 passed, 17 subtests. Expanded fishing/cave/UI/persistence/
+  state checks: 2266 passed, 264 subtests. Compileall and whitespace checks passed.
+- Current production remained healthy through 23:32 with the original PID.
+  Candidate deployment is still canary-only, not integrated default routing.
+- Upstream explicitly defers native auto-open because there is no confirmed
+  `/open` contract. Local native gift enqueue and voyage-return handoff remain
+  rollout prerequisites, not completed migrations. Do not change voyages or
+  reuse old opening endpoints to make the acceptance appear complete.
 
 - Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
 - This batch: 194 native tests after unsent-intent compensation.

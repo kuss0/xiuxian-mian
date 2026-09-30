@@ -8,10 +8,11 @@ from model.features import cave_treasure_runtime as cave
 from model.features import fishing_runtime as fishing
 from model.features import fishing_dwelling_runtime as native
 from model.features.miniapp_common import MiniAppFlowCancelled
-from model import ui
+from model import ui, state as state_module
 import test_fishing_caller_lifecycle as lifecycle
 from test_fishing_dwelling_journal import Store, start
 from model.features import fishing_dwelling_supply as supply
+from test_fishing_dwelling_supply import shop_context, SETTINGS
 
 
 fishing_env = lifecycle.fishing_env
@@ -158,3 +159,73 @@ def test_supply_keeps_original_config_and_is_not_a_completed_rod(fishing_env, mo
     assert not result["extra"]["committed"]
     assert h.identity["next_fishing_time"] == before_timer
     h.daily.assert_not_awaited()
+
+
+def pending_receipt(h, key):
+    store = Store()
+    owner = (h.identity_id, 7106, h.session["player_id"])
+    if key == native.STATE_KEY:
+        start(store.open(owner=owner))
+    else:
+        journal = supply.SupplyJournal(owner=owner, read_current=lambda: store.record,
+                                       compare_and_save=store.save, is_owner_current=lambda: True)
+        journal.prepare(context=shop_context(), site_id="west-shore", model_id="ngw", **SETTINGS)
+    return store.record
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY])
+@pytest.mark.parametrize("action", ["clear", "initial", "status"])
+def test_unresolved_native_records_survive_legacy_cleanup_and_day_rollover(fishing_env, key, action, corrupt):
+    h = fishing_env
+    configure(h)
+    h.identity[key] = {"phase": "pending"} if corrupt else pending_receipt(h, key)
+    h.identity.update(fishing_daily_day="2023-11-13", fishing_daily_count=5,
+                      fishing_caught_fish_json='{"fish":2}', fishing_transfer_due_at=h.now + 20)
+    before = deepcopy(h.identity)
+    with state_module.use_identity(h.identity_id):
+        if action == "clear":
+            fishing.clear_fishing_state(persist=True)
+        elif action == "initial":
+            fishing.schedule_fishing_initial_check(h.now, persist=True)
+        else:
+            assert "回执待核对" in fishing.get_fishing_status_text()
+    assert h.identity == before
+
+
+@pytest.mark.parametrize("wait", [0, 120])
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY])
+def test_native_recovery_precedes_daily_done_but_respects_timer(fishing_env, monkeypatch, key, wait):
+    h = fishing_env
+    h.identity[key] = pending_receipt(h, key)
+    h.identity.update(fishing_daily_count=10, fishing_last_result="daily_limit", next_fishing_time=h.now + wait)
+    monkeypatch.setattr(ui, "normalize_miniapp_auto_config", lambda: {"cave_public_fishing_identity_ids": [h.identity_id]})
+    monkeypatch.setattr(ui, "_cave_public_background_daily_done", {("fishing", fishing.get_day_key(h.now), h.identity_id)})
+    before = deepcopy(h.identity)
+    assert ui._cave_public_background_action_due("fishing", h.identity_id, h.now) is (wait == 0)
+    assert h.identity == before
+
+
+def test_unselected_native_receipt_does_not_enable_background_action(fishing_env, monkeypatch):
+    h = fishing_env
+    h.identity[native.STATE_KEY] = {"phase": "pending"}
+    monkeypatch.setattr(ui, "normalize_miniapp_auto_config", lambda: {"cave_public_fishing_identity_ids": []})
+    assert not ui._cave_public_background_action_due("fishing", h.identity_id, h.now)
+
+
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY])
+@pytest.mark.parametrize("next_day", [False, True])
+def test_other_identity_daily_report_preserves_native_receipt_basis(fishing_env, key, next_day):
+    h = fishing_env
+    h.identity[key] = pending_receipt(h, key)
+    h.identity.update(fishing_daily_count=10, fishing_last_result="daily_limit",
+                      fishing_daily_catch_summary_json='{"day":"2023-11-15","rods":10,"fish":{"fish":10},"rewards":{}}')
+    before = deepcopy(h.identity)
+    now = h.now + 86400 if next_day else h.now
+    with state_module.use_identity(h.other_id):
+        day, entries, changed = fishing._enabled_fishing_daily_entries(now)
+        entry = next(item for item in entries if item["identity_id"] == h.identity_id)
+        assert entry["active_followup"]
+        assert not asyncio.run(lifecycle.REAL_DAILY_REPORT(now))
+    assert h.identity == before
+    h.audit.assert_not_awaited()

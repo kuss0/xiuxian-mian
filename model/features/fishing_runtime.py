@@ -787,7 +787,8 @@ def _enabled_fishing_daily_entries(now):
         if not identity_state.get("fishing_enabled") and not public_auto_enabled:
             continue
         entry_day, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(dict(identity_state), now)
-        if daily_updates and identity_state.get("fishing_result_pending", {}) == {} and not fishing_operations.pending(identity_state):
+        unresolved = _fishing_has_unresolved_result(identity_state)
+        if daily_updates and not unresolved:
             identity_state.update(daily_updates)
             changed = True
         limit = _parse_int(limit, 0)
@@ -800,8 +801,7 @@ def _enabled_fishing_daily_entries(now):
             _parse_int(identity_state.get("fishing_reply_to_msg_id"), 0) > 0
             or bool(str(identity_state.get("fishing_pending_action") or "").strip())
             or phase not in {"", "idle"}
-            or identity_state.get("fishing_result_pending", {}) != {}
-            or fishing_operations.pending(identity_state)
+            or unresolved
         )
         terminal_skip = (
             "今日跳过" in last_result
@@ -880,7 +880,10 @@ async def _send_fishing_daily_completion_summary_locked(now):
     report_entries = [item for item in entries if item.get("reportable")]
     if not report_entries:
         return False
-    report_keys = set(_FISHING_MINIAPP_PLAN_KEYS) | _FISHING_MINIAPP_FACT_KEYS | {"fishing_daily_summary_day", "fishing_result_pending", "fishing_operation"}
+    report_keys = set(_FISHING_MINIAPP_PLAN_KEYS) | _FISHING_MINIAPP_FACT_KEYS | {
+        "fishing_daily_summary_day", "fishing_result_pending", "fishing_operation",
+        "fishing_native_operation", "fishing_native_supply",
+    }
 
     def capture(identity_id):
         owner = MiniAppIdentityOwner.capture(identity_id)
@@ -1513,8 +1516,15 @@ def is_fishing_reply_text(text):
     return fishing_behavior.is_fishing_reply_text(text)
 
 
+def _fishing_has_unresolved_result(snapshot=None):
+    from .fishing_dwelling_runtime import pending as native_pending
+    snapshot = state if snapshot is None else snapshot
+    return (fishing_operations.pending(snapshot) or snapshot.get("fishing_result_pending", {}) != {}
+            or native_pending(snapshot))
+
+
 def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=True):
-    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+    if _fishing_has_unresolved_result():
         if persist:
             save_state()
         return
@@ -1564,7 +1574,7 @@ def get_fishing_status_text():
     snapshot = _state_snapshot()
     config = fishing_behavior.current_fishing_config(snapshot)
     _day_key, daily_count, daily_limit, daily_updates = fishing_behavior.normalize_daily_counter(snapshot, time.time())
-    if daily_updates and state.get("fishing_result_pending", {}) == {} and not fishing_operations.pending(state):
+    if daily_updates and not _fishing_has_unresolved_result():
         _apply_updates(daily_updates)
         mark_dirty()
         snapshot = _state_snapshot()
@@ -1603,6 +1613,9 @@ def get_fishing_status_text():
         lines.append("- 本地入账：结果待恢复，暂不启动新一轮")
     if fishing_operations.pending(state):
         lines.append(f"- 运行恢复：{fishing_operations.status_text(state.get('fishing_operation'))}")
+    from .fishing_dwelling_runtime import pending as native_pending
+    if native_pending(state):
+        lines.append("- 原生钓鱼：回执待核对，保留原竿和补给记录，不启动新一轮")
     if state.get("fishing_last_error"):
         lines.append(f"- 最近异常：{state['fishing_last_error']}")
     return "\n".join(lines)
@@ -1797,7 +1810,7 @@ async def run_fishing_scheduler(now):
 
 
 def schedule_fishing_initial_check(now, *, persist=False, keep_last_error=True):
-    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+    if _fishing_has_unresolved_result():
         if persist:
             save_state()
         return
