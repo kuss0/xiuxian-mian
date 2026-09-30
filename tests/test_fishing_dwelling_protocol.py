@@ -353,3 +353,14 @@ def test_wall_clock_or_monotonic_regression_does_not_release_proof():
 
     with pytest.raises(p.ProtocolError, match="fight_clock"):
         next(p.timed_fight_steps(challenge(), is_current=lambda: True, monotonic=lambda: clock.now, sleeper=regress))
+
+
+def test_remote_fight_projection_drops_unowned_extra_fields():
+    c = restored()
+    c["credential"] = "do-not-persist"
+    c["checkpoint"]["credential"] = "do-not-persist"
+    c["checkpoint"]["details"]["credential"] = "do-not-persist"
+    c["struggles"][0]["credential"] = "do-not-persist"
+    clean = p.normalize_fight_challenge(c)
+    assert "do-not-persist" not in json.dumps(clean)
+    assert "do-not-persist" in json.dumps(c)

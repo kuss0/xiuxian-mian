@@ -59,7 +59,7 @@
 
 | 项目 | 上游/本地差异 | 本轮处理 |
 | --- | --- | --- |
-| 洞府原生钓鱼 | `3c77db65` 新增 context/cast/hook/checkpoint/fight、operationId、持久回执；`3c220736` 补远航后恢复 | context 已实测；Lab 已有原生协议、控线回放和单竿账本专项。尚未接生产运行器；提竿/收鱼持久化、收益原子入账及单竿验收未完成。详见 [原生钓鱼 Lab 记录](native-fishing-lab-20260930.md) |
+| 洞府原生钓鱼 | `3c77db65` 新增 context/cast/hook/checkpoint/fight、operationId、持久回执；`3c220736` 补远航后恢复 | Lab 已完成单竿运行器、全部动作持久化、原子入账及公共入口手动验收调用，尚未部署。剩余自动补饵/打窝与真实单竿验收；三个已开身份均无鱼饵，WA/吧唧还在远航。详见 [原生钓鱼 Lab 记录](native-fishing-lab-20260930.md) |
 | 天星前置 | 上游 `model/features/tianxing.py` 仍通过 Telegram CommandCandidate 发送 | 不可据此宣称上游已有 HTTP 推改。先交付查盘桥接；消费动作须逐条建立 HTTP 所有权、未知结果及路线互斥 |
 | 分身管理 | 上游新增大规模分身状态与调度 | 不与本地 19 个频道身份模型混合迁移 |
 | 灵兽等状态 | 本地已有部分命令入口或 Lab 证据，尚无完整状态桥接 | 保留待办，不将读到文本误报为自动化完成 |

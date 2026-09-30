@@ -5,7 +5,7 @@ import json
 import pytest
 
 from model.features import fishing_dwelling_journal as j
-from model.features.fishing_dwelling_protocol import MODE, ProtocolError
+from model.features.fishing_dwelling_protocol import MODE, ProtocolError, ServerClock, fight_steps
 
 
 OWNER = (3765328695, 301299112, -1003765328695)
@@ -20,9 +20,13 @@ def context():
 
 
 def response(*, settled=False):
-    return {"ok": True, "session": {"sessionId": "native-session", "siteId": "west-shore", "mode": MODE,
+    data = {"ok": True, "session": {"sessionId": "native-session", "siteId": "west-shore", "mode": MODE,
         "status": "active", "phase": "waiting", "serverNow": 10000, "biteAt": 15000, "expiresAt": 18000,
         "result": {"ready": True, "caught": True, "fish": {"name": "fish", "count": 2}} if settled else None}}
+    if settled:
+        data["context"] = context()["context"]
+        data["context"].update(serverNow=1700000000000, quota={"used": 1, "remaining": 4, "limit": 5})
+    return data
 
 
 class Store:
@@ -265,3 +269,171 @@ def test_corrupt_journal_is_not_normalized_to_empty():
         store.record = {**saved, **changes}
         with pytest.raises(ProtocolError):
             store.open()
+
+
+def fighting():
+    data = response()
+    data["session"].update(phase="fighting", fight={
+        "challengeId": "challenge-native", "minDurationMs": 5200, "maxDurationMs": 70000,
+        "checkpointIntervalMs": 2500, "maxInputEvents": 1000,
+        "targetLow": 41, "targetHigh": 68, "fishPower": 1.7,
+    })
+    return data
+
+
+def hooked():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    ledger.accept(query, response())
+    hook, body = ledger.prepare("hook", clock=ServerClock.capture(15000, 0, 0), monotonic_now=0)
+    assert store.record["pending_action"] == "hook" and body["operationId"]
+    ledger.accept(hook, fighting())
+    return store, ledger
+
+
+@pytest.mark.parametrize("server_time", [14999, 18000, 20000])
+def test_hook_outside_bite_window_is_not_authorized(server_time):
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    ledger.accept(query, response())
+    with pytest.raises(ProtocolError, match="outside_window"):
+        ledger.prepare("hook", clock=ServerClock.capture(server_time, 0, 0), monotonic_now=0)
+    assert store.record["pending_action"] == ""
+
+
+def test_unknown_hook_is_never_repeated_even_if_state_still_waiting():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    ledger.accept(query, response())
+    ledger.prepare("hook", clock=ServerClock.capture(15000, 0, 0), monotonic_now=0)
+    reopened = store.open()
+    state_query, payload = reopened.recovery()
+    assert payload["sessionId"] == "native-session" and state_query.action == "state"
+    reopened.accept(state_query, response())
+    assert store.record["pending_action"] == "hook"
+    with pytest.raises(ProtocolError, match="unresolved"):
+        reopened.prepare("hook", clock=ServerClock.capture(15500, 0, 0), monotonic_now=0)
+    reopened.accept(reopened.recovery()[0], fighting())
+    assert store.record["pending_action"] == ""
+
+
+def test_hook_cannot_be_repeated_after_phase_advance_or_old_response():
+    store, ledger = hooked()
+    old, _ = ledger.recovery()
+    current, _ = ledger.recovery()
+    with pytest.raises(ProtocolError, match="stale_native_query"):
+        ledger.accept(old, response())
+    with pytest.raises(ProtocolError, match="phase_regressed"):
+        ledger.accept(current, response())
+    with pytest.raises(ProtocolError):
+        ledger.prepare("hook", clock=ServerClock.capture(15500, 0, 0), monotonic_now=0)
+    assert store.record["remote"]["phase"] == "fighting"
+
+
+def test_every_checkpoint_and_final_fight_has_durable_intent():
+    store, ledger = hooked()
+    challenge = deepcopy(store.record["remote"]["fight"])
+    for final, proof, details in fight_steps(challenge):
+        action = "fight" if final else "checkpoint"
+        query, body = ledger.prepare(action, proof=proof, details=details)
+        assert store.record["pending_action"] == action
+        assert store.record["pending_payload"]["fishingProof"] == body["fishingProof"] == proof
+        ledger.accept(query, response(settled=True) if final else {"ok": True})
+        assert store.record["pending_action"] == ""
+    assert store.record["catches"] == {"fish": 2}
+
+
+@pytest.mark.parametrize("action", ["checkpoint", "fight"])
+def test_save_failure_cannot_authorize_checkpoint_or_fight(action):
+    store, ledger = hooked()
+    steps = list(fight_steps(store.record["remote"]["fight"]))
+    _, proof, details = steps[-1] if action == "fight" else steps[0]
+    store.fail = True
+    with pytest.raises(ProtocolError, match="save_failed"):
+        ledger.prepare(action, proof=proof, details=details)
+    assert store.record["pending_action"] == ""
+
+
+def test_lost_checkpoint_ack_requires_matching_server_checkpoint():
+    store, ledger = hooked()
+    _, proof, details = next(fight_steps(store.record["remote"]["fight"]))
+    ledger.prepare("checkpoint", proof=proof, details=details)
+    ledger = store.open()
+    query, _ = ledger.recovery()
+    ledger.accept(query, fighting())
+    assert store.record["pending_action"] == "checkpoint"
+    with pytest.raises(ProtocolError, match="unresolved"):
+        ledger.prepare("checkpoint", proof=proof, details=details)
+    remote = fighting()
+    remote["session"]["fight"]["checkpoint"] = {
+        "durationMs": proof["durationMs"], "events": proof["events"], "details": details,
+    }
+    ledger.accept(ledger.recovery()[0], remote)
+    assert store.record["pending_action"] == ""
+    assert store.record["remote"]["fight"]["checkpoint"]["durationMs"] == proof["durationMs"]
+
+
+def test_lost_fight_ack_can_only_poll_and_accept_settling_or_final():
+    store, ledger = hooked()
+    _, proof, details = list(fight_steps(store.record["remote"]["fight"]))[-1]
+    ledger.prepare("fight", proof=proof, details=details)
+    ledger = store.open()
+    ledger.accept(ledger.recovery()[0], fighting())
+    assert store.record["pending_action"] == "fight"
+    with pytest.raises(ProtocolError, match="unresolved"):
+        ledger.prepare("fight", proof=proof, details=details)
+    data = response()
+    data["session"]["status"] = "settling"
+    ledger.accept(ledger.recovery()[0], data)
+    assert store.record["remote"]["phase"] == "settling" and not store.record["pending_action"]
+    ledger.accept(ledger.recovery()[0], response(settled=True))
+    assert store.record["phase"] == "settled"
+
+
+@pytest.mark.parametrize("change", ["challenge", "duration", "event", "prefix"])
+def test_invalid_proof_cannot_be_persisted(change):
+    store, ledger = hooked()
+    steps = list(fight_steps(store.record["remote"]["fight"]))
+    _, proof, details = steps[0]
+    query, _ = ledger.prepare("checkpoint", proof=proof, details=details)
+    ledger.accept(query, {"ok": True})
+    _, proof, details = deepcopy(steps[1])
+    if change == "challenge":
+        proof["challengeId"] = "wrong"
+    elif change == "duration":
+        proof["durationMs"] = 70020
+    elif change == "event":
+        proof["events"][-1]["holding"] = 1
+    else:
+        proof["events"] = proof["events"][1:]
+    with pytest.raises(ProtocolError):
+        ledger.prepare("checkpoint", proof=proof, details=details)
+    assert not store.record["pending_action"]
+
+
+def test_zero_dispatch_compensation_cannot_erase_a_recovered_unknown_cast():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    reopened = store.open()
+    with pytest.raises(ProtocolError, match="recovered_cast"):
+        reopened.cancel_undispatched(query)
+    assert store.record["phase"] == "cast_pending"
+    ledger.cancel_undispatched(query)
+    assert store.record == {}
+
+
+def test_unsent_hook_compensation_keeps_original_cast_and_does_not_recast():
+    store = Store()
+    ledger = store.open()
+    query, _ = start(ledger)
+    cast_id = query.cast_id
+    ledger.accept(query, response())
+    query, _ = ledger.prepare("hook", clock=ServerClock.capture(15000, 0, 0), monotonic_now=0)
+    ledger.cancel_undispatched(query)
+    assert store.record["cast_id"] == cast_id and store.record["pending_action"] == ""
+    with pytest.raises(ProtocolError):
+        start(ledger)

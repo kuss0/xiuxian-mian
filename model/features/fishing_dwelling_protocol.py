@@ -160,9 +160,8 @@ def parse_owned_session(payload, *, session_id, site_id):
         raise ProtocolError("unconfirmed_session_status")
     phase = remote.get("phase")
     if phase == "fighting":
-        challenge = _mapping(remote.get("fight"), "fight")
-        _fight_state(challenge)
-        return {"session_id": session_id, "site_id": site_id, "phase": phase, "fight": deepcopy(challenge)}
+        challenge = normalize_fight_challenge(remote.get("fight"))
+        return {"session_id": session_id, "site_id": site_id, "phase": phase, "fight": challenge}
     if phase not in ("casting", "waiting", "bite"):
         raise ProtocolError("invalid_session_phase")
     stamps = {key: _number(remote.get(key), key, 1, 10**15) for key in ("biteAt", "expiresAt", "serverNow")}
@@ -356,6 +355,19 @@ def fight_steps(challenge):
             if final:
                 return
             last = elapsed
+
+
+def normalize_fight_challenge(challenge):
+    config, details, elapsed, events = _fight_state(challenge)
+    keys = {"challengeId", "targetLow", "targetHigh", "fishPower", "fishSeed", "minDurationMs",
+            "maxDurationMs", "checkpointIntervalMs", "maxInputEvents", "behaviorVersion", "behavior"}
+    result = {key: deepcopy(value) for key, value in challenge.items() if key in keys}
+    if "struggles" in challenge:
+        result["struggles"] = [{"startMs": row["start"], "durationMs": row["duration"], "strength": row["strength"]}
+                               for row in config["struggles"]]
+    if challenge.get("checkpoint") is not None:
+        result["checkpoint"] = {"durationMs": elapsed, "events": events, "details": details}
+    return result
 
 
 def timed_fight_steps(challenge, *, is_current, monotonic=time.monotonic, sleeper=time.sleep):

@@ -5,11 +5,20 @@
 Worktree: `/root/xiuxian-native-fishing-20260930`.
 Branch: `lab/native-fishing-20260930`, base `8a04ebaa`.
 
-This is an offline protocol/journal implementation, **not production fishing
-automation**. No runtime imports, state fields, dispatcher branches, automatic
-HTTP calls, settings, purchases or casts were added. Production stays at
-`8a04ebaa`; the existing fishing UI/settings and unresolved legacy ledger remain
-untouched. Do not assign this record to the legacy `fishing_operation` field.
+The branch now contains a complete single-round worker, a version-2 native
+journal, checked SQLite persistence, atomic result accounting and an explicit
+public-entry canary action. **It has not been deployed or enabled for scheduled
+production fishing.** Production stays at `8a04ebaa`.
+
+The new record is `fishing_native_operation`, not the legacy `fishing_operation`.
+Normal public-entry calls retain their existing path until acceptance; only the
+explicit `fishing_native_canary` action or an unresolved native record enters the
+new runner. Original UI pond/bait settings and the fishing toggle remain in use.
+No live cast or purchase has been sent.
+
+User sequencing constraint: finish and stabilize this rollout first, then
+clean debt. Do not combine unrelated cleanup with the deployment. The canary
+code being testable is not evidence of live catch acceptance.
 
 ## Sources
 
@@ -37,15 +46,37 @@ untouched. Do not assign this record to the legacy `fishing_operation` field.
 - Server time uses monotonic elapsed time plus half RTT, capped at 250 ms.
   Expired bite selects `state`, never another hook/cast. Timed proof iteration
   waits actual duration, checks ownership after waits and rejects stalled clocks.
-- `fishing_dwelling_journal.py`: separate, bounded single-cast record with exact
-  identity/account/player/cast/session ownership. Store contract is atomic
-  compare-and-save. A cast payload is returned only after a confirmed durable
-  save; failures poison that journal instance. This store is not yet bound to
-  production persistence.
+- `fishing_dwelling_journal.py`: version-2, bounded single-round record with exact
+  identity/account/player/cast/session ownership. Cast, hook, checkpoint and
+  fight intents are saved before dispatch. Recovery increments the revision;
+  stale queries, backwards phases and changed challenges are rejected.
+- Unknown mutations only query their original session. An unchanged phase does
+  not permit another hook/fight. A lost checkpoint ack requires the matching
+  server checkpoint before further control inputs. Explicit zero-attempt
+  preparation/budget/cancellation results may compensate their own unsent
+  intent; this cannot erase a cast recovered from a previous process.
+- `fishing_dwelling_store.py`: main-loop compare-and-save bridge with an
+  independent 128 KiB JSON column. Tests use real temporary SQLite, reload each
+  pending phase, and check DB intent before allowing worker dispatch. Damaged
+  JSON remains a hold; a replaced/rebound owner cannot write. Both legacy
+  pending-operation and pending-projection records block native admission.
+- Fish gains and the accounted marker share one persistence transaction.
+  Quantities do not inflate rod count: two fish from one cast remain one rod.
+  Scoped settlement context supplies daily quota; stale-day quota cannot reset
+  current-day counters. Changed fact/inventory bases block duplicate projection,
+  while disabled UI settings retain gains without rescheduling. Save failure
+  rolls back inventory and keeps the receipt.
+- `fishing_dwelling_miniapp.py`: one cast only, shared HTTP budget/global limiter,
+  no automatic mutation retries. Request timing excludes local queue/limiter
+  waits from RTT. Cancelled callers drain the in-flight worker and retain its
+  confirmed receipt; cancellation cannot release locks before HTTP returns.
+- `fishing_dwelling_runtime.py`: explicit public-entry canary, verified directory
+  and selected model, original pond/bait plan and both existing exclusion locks.
+  No fallback to the legacy worker after native admission or an unknown result.
 - A restarted/unresolved cast exposes an exact `state` query, not another cast.
   An unscoped `context`, foreign session, stale revision or negative/missing
   response cannot clear the record. Confirmed settlement is retained and cannot
-  regress or change rewards; it does not itself update inventory or daily counts.
+  regress or change rewards; the journal itself does not project inventory.
 - Missing rod, missing bait, quota exhaustion, voyage and other-mode conflict
   remain distinct identity-local reasons, not a global circuit breaker.
 
@@ -64,36 +95,50 @@ untouched. Do not assign this record to the legacy `fishing_operation` field.
 - Probe now saves allowlisted bait metadata, preserving missing fields instead
   of turning malformed/missing inventory into an empty successful snapshot.
 
-## Required Before Runtime Integration
+Additional enabled-identity preflight, all four reads HTTP 200 each:
 
-1. Bind a separate native record to checked persistence and identity ownership,
-   including removal/recreation, account swaps and restart/process tests.
-2. Extend durable intent and unknown-outcome reconciliation to hook, checkpoint
-   and fight. Current journal covers cast binding and settlement evidence only.
-   Prevent parallel or out-of-order active-session responses from scheduling
-   duplicate mutations; the current journal is not a hook/fight state machine.
-3. Bind selected character model and directory evidence from the verified public
-   entry. Preserve original pond, bait and daily-plan settings. No guessed
-   companion ID, generic command fallback or legacy-ledger reinterpretation.
-4. Integrate the shared HTTP budget (90/min and daily cap), cancellation/draining,
-   existing identity/game locks, and retry-after handling. A raw response parser
-   is not identity authentication or a rate-limited transport.
-5. Transactionally project each session's fish/quota once with its accounting
-   marker; do not double-subtract bait already reflected by native context.
-6. Controlled one-rod acceptance on an already-enabled identity with rod, bait
-   and companion available, followed by restart/recovery verification. No bulk
-   enablement or automatic purchase for the read-only probe identity.
-7. Only then enable integrated-directory routing; retain legacy unresolved
-   recovery until those records are reconciled. Remove obsolete code separately.
+- `/root/xiuxian-native-fishing-canary-context-7538826434-20260930.json`:
+  identity/account/player `7538826434`, rod present, five bait types all zero,
+  no conflict, no active session, quota 0/5 used.
+- `/root/xiuxian-native-fishing-canary-wa-context-20260930.json`:
+  WA `8659059191`, rod present, bait zero, `fishing_companion_sailing`.
+- `/root/xiuxian-native-fishing-canary-baji-context-20260930.json`:
+  Baji `301299112`, rod present, bait zero, `fishing_companion_sailing`.
+- These are eligibility failures, not MiniApp outages. Do not force a hook,
+  alter voyage automation or buy an arbitrary bait to produce a green report.
+
+## Required Before Rollout Completion
+
+1. Migrate `buy-bait`/`chum` with the existing auto-buy settings and operation-ID
+   receipts. Current runner deliberately exposes neither purchase endpoint;
+   all enabled accounts lack bait. Do not silently ignore the auto-buy setting
+   or call this finished automation. Obtain actual shop-cost/response evidence.
+2. Deploy only the validated canary surface, preserve a backup and rollback
+   boundary. A rollback after a live mutation must retain the native ledger;
+   older production code does not understand its unresolved records.
+3. Controlled one-rod acceptance on an already-enabled identity with rod, bait
+   and companion available, followed by real recovery/settlement verification.
+   Confirm server checkpoint/proof acceptance, not just offline success.
+4. Verify voyage-return scheduling and original daily follow-up behavior before
+   scheduled rollout. WA/Baji must not skip or interrupt voyages to force a test.
+5. Only then enable integrated-directory routing by default and observe natural
+   execution. Retain legacy unresolved recovery; delete old paths in a separate
+   cleanup after stability, as requested.
+
+Deferred monitoring debt: the 18:57:59 journal line about an unowned external
+Xuangu question timing out caused a generic observer warning. It was not our
+identity's failed attempt. No shared observer patch was applied in this batch.
 
 ## Verification
 
-- Native suite: 117 passed, including separate V1 and V2 JavaScript replay cases.
-- Final fishing regression: 901 passed, 17 subtests.
+- Initial batch: 117 native tests; 901 fishing tests plus 17 subtests.
+- This batch: 194 native tests after unsent-intent compensation.
+- Expanded fishing/persistence/state/cave/UI run: 2144 passed, 264 subtests,
+  including the final two compensation cases (33.42 seconds).
 - JavaScript syntax, Python compileall and diff whitespace checks passed.
-- Isolated imports load no `model.runtime`, `model.state`, `model.config`,
+- Isolated protocol/journal imports load no `model.runtime`, `model.state`, `model.config`,
   `requests` or `telethon`.
-- Production observer remained ok through 18:25; PID `3597994`, NRestarts 0.
+- Production observer remained ok through 19:59; PID `3597994`, NRestarts 0.
 - 8-hour defensive preflight: pending queue empty. WA wild training due
   2026-10-01 01:29 CST, not yet in its Tianxing preparation window. Listener
   sidecar inactive remains a known watch item; main listener is active.

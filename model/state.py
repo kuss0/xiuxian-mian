@@ -27,6 +27,7 @@ from .module_manifest import is_module_archived
 from .tree_score_policy import normalize_tree_score_records
 
 FISHING_OPERATION_MAX_BYTES = 256 * 1024
+FISHING_NATIVE_OPERATION_MAX_BYTES = 128 * 1024
 TRIAL_OPERATION_MAX_BYTES = 256 * 1024
 TRIAL_OPERATION_ARCHIVE_MAX_BYTES = 256 * 1024
 TREASURE_RESULT_MAX_BYTES = 256 * 1024
@@ -110,6 +111,8 @@ IDENTITY_JSON_COLUMNS.add("fishing_result_pending")
 IDENTITY_RUNTIME_COLUMNS.append("fishing_result_pending")
 IDENTITY_JSON_COLUMNS.add("fishing_operation")
 IDENTITY_RUNTIME_COLUMNS.append("fishing_operation")
+IDENTITY_JSON_COLUMNS.add("fishing_native_operation")
+IDENTITY_RUNTIME_COLUMNS.append("fishing_native_operation")
 IDENTITY_JSON_COLUMNS.add("trial_operation")
 IDENTITY_RUNTIME_COLUMNS.append("trial_operation")
 IDENTITY_JSON_COLUMNS.add("trial_operation_archive")
@@ -785,6 +788,7 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_valuable_drop_reminders": [],
     "fishing_result_pending": {},
     "fishing_operation": {},
+    "fishing_native_operation": {},
     "trial_operation": {},
     "trial_operation_archive": [],
     "treasure_result": {},

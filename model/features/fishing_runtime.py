@@ -1216,6 +1216,9 @@ def recover_fishing_result_pending(identity_id):
     owner = MiniAppIdentityOwner.capture(identity_id)
     if owner is None:
         return None
+    from .fishing_dwelling_runtime import pending as native_pending
+    if native_pending(owner.identity):
+        return {"ok": False, "message": "原生钓鱼有待核对记录，请从洞府公共入口恢复", "extra": {"status": "native_operation_pending"}}
     recovered = None
     if owner.identity.get("fishing_result_pending", {}) != {}:
         try:

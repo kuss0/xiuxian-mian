@@ -7579,6 +7579,8 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
 
 
 def _cave_public_entry_runner(identity_id, action, *, tree_operation=None):
+    if action == "fishing_native_canary":
+        return lambda url: run_cave_public_fishing(identity_id, url, native_canary=True)
     runners = {
         "small_world": run_cave_public_small_world_sync,
         "treasure": run_cave_public_treasure, "hunt": run_cave_public_treasure,
