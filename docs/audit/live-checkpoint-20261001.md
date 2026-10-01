@@ -120,3 +120,19 @@ The stricter read-only live check still accepts 19/19 channel cycles. This is
 an audit-tool hardening change in Lab, not a production runtime fix. At 21:45
 the log bot experienced one network-unreachable error and recovered at 21:46;
 observer remained ok at 21:59. No retry policy or runtime switch was changed.
+
+## 22:25 Upstream And Expanded Regression
+
+- Fresh SSH fetch still resolves wxjerry origin/main to aa9dba29.
+- Upstream fishing_dwelling.py explicitly defers native automatic fish opening:
+  no confirmed dwelling `/open` contract exists. Do not send dwelling credentials
+  to the old external endpoint or describe automatic opening as already supported
+  upstream. This remains a protocol-evidence gate, not a missing cherry-pick.
+- The upstream voyage handoff deliberately delays the next voyage until resumed
+  fishing finishes. Local voyage logic has a different state model; no such
+  interlock was added to WA/Baji. Existing native supply and flow eligibility
+  refuse purchases/casts while the companion is sailing (143 focused tests pass).
+- Expanded isolated fishing/cave/persistence/state/UI plus cycle-audit regression:
+  **2288 passed, 196 subtests passed**, 39.60 seconds. No live gameplay performed.
+- Foreground observer remained ok at 22:19; watchdog check also passed. Production
+  still has no edits or deployment from this continuation.
