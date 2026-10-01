@@ -125,6 +125,41 @@ def test_manual_canary_alias_is_not_in_scheduled_action_list(fishing_env):
     assert "fishing_native_canary" not in ui._cave_public_actions_from_config()
 
 
+def test_manual_recovery_alias_is_not_in_scheduled_action_list(fishing_env):
+    assert ui._cave_public_entry_runner(fishing_env.identity_id, "fishing_native_recover") is not None
+    assert "fishing_native_recover" not in ui._cave_public_actions_from_config()
+
+
+def test_recovery_without_pending_record_never_loads_game_or_uses_old_route(fishing_env, monkeypatch):
+    h = fishing_env
+    configure(h)
+    worker = AsyncMock()
+    session = AsyncMock()
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+    monkeypatch.setattr(cave, "_load_cave_public_identity_session", session)
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url, native_recovery_only=True))
+    assert result["extra"]["status"] == "recovery_not_needed"
+    session.assert_not_awaited()
+    worker.assert_not_awaited()
+    h.external.assert_not_awaited()
+    h.flow.assert_not_awaited()
+
+
+def test_recovery_keeps_timer_and_passes_read_only_mode(fishing_env, monkeypatch):
+    h = fishing_env
+    configure(h)
+    h.identity[native.STATE_KEY] = deepcopy(pending_receipt(h, native.STATE_KEY))
+    timer = h.identity["next_fishing_time"]
+    worker = AsyncMock(return_value={"ok": False, "status": "recovery_wait"})
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url, native_recovery_only=True))
+    assert result["extra"]["status"] == "recovery_wait"
+    assert worker.await_args.kwargs["recovery_only"] is True
+    assert worker.await_args.kwargs["update_schedule"] is False
+    assert h.identity["next_fishing_time"] == timer
+    h.daily.assert_not_awaited()
+
+
 def test_pending_supply_also_blocks_legacy_routes(fishing_env, monkeypatch):
     h = fishing_env
     configure(h)

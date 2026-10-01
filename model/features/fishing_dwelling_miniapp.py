@@ -32,7 +32,7 @@ class _RequestFailed(Exception):
 def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bait_id,
                             transport, operation_check, monotonic=time.monotonic, sleeper=time.sleep,
                             capture_sink=None, capture_source="", request_budget=None, basis_provider=None, bait_choice="",
-                            supply_journal=None, supply_settings=None):
+                            supply_journal=None, supply_settings=None, recovery_only=False):
     """One supply or cast, without blind retries, next cast or legacy fallback.
 
     The production caller must hold its public-entry/fishing locks, supply a
@@ -134,6 +134,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
             if phase != "accounted":
                 return finish("supplied" if phase == "confirmed" else "supply_pending")
         if journal.record == {} or journal.record["phase"] == "accounted":
+            if recovery_only:
+                return finish("recovery_not_needed")
             initial, _, _, _ = request("context", {"siteId": site_id})
             if not check():
                 return finish("cancelled")
@@ -173,6 +175,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 return finish("settled")
             if journal.record["pending_action"]:
                 return finish("operation_pending")
+            if recovery_only:
+                return finish("recovery_wait")
             if not check():
                 return finish("cancelled")
             phase = parsed["phase"]
@@ -223,7 +227,7 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
                                              site_id, model_id, bait_id, operation_check,
                                              transport=None, sleeper=None, monotonic=time.monotonic,
                                              capture_sink=None, capture_source="", bait_choice="", supply_settings=None,
-                                             update_schedule=True):
+                                             update_schedule=True, recovery_only=False):
     """Caller supplies verified entry ownership and holds the fishing/public locks."""
     from .fishing_dwelling_store import NativeFishingStore
     from .miniapp_common import MiniAppFlowCancelled, build_pooled_miniapp_transport, run_miniapp_blocking_flow
@@ -241,6 +245,7 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
             capture_sink=capture_sink, capture_source=capture_source,
             bait_choice=bait_choice,
             supply_journal=store.supply_journal(), supply_settings=supply_settings,
+            recovery_only=recovery_only,
         )
 
     try:

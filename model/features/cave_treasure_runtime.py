@@ -4517,7 +4517,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
         return response
 
 
-async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, native_canary=False):
+async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, native_canary=False, native_recovery_only=False):
     """Run fishing for a selected dwelling identity without a channel group command."""
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -4570,6 +4570,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
             return cancelled
         from . import fishing_dwelling_runtime as native_fishing
         native_pending = native_fishing.pending(operation.owner.identity)
+        if native_recovery_only and not native_pending:
+            return {"ok": True, "message": "没有待核对的原生鱼竿，未发送动作", "extra": {"status": "recovery_not_needed"}}
         recovered = None if native_pending else recover_fishing_result_pending(identity_id)
         if recovered is not None:
             return recovered
@@ -4592,12 +4594,13 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
-        if native_canary or native_pending:
+        if native_canary or native_pending or native_recovery_only:
             response = await native_fishing.run_selected_identity(
-                operation, session, token=token, can_continue=can_continue, update_schedule=not native_canary,
+                operation, session, token=token, can_continue=can_continue,
+                update_schedule=not (native_canary or native_recovery_only), recovery_only=native_recovery_only,
             )
             return await report(response, priority="low" if response.get("ok") else "normal",
-                                daily=bool((response.get("extra") or {}).get("committed")))
+                                daily=not native_recovery_only and bool((response.get("extra") or {}).get("committed")))
         external_app = _find_fishing_external_app_in_cave_payload(raw)
         if not external_app:
             with use_identity(identity_id):

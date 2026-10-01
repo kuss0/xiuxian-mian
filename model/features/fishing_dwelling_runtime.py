@@ -39,7 +39,7 @@ def integrated(raw):
                                             and row.get("status") == "integrated" for row in entries)
 
 
-async def run_selected_identity(operation, session, *, token, can_continue, update_schedule=True):
+async def run_selected_identity(operation, session, *, token, can_continue, update_schedule=True, recovery_only=False):
     """The public caller already owns both locks and verified this player."""
     identity_id = operation.owner.identity_id
     raw = ((session.get("result") or {}).get("data") or {}).get("raw") or {}
@@ -68,6 +68,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
             identity_id, player_id=session["player_id"], token=token, init_data=session["init_data"],
             site_id=site_id, model_id=model_id, bait_id="", bait_choice=operation.bait_choice,
             update_schedule=update_schedule,
+            recovery_only=recovery_only,
             capture_sink=fishing._fishing_miniapp_capture_store(time.time()),
             capture_source=f"cave_public_native_fishing:{identity_id}",
             supply_settings={"bait_choice": operation.bait_choice, "auto_buy": config.auto_buy_bait_enabled,

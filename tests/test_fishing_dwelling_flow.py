@@ -8,7 +8,7 @@ from test_fishing_dwelling_journal import Store, context, response, fighting
 from test_fishing_dwelling_protocol import Clock
 
 
-def run(store, *, transport=None, current=lambda: True, clock=None):
+def run(store, *, transport=None, current=lambda: True, clock=None, recovery_only=False):
     clock = clock or Clock()
     calls = []
 
@@ -35,8 +35,29 @@ def run(store, *, transport=None, current=lambda: True, clock=None):
         journal=store.open(), token="df_FIXTURE_NATIVE", init_data="fixture-init-data",
         site_id="west-shore", model_id="ngw", bait_id="bait", transport=dispatch,
         operation_check=current, monotonic=lambda: clock.now, sleeper=clock.sleep,
+        recovery_only=recovery_only,
     )
     return result, calls
+
+
+def test_recovery_only_empty_journal_does_not_start_a_rod():
+    store = Store()
+    result, calls = run(store, recovery_only=True)
+    assert calls == [] and store.record == {}
+    assert result["status"] == "recovery_not_needed"
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_recovery_only_reads_original_session_without_resuming_fight(settled):
+    store = Store()
+    ledger = store.open()
+    query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait")
+    ledger.accept(query, fighting())
+    before = deepcopy(store.record)
+    result, calls = run(store, recovery_only=True, transport=lambda *args: response(settled=True) if settled else fighting())
+    assert calls == ["state"]
+    assert store.record["cast_id"] == before["cast_id"]
+    assert result["status"] == ("settled" if settled else "recovery_wait")
 
 
 def test_full_round_runs_checkpoints_and_settles_once():
