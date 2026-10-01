@@ -49,15 +49,19 @@ def main():
         starts = [row['created_at'] for row in rows
                   if row['step_key'] == 'deep_seclusion:start' and row['ok']]
         cycle = any(start > settle for settle in settles for start in starts)
-        verified = (state.get('identity_verified') is True and
+        timestamps_valid = all(0 < row['created_at'] <= now for row in rows)
+        verified = (state.get('ok') is True and state.get('parser_version') == 2 and
+                    state.get('identity_verified') is True and
                     state.get('sync', {}).get('handled') is True and
                     phase == 'running' and snapshot.get('active') is True and
+                    snapshot.get('known') is True and snapshot.get('ok') is True and
+                    snapshot.get('conflicting') is False and
                     snapshot.get('end_ms', 0) / 1000 > now and
                     not state.get('outcome_unknown') and
                     state.get('action') == 'start' and
                     0 <= now - record.get('updated_at', 0) < 8 * 3600 and
                     bool(starts) and max(starts) < snapshot.get('end_ms', 0) / 1000)
-        ok = (matched and cycle and verified and enabled == 0 and retreat == 1
+        ok = (matched and cycle and timestamps_valid and verified and enabled == 0 and retreat == 1
               and not any(row['step_key'] == 'deep_seclusion:force' for row in rows))
         results.append(dict(identity=ident, name=name, accepted=ok,
                             settle_count=len(settles), start_count=len(starts),

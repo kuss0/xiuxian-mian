@@ -106,3 +106,17 @@ HTTP start capture. The checker therefore does not assert updated_at >= capture
 time; it checks freshness, verified active state, future deadline and ordered
 selected-role captures separately. It makes no network requests or DB writes.
 Health observer and watchdog were ok at 21:29; production remains unchanged.
+
+## 22:09 Audit Tool Regression Follow-Up
+
+Added temporary-database CLI tests for the new cycle checker. Six negative
+fixtures initially exposed false acceptance of future capture timestamps,
+unknown/conflicting/failed panels, failed state and old parser versions.
+The checker now rejects these explicitly. The complete 21-case matrix plus
+the existing defensive-preflight suite passes: 38 tests. Tests verify the
+fixture SQLite bytes remain unchanged and never target the production DB.
+
+The stricter read-only live check still accepts 19/19 channel cycles. This is
+an audit-tool hardening change in Lab, not a production runtime fix. At 21:45
+the log bot experienced one network-unreachable error and recovered at 21:46;
+observer remained ok at 21:59. No retry policy or runtime switch was changed.
