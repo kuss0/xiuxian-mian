@@ -7,6 +7,7 @@ before dispatch. Parsing a context alone does not establish identity ownership.
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import math
 import re
 import time
@@ -130,6 +131,13 @@ def cast_block_reason(context, bait_item_id):
     if bait is None or bait["count"] == 0:
         return "fishing_bait_missing"
     return "" if bait["unlocked"] else "fishing_bait_level_low"
+
+
+def parse_settlement_quota(payload):
+    facts = parse_context(payload)
+    stamp = _number(payload["context"].get("serverNow"), "quota_time", 1, 253402214400000)
+    day = datetime.fromtimestamp(stamp / 1000, timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    return {"day": day, **facts["quota"]}
 
 
 def parse_owned_session(payload, *, session_id, site_id):

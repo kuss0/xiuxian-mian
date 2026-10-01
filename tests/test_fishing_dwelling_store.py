@@ -479,6 +479,127 @@ def test_manual_changes_block_duplicate_projection(fishing_db, change):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("change_during_read", [False, True])
+def test_empty_rod_recovery_uses_fresh_baits_without_overwriting_other_loot(fishing_db, change_during_read):
+    h = fishing_db
+    calls = []
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                now=h.now, projection_basis=store.basis())
+        ledger.accept(query, fighting())
+        state_module.set_storage_bag_records({str(h.identity_id): {"items": {"stone": 237, "bait": 8}}})
+        timer = h.identity["next_fishing_time"]
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            assert calls == ["state"]
+            if change_during_read:
+                # Simulate a concurrent normal-module inventory update.
+                store._on_loop(lambda: state_module.set_storage_bag_records(
+                    {str(h.identity_id): {"items": {"stone": 238, "bait": 8}}}))
+            data = response(settled=True)
+            data["session"]["result"] = {"ready": True, "caught": False, "bonusLoot": []}
+            data["context"]["serverNow"] = h.now * 1000
+            data["context"]["baits"][0]["count"] = 7
+            return data
+
+        result = await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="bait", transport=transport, operation_check=lambda: True,
+            recovery_only=True, update_schedule=False,
+        )
+        items = state_module.get_storage_bag_records()[str(h.identity_id)]["items"]
+        assert h.identity["next_fishing_time"] == timer
+        if change_during_read:
+            assert result["error"] == "native_projection_basis_changed"
+            assert h.identity[native.STATE_KEY]["phase"] == "settled"
+            assert items == {"stone": 238, "bait": 8}
+        else:
+            assert result["committed"] and not result["outcome_unknown"]
+            assert h.identity[native.STATE_KEY]["phase"] == "accounted"
+            assert items == {"stone": 237, "bait": 7}
+            assert h.identity["fishing_daily_count"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("gains", ["fish", "bonus", "none"])
+def test_retained_settlement_refresh_never_rebases_gains(fishing_db, gains):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                now=h.now, projection_basis=store.basis())
+        data = response(settled=True)
+        data["context"]["serverNow"] = h.now * 1000
+        if gains != "fish":
+            data["session"]["result"] = {"ready": True, "caught": False,
+                                         "bonusLoot": [{"name": "gem", "qty": 1}] if gains == "bonus" else []}
+        ledger.accept(query, data)
+        state_module.set_storage_bag_records({str(h.identity_id): {"items": {"stone": 9, "bait": 20}}})
+        before = deepcopy(h.identity[native.STATE_KEY])
+        calls = []
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            fresh = deepcopy(data)
+            fresh["context"]["baits"][0]["count"] = 6
+            return fresh
+
+        result = await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="bait", transport=transport, operation_check=lambda: True,
+            recovery_only=True, update_schedule=False,
+        )
+        assert calls == ["state"]
+        if gains == "none":
+            assert result["committed"]
+            assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == {"stone": 9, "bait": 6}
+        else:
+            assert result["error"] == "native_projection_basis_changed"
+            assert h.identity[native.STATE_KEY] == before
+            assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == {"stone": 9, "bait": 20}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["facts", "wrong_session", "missing_context"])
+def test_empty_recovery_does_not_relax_scope_or_fact_checks(fishing_db, change):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                now=h.now, projection_basis=store.basis())
+        data = response(settled=True)
+        data["session"]["result"] = {"ready": True, "caught": False, "bonusLoot": []}
+        data["context"]["serverNow"] = h.now * 1000
+        ledger.accept(query, data)
+        state_module.set_storage_bag_records({str(h.identity_id): {"items": {"stone": 99}}})
+        if change == "facts":
+            h.identity["fishing_daily_count"] = 3
+        elif change == "wrong_session":
+            data["session"]["sessionId"] = "foreign"
+        else:
+            data.pop("context")
+        result = await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="bait", transport=lambda request: data, operation_check=lambda: True,
+            recovery_only=True, update_schedule=False,
+        )
+        assert not result.get("committed")
+        assert h.identity[native.STATE_KEY]["phase"] == "settled"
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == {"stone": 99}
+
+    asyncio.run(scenario())
+
+
 def test_ui_disabled_after_result_keeps_gains_but_does_not_reschedule(fishing_db):
     h = fishing_db
 

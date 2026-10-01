@@ -7,7 +7,7 @@ accounted marker; this module deliberately does not perform that projection.
 
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import json
 import re
 import time
@@ -274,10 +274,7 @@ def reconcile(record, query, payload):
             raise protocol.ProtocolError("settlement_bait_missing")
     settlement_quota = record["settlement_quota"]
     if settled and isinstance(root.get("context"), dict):
-        facts = protocol.parse_context(root)
-        stamp = protocol._number(root["context"].get("serverNow"), "quota_time", 1, 253402214400000)
-        day = datetime.fromtimestamp(stamp / 1000, timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-        settlement_quota = {"day": day, **facts["quota"]}
+        settlement_quota = protocol.parse_settlement_quota(root)
     if record["phase"] in ("settled", "accounted"):
         if not settled or catches != record["catches"]:
             raise protocol.ProtocolError("settlement_changed")

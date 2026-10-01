@@ -10,6 +10,7 @@ from .. import persistence
 from .miniapp_common import MiniAppIdentityOwner
 from .fishing_dwelling_journal import NativeCastJournal, settlement_complete, validate
 from .fishing_dwelling_protocol import ProtocolError
+from . import fishing_dwelling_protocol as protocol
 from . import fishing_dwelling_supply as supply
 
 
@@ -178,6 +179,39 @@ class NativeFishingStore:
                     "plan": fishing._fishing_result_basis(self.owner.identity, fishing._FISHING_RESULT_PLAN_KEYS),
                     "inventory": fishing.fishing_operations.inventory_basis(self.owner.identity_id)}
         return self._on_loop(capture)
+
+    def accept_recovery(self, query, payload, before_read):
+        """Rebase only empty rods from a scoped fresh state read, never gains.
+
+        Unrelated loot may change the bag while a missed rod is unresolved.
+        A fresh response can replace bait balances if nothing changed during
+        that read; it cannot establish whether old fish/rewards were applied.
+        """
+        def apply():
+            if query.action != "state":
+                raise ProtocolError("native_refresh_requires_state")
+            ledger = self.journal()
+            parsed = ledger.accept(query, payload)
+            record = ledger.record
+            if (record["version"] != 3 or record["phase"] != "settled" or record["catches"]
+                    or record["settlement_resources"]["rewards"] or payload.get("context") is None):
+                return parsed
+            current = self.basis()
+            if (before_read != current or record["projection_basis"]["facts"] != current["facts"]):
+                return parsed
+            resources = protocol.parse_settlement_resources(
+                payload, session_id=record["session_id"], site_id=record["site_id"])
+            if resources["rewards"] or resources["baits"] is None:
+                return parsed
+            updated = deepcopy(record)
+            updated["projection_basis"]["inventory"] = current["inventory"]
+            updated["settlement_resources"] = resources
+            updated["settlement_quota"] = protocol.parse_settlement_quota(payload)
+            if updated != record:
+                updated["revision"] += 1
+                self.compare_and_save(record, updated)
+            return parsed
+        return self._on_loop(apply)
 
     def project(self, now, *, update_schedule=True):
         """Persist confirmed gains and the accounted marker in one state commit."""

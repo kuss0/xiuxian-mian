@@ -32,7 +32,7 @@ class _RequestFailed(Exception):
 def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bait_id,
                             transport, operation_check, monotonic=time.monotonic, sleeper=time.sleep,
                             capture_sink=None, capture_source="", request_budget=None, basis_provider=None, bait_choice="",
-                            supply_journal=None, supply_settings=None, recovery_only=False):
+                            supply_journal=None, supply_settings=None, recovery_only=False, accept_recovery=None):
     """One supply or cast, without blind retries, next cast or legacy fallback.
 
     The production caller must hold its public-entry/fishing locks, supply a
@@ -78,6 +78,7 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
     def request(action, payload, query=None, *, hook_clock=None, supply_expected=None):
         nonlocal context, retry_after
         expected = deepcopy(journal.record)
+        before_read = basis_provider() if action == "state" and accept_recovery is not None else None
 
         def current():
             if (not check() or expected != journal.record
@@ -119,7 +120,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
         if query is not None:
             # Persist a confirmed response even if the UI toggled automation off
             # while HTTP was in flight. Owner replacement still rejects it.
-            parsed = journal.accept(query, data)
+            parsed = (accept_recovery(query, data, before_read)
+                      if action == "state" and accept_recovery is not None else journal.accept(query, data))
         else:
             parsed = None
         if isinstance(data, dict) and data.get("context") is not None:
@@ -158,7 +160,7 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                                        projection_basis=basis_provider() if basis_provider is not None else None)
             data, parsed, start, received = request("cast", body, query)
         else:
-            if journal.record["phase"] == "settled" and settlement_complete(journal.record):
+            if not recovery_only and journal.record["phase"] == "settled" and settlement_complete(journal.record):
                 return finish("settled")
             settlement_read = journal.record["phase"] == "settled"
             query, body = journal.recovery()
@@ -246,6 +248,7 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
             bait_choice=bait_choice,
             supply_journal=store.supply_journal(), supply_settings=supply_settings,
             recovery_only=recovery_only,
+            accept_recovery=store.accept_recovery,
         )
 
     try:

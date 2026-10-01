@@ -1,5 +1,45 @@
 # October 2 Native Fishing Checkpoint Canary
 
+## Latest Status (07:45 UTC+8)
+
+- Production is `8eecce9f`. Pacing and recovery-only were deployed at 03:14.
+- Recovery at 03:17 accounted the first missed rod using state only.
+- A second canary cast at 03:19:47, hooked at 03:20:13, and confirmed its
+  2500 ms checkpoint at 03:20:15.744. Its 5000 ms checkpoint failed at
+  03:20:18.392 with the same `fishing_checkpoint_stale`. The 2.648 second gap
+  exceeds the declared interval: short spacing alone is NOT the root cause.
+- Exact retained proof replay through the independent JavaScript fixture,
+  both from zero and from the accepted checkpoint, matched all seven state
+  fields including tension 57.8633009961673 and progress 53.84599999999985.
+  Current official controller physics and request fields remain equivalent.
+- At 07:30, scoped recovery confirmed session 48666 settled empty. Server
+  quota is 2/5 used, three remaining; no additional cast was made. Its receipt
+  is settled but projection is held by `native_projection_basis_changed`.
+- Facts digest still matches. Inventory digest differs because ordinary loot
+  changed unrelated stones and cores after the cast. Full-bag equality makes
+  even a confirmed empty rod unrecoverable despite a fresh absolute bait read.
+- The Lab fix rebases only a zero-catch, zero-reward settlement from a strictly
+  scoped state response, with unchanged facts and before/after read basis.
+  It updates only fishing balances through the existing atomic projection.
+  Concurrent changes, foreign sessions, missing context and nonempty gains
+  remain held. Recovery-only still cannot cast or reschedule.
+- Core regression: 281 passed. Expanded isolated regression: 1378 passed,
+  46 subtests passed (35.62 seconds), compile and diff checks passed.
+  Deployment pending.
+- SSH fetch of wxjerry `origin/main` still reports `aa9dba2`; no newer fix.
+- Main/observer/watchdog active at 07:45. The foreground observer was resumed
+  after the earlier session disappeared. WA's 05:27 real rift replies show
+  prediction hit and retained change-fate protection; Baji's 07:32 MiniApp
+  voyage return and next moon voyage both have normal confirmations.
+
+Private additional evidence:
+- `/root/xiuxian-native-fishing-recovery-20261002-0316.json`
+- `/root/xiuxian-native-fishing-paced-rod-20261002-0319.json`
+- `/root/xiuxian-native-fishing-recovery-20261002-0732.json`
+
+The entries below are historical checkpoints, not the current production
+version or claims of a successful catch. Native fishing remains canary-only.
+
 ## Live Evidence
 
 Production remains 511b161e. Yesterday's missed rod was accounted by the normal
