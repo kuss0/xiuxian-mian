@@ -83,6 +83,49 @@ def test_slow_asymmetric_transport_can_still_hook_inside_four_second_window():
     assert result["ok"] and calls.count("cast") == calls.count("hook") == calls.count("fight") == 1
 
 
+@pytest.mark.parametrize("check_delay", [6, 10, 30])
+def test_pre_sleep_validation_time_counts_toward_bite_wait(monkeypatch, check_delay):
+    from model.features import fishing_dwelling_protocol as protocol
+    clock, store = Clock(), Store()
+    original = protocol.next_session_action
+    delayed = [False]
+    window = {}
+
+    def next_action(*args):
+        result = original(*args)
+        if result[0] == "wait":
+            delayed[0] = True
+        return result
+
+    def current():
+        if delayed[0]:
+            delayed[0] = False
+            clock.sleep(check_delay)
+        return True
+
+    def transport(action, request, clock):
+        if action == "cast":
+            stamp = 10000 + clock.now * 1000
+            window.update(biteAt=stamp + 20000, expiresAt=stamp + 24000)
+            data = response()
+            data["session"].update(serverNow=stamp, **window)
+            return data
+        if action == "hook":
+            assert window["biteAt"] <= 10000 + clock.now * 1000 < window["expiresAt"]
+            return fighting()
+        return {"context": context(), "checkpoint": fighting(), "fight": response(settled=True)}[action]
+
+    monkeypatch.setattr(protocol, "next_session_action", next_action)
+    result, calls = run(store, clock=clock, current=current, transport=transport)
+    if check_delay >= 24:
+        assert not result["ok"] and result["error"] == "native_hook_outside_window"
+        assert calls == ["context", "cast"]
+        assert store.record["phase"] == "session_owned" and not store.record["pending_action"]
+        return
+    assert result["ok"], result
+    assert calls.count("cast") == calls.count("hook") == calls.count("fight") == 1
+
+
 @pytest.mark.parametrize("failed", ["cast", "hook", "checkpoint", "fight"])
 @pytest.mark.parametrize("failure", ["timeout", "429", "unadvanced"])
 def test_uncertain_mutation_never_retries_or_recasts(failed, failure):

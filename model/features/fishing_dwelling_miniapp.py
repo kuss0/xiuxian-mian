@@ -64,10 +64,12 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
         return operation_check() is True
 
     def wait(delay):
+        start = monotonic()
         if not check():
             raise protocol.ProtocolError("native_operation_cancelled")
-        start = monotonic()
-        sleeper(delay)
+        # Main-loop receipt checks consume real time; do not add that time to
+        # the already-computed bite wait and miss the server's short window.
+        sleeper(max(0.0, delay - (monotonic() - start)))
         if not check():
             raise protocol.ProtocolError("native_operation_cancelled")
         if monotonic() - start + 1e-9 < delay:
