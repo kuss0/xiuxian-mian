@@ -84,3 +84,25 @@ another definition of pending work. All eight reproductions now pass; the
 expanded suite passes 2267 tests and 196 subtests. Compile and whitespace
 checks pass. This fix also remains Lab-only with the prior native candidates.
 No production state, command behavior, switch or retry policy was changed.
+
+## 21:35 Channel Cycle Follow-Up
+
+Read-only `tools/audit_channel_retreat_cycle.py` checked today's retained cave
+captures against current SQLite snapshots: 19/19 selected channel roles have
+a successful settlement followed by a successful start, correct negative
+playerId on every captured deep-retreat action, verified/handled running
+snapshots with future deadlines, and no unknown outcome. All retain retreat
+enabled and group sending disabled. No force-exit capture was present.
+
+This closes R67's remaining later-natural-cycle observation, not the wider
+MiniApp acceptance list. Capture metadata does not contain full reward bodies;
+this check makes no cultivation-gain claim. Fanb0x has three successful settle
+captures but only two successful starts today, consistent with the previously
+documented overnight timeout/reconciliation; it is not counted as three complete
+cycles. Every role has at least one ordered successful pair.
+
+The state envelope's updated_at is a workflow timestamp and can precede the
+HTTP start capture. The checker therefore does not assert updated_at >= capture
+time; it checks freshness, verified active state, future deadline and ordered
+selected-role captures separately. It makes no network requests or DB writes.
+Health observer and watchdog were ok at 21:29; production remains unchanged.
