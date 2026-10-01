@@ -60,6 +60,27 @@ def test_full_round_accepts_official_checkpoint_reply_without_echo():
     assert calls.count("checkpoint") >= 2
 
 
+@pytest.mark.parametrize("reply_delay", [.02, .3, 1.0])
+def test_checkpoint_confirmations_do_not_compress_next_send_interval(reply_delay):
+    store, clock = Store(), Clock()
+    last_confirmation = [None]
+    interval = fighting()["session"]["fight"].get("checkpointIntervalMs", 2500) / 1000
+
+    def transport(action, request, clock):
+        if action == "checkpoint":
+            if last_confirmation[0] is not None:
+                assert clock.now - last_confirmation[0] >= interval - 1e-9
+            clock.sleep(reply_delay)
+            last_confirmation[0] = clock.now
+            return {"ok": True}
+        return {"context": context(), "cast": response(), "hook": fighting(),
+                "fight": response(settled=True)}[action]
+
+    result, calls = run(store, transport=transport, clock=clock)
+    assert result["ok"], result
+    assert calls.count("checkpoint") >= 2
+
+
 def test_slow_asymmetric_transport_can_still_hook_inside_four_second_window():
     store = Store()
     window = {}

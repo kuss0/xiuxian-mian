@@ -187,13 +187,22 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 data, parsed, start, received = request("hook", body, query, hook_clock=clock)
             elif phase == "fighting":
                 challenge = deepcopy(parsed["fight"])
+                checkpoint_not_before = None
                 for final, proof, details in protocol.timed_fight_steps(
                         challenge, is_current=check, monotonic=monotonic, sleeper=wait):
                     action = "fight" if final else "checkpoint"
+                    if not final and checkpoint_not_before is not None:
+                        delay = checkpoint_not_before - monotonic()
+                        if delay > 0:
+                            wait(delay)
                     query, body = journal.prepare(action, proof=proof, details=details)
                     data, parsed, start, received = request(action, body, query)
                     if journal.record["pending_action"] or parsed["phase"] != "fighting":
                         break
+                    if not final:
+                        # Keep response jitter from compressing consecutive
+                        # checkpoints below the challenge's declared interval.
+                        checkpoint_not_before = received + challenge.get("checkpointIntervalMs", 2500) / 1000
             elif phase == "settling":
                 wait(2.5)
                 query, body = journal.recovery()
