@@ -66,3 +66,21 @@
 - Watch midnight daily resets and WA's next wild-training preparation window
   around 2026-10-02 00:27:35, ahead of its 00:37:35 timer. Recompute these times
   from current state at resume. No unrelated debt cleanup was deployed today.
+
+## 20:33 Lab Cleanup Boundary Follow-Up
+
+Inspection found `_retire_legacy_fishing_state` checked only legacy operation
+and result receipts, unlike the reset, initial-check and status paths. Direct
+retirement could therefore clear stale legacy waiting fields and move the
+timer while a native cast or supply receipt still needed reconciliation.
+
+Four direct-call reproductions failed on the old implementation, covering
+valid pending and corrupt native cast/supply records. Four scheduler-path
+cases were already protected upstream and passed before the change; this is
+not evidence of a current scheduler incident or confirmed live corruption.
+
+The one-line fix reuses `_fishing_has_unresolved_result` instead of adding
+another definition of pending work. All eight reproductions now pass; the
+expanded suite passes 2267 tests and 196 subtests. Compile and whitespace
+checks pass. This fix also remains Lab-only with the prior native candidates.
+No production state, command behavior, switch or retry policy was changed.

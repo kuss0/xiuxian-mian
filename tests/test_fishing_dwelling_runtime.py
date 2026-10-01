@@ -206,6 +206,26 @@ def test_native_recovery_precedes_daily_done_but_respects_timer(fishing_env, mon
     assert h.identity == before
 
 
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY])
+@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("entrypoint", ["retire", "scheduler"])
+def test_retire_preserves_native_receipt_and_stale_legacy_projection(fishing_env, key, corrupt, entrypoint):
+    h = fishing_env
+    h.identity[key] = {"phase": "pending"} if corrupt else pending_receipt(h, key)
+    h.identity.update(fishing_phase="fishing", fishing_reply_to_msg_id=17,
+                      fishing_reply_due_at=h.now - 30, fishing_started_at=h.now - 60,
+                      fishing_pending_action=".\u9493\u9c7c\u72b6\u6001", fishing_last_error="native outcome pending")
+    before = deepcopy(h.identity)
+    with state_module.use_identity(h.identity_id):
+        if entrypoint == "retire":
+            assert fishing._retire_legacy_fishing_state(h.now) is False
+        else:
+            asyncio.run(fishing.run_fishing_scheduler(h.now))
+    assert h.identity == before
+    h.flow.assert_not_awaited()
+    h.audit.assert_not_awaited()
+
+
 def test_unselected_native_receipt_does_not_enable_background_action(fishing_env, monkeypatch):
     h = fishing_env
     h.identity[native.STATE_KEY] = {"phase": "pending"}

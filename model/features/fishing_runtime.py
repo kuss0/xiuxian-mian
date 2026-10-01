@@ -228,7 +228,7 @@ def _cave_public_fishing_is_authoritative(send_as_id=None):
 
 
 def _retire_legacy_fishing_state(now):
-    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+    if _fishing_has_unresolved_result():
         return False
     phase = str(state.get("fishing_phase") or "idle").strip()
     if phase == "miniapp":
