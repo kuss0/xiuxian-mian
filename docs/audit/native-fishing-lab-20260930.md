@@ -355,3 +355,63 @@ Acceptance fixes now tested:
 World Boss stays off; both incense-to-shenshi settings stay off. Channel-send
 freeze, manual-only inventory policy and CommandAttempt shadow control remain
 unchanged. Do not treat this Lab commit as a production migration approval.
+
+### October 1 Morning: Transfer Queue Lab and Live Evidence
+
+- Native settlement now merges confirmed fish into the existing pending gift
+  queue when the original plan still matches and scheduling is allowed. It
+  retains the configured target, existing fish and an existing transfer deadline.
+  Bonus materials and bait stay in inventory, not in the fish gift queue.
+- Queue changes, inventory gains and the accounted marker share the same checked
+  save. Repeated projection is a no-op; failed saves restore all three. A changed
+  target, queue, timer or module switch does not get overwritten. Timer-neutral
+  canaries and cancelled workers do not enqueue gifts. Confirmed inventory gains
+  remain available even when the queue projection is skipped.
+- The existing gift worker now waits for unresolved or invalid native cast/supply
+  receipts. This prevents transfer of an older queue from changing inventory
+  while a new rod still needs reconciliation. Once accounted, the existing
+  storage gift batch is used; no new gift transport or native fish-open endpoint.
+- Isolated regression suite: 2259 passed, 196 subtests passed; Python compile and
+  whitespace checks passed. Tests cover SQLite reload, deduplication, failed
+  save rollback, cross-day recovery, empty rods, bonus exclusion, changed plans,
+  pending-receipt holds and one-time handoff to the existing gift queue.
+- Both this queue bridge and timing fix `789073a7` remain **Lab-only**. No live
+  cast or gift was made for this batch. Production remains `f69f694e`, clean.
+  Real full-catch acceptance, voyage return handoff, native fish opening and
+  public-selection/module-switch semantics remain rollout gates.
+
+Live verification through approximately 08:05 CST:
+
+- WA returned eight successful HTTP journey responses between 01:21:54 and
+  01:55:25, with the final business snapshot confirming 8/8. Eight real
+  `.推命 探索` sends and four `.改命 探索` sends precede these actions; final
+  text confirms prediction hit and an unconsumed change-fate effect. Overall,
+  18 identity snapshots dated today confirm 8/8; four older snapshots are from
+  July and are not counted as today's execution.
+- WA's 05:03:21 prediction preceded the 05:13:25 rift command. The exact reply
+  edit at 05:13:36 confirmed Tianji +1, contribution +30 and two law fragments,
+  with change-fate still available. This is receipt-backed completion, not a
+  timer-only success claim.
+- fanb0x deep-start timeout reconciled via status at 01:28:40, now running;
+  myios17 wild training reached 8/8 at 01:30:24. myios7 stargazer recovered at
+  01:44:59, collected materials and pulled eight stars. iceeet1's 02:03 reset
+  recovered at 02:33 and finished its quota at 02:34. No manual repeats.
+- The 01:51:42 fate-card external entry response really was HTTP 429,
+  `external_action_rate_limited`, retryAfter 49 seconds. It recovered around
+  01:56:50. Captured rolling-minute peak in that surrounding window was 36,
+  so it is not evidence of exceeding the global 90/min budget. Do not erase
+  the incident or assume the endpoint has no separate quota.
+- growrdick's `meditation_not_ready` rejection moved to a verified active quest
+  (18/30) waiting for deep-retreat settlement at 02:18. This is not completed
+  daily reward collection. The trial batch later completed 12/12 at 05:17:35.
+- Service journal shows a stop/start at 04:48:48/04:48:57 with no code revision
+  change; this agent did not initiate that restart. At 07:56 PID 3804393 was
+  active, NRestarts 0. The prior foreground observer session no longer existed;
+  it was replaced by session 15289 and its output was consumed.
+- 08:01 health was ok, watchdog dry-run ok and pending queue empty. Both
+  World Boss and incense-refine enabled counts are zero. The canary identity
+  7538826434 remains 1/5 with an accounted receipt; captures show exactly one
+  cast and one hook today, no checkpoint/fight. Remaining rods stay untouched.
+
+Continue observing the morning deep-retreat/yuanying settlements. Do not turn
+this checkpoint into broad native rollout or unrelated debt cleanup.

@@ -248,6 +248,13 @@ class NativeFishingStore:
                                         fishing_chum_day=day,
                                         fishing_chum_counts=fishing.fishing_behavior.format_chum_usage_counts(resources["chum_usage"]))
                 if can_schedule:
+                    if record["catches"] and fishing._parse_int(identity.get("fishing_transfer_target_id", 0)) > 0:
+                        pending = fishing.fishing_behavior.parse_pending_open_fish(identity.get("fishing_caught_fish_json"))
+                        for name, count in record["catches"].items():
+                            pending[name] = pending.get(name, 0) + count
+                        identity["fishing_caught_fish_json"] = json.dumps(pending, ensure_ascii=False, sort_keys=True)
+                        if float(identity.get("fishing_transfer_due_at", 0) or 0) <= 0:
+                            identity["fishing_transfer_due_at"] = now + fishing.fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC
                     identity.update(fishing_phase="idle", fishing_last_error="",
                                     fishing_last_result="洞府钓鱼：" + (fishing._format_count_map(record["catches"]) if record["catches"] else "空竿"),
                                     next_fishing_time=(fishing.fishing_behavior.next_fishing_reset_timestamp(
