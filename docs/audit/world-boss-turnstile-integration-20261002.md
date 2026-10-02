@@ -67,3 +67,29 @@
    first; do not rewind the live database or reopen other accounts.
 
 The natural-event gate is not yet closed by the above standalone probes.
+
+## Production checkpoint, 16:48 CST
+
+- Deployed and pushed `9adacd6c` to **xiuxian-mian/main**, not upstream origin.
+- Explicit drain began 16:37:42, old worker exited cleanly at 16:37:50. Startup
+  began 16:40:23; fully ready 16:40:50. Supervisor/worker: `276474` / `276476`;
+  `NRestarts=0`. Observer's two inactive alerts refer to this planned deployment.
+- Both root-only backups passed quick_check:
+  `/root/xiuxian-before-boss-turnstile-20261002.db` and
+  `/root/xiuxian-before-boss-turnstile-20261002-stopped.db`.
+- Broker source mounts now point to `/opt/xiuxian-main`, not the lab. Fresh
+  post-rollout verification probe acquired a token in **5.3s**, without any game
+  request. Broker container healthy, restart count zero.
+- At 16:44:15 authenticated UI API changed only `turnstile_enabled`. UI and DB
+  readback both confirm enabled; selected identity remains `301299112`, other
+  23 excluded, effective account limit one. Existing Boss selection/skip/rotation
+  keys unchanged. All per-identity module-enable settings unchanged; both incense
+  refinement flags remain zero. Fishing and rift timers match the stopped backup.
+- Main service, safety watchdog and observer active; health/watchdog passed.
+  Defensive preflight: pending queue empty; WA rift due 17:38:17, preparation
+  checkpoint approximately 17:28. Sidecar remains intentionally inactive.
+- The next natural Boss is still required. The latest two observed openings
+  were October 1 and 2 at 13:40; this is historical timing, not a guaranteed schedule.
+- Existing unrelated working changes remain untouched:
+  `deploy/xiuxian-r2-backup.sh`, `deploy/backup_engine.py`,
+  `tests/test_snapshot_sqlite_db.py`.
