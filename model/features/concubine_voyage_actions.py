@@ -349,6 +349,7 @@ def _apply_result(record, now, unchanged):
         c.state["concubine_voyage_retry_count"] = 0
         if result["outcome"] == "returned":
             c.state["concubine_voyage_last_result"] = result["text"]
+            c.state["concubine_voyage_settled_at"] = record.get("reply_at", now)
         elif result["outcome"] == "started":
             c.state["concubine_voyage_last_result"] = ""
         result["applied"] = True

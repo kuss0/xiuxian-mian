@@ -50,6 +50,45 @@ def test_recovery_only_empty_journal_does_not_start_a_rod():
     assert result["status"] == "recovery_not_needed"
 
 
+@pytest.mark.parametrize("reason", ["fishing_rod_missing", "fishing_daily_limit_reached",
+                                    "fishing_companion_sailing", "fishing_companion_missing"])
+def test_ineligible_identity_with_no_bait_never_prepares_supply_or_cast(reason):
+    store, calls, clock = Store(), [], Clock()
+
+    def transport(request):
+        calls.append(request["safe_summary"]["endpoint"])
+        data = context()
+        data["context"]["baits"] = []
+        if reason == "fishing_rod_missing":
+            data["context"]["rod"] = None
+        elif reason == "fishing_daily_limit_reached":
+            data["context"]["quota"] = {"used": 5, "remaining": 0, "limit": 5}
+        else:
+            data["context"]["unavailable"] = reason
+            data["context"]["enabled"] = False
+            if reason == "fishing_companion_missing":
+                data["context"]["rod"] = None
+        return data
+
+    result = run_native_fishing_flow(
+        journal=store.open(), token="df_FIXTURE_NATIVE", init_data="fixture", site_id="west-shore",
+        model_id="ngw", bait_id="", bait_choice="bait", supply_settings={"auto_buy": True},
+        transport=transport, operation_check=lambda: True, monotonic=lambda: clock.now, sleeper=clock.sleep,
+    )
+    assert result["error"] == reason and not result["outcome_unknown"]
+    assert calls == ["context"] and store.record == {}
+
+
+def test_unowned_active_rod_is_not_treated_as_a_no_rod_skip():
+    data = context()
+    data["context"]["rod"] = None
+    data["session"] = response()["session"]
+    store = Store()
+    result, calls = run(store, transport=lambda *args: data)
+    assert result["error"] == "native_existing_session"
+    assert calls == ["context"] and store.record == {}
+
+
 @pytest.mark.parametrize("settled", [False, True])
 def test_recovery_only_reads_original_session_without_resuming_fight(settled):
     store = Store()

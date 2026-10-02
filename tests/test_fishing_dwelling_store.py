@@ -17,6 +17,7 @@ import test_fishing_caller_lifecycle as lifecycle
 from test_fishing_dwelling_journal import context, response, fighting
 from test_fishing_dwelling_supply import shop_context, SETTINGS
 from model.features import fishing_dwelling_supply as supply
+from model.timing import get_day_key
 
 
 fishing_env = lifecycle.fishing_env
@@ -639,6 +640,52 @@ def test_ui_disabled_after_result_keeps_gains_but_does_not_reschedule(fishing_db
         assert store.project(h.now)
         assert h.identity["next_fishing_time"] == 987654 and not h.identity["fishing_enabled"]
         assert h.identity["fishing_daily_count"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_public_only_selection_controls_projection_schedule(fishing_db, monkeypatch, selected):
+    h = fishing_db
+    from model.features import fishing_runtime as fishing
+    monkeypatch.setattr(fishing, "is_cave_public_auto_enabled", lambda action, identity: selected)
+
+    async def scenario():
+        h.identity["fishing_enabled"] = False
+        store = settled_store(h)
+        timer = h.identity["next_fishing_time"]
+        assert store.project(h.now)
+        assert h.identity["next_fishing_time"] == (h.now + 30 if selected else timer)
+        assert not h.identity["fishing_enabled"]
+        assert h.identity["fishing_daily_count"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("has_today_summary", [False, True])
+def test_previous_day_recovery_with_current_quota_does_not_add_today_rod(fishing_db, has_today_summary):
+    h = fishing_db
+
+    async def scenario():
+        day = get_day_key(h.now)
+        if has_today_summary:
+            h.identity["fishing_daily_catch_summary_json"] = json.dumps(
+                {"day": day, "rods": 2, "fish": {"today-fish": 2}, "rewards": {}})
+        summary = h.identity["fishing_daily_catch_summary_json"]
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                now=h.now - 86400, projection_basis=store.basis())
+        data = response(settled=True)
+        data["context"].update(serverNow=h.now * 1000, quota={"used": 2, "remaining": 3, "limit": 5})
+        data["session"]["result"]["bonusLoot"] = [{"name": "old-reward", "qty": 1}]
+        ledger.accept(query, data)
+        assert store.project(h.now)
+        assert not store.project(h.now)
+        assert h.identity["fishing_daily_count"] == 2
+        assert h.identity["fishing_daily_catch_summary_json"] == summary
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == {
+            "fish": 2, "old-reward": 1, "bait": 5}
 
     asyncio.run(scenario())
 

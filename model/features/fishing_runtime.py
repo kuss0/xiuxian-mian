@@ -805,7 +805,7 @@ def _enabled_fishing_daily_entries(now):
         )
         terminal_skip = (
             "今日跳过" in last_result
-            and ("未持有鱼竿" in last_result or "无可用鱼饵" in last_result)
+            and any(reason in last_result for reason in ("未持有鱼竿", "无可用鱼饵", "无可用侍妾"))
         )
         daily_exhausted = "daily_limit" in last_result.lower()
         reportable = (

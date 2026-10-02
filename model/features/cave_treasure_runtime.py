@@ -4594,13 +4594,16 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
-        if native_canary or native_pending or native_recovery_only:
+        if native_canary or native_pending or native_recovery_only or native_fishing.integrated(raw):
             response = await native_fishing.run_selected_identity(
                 operation, session, token=token, can_continue=can_continue,
                 update_schedule=not (native_canary or native_recovery_only), recovery_only=native_recovery_only,
+                allow_public_auto=not (native_canary or native_recovery_only),
             )
             return await report(response, priority="low" if response.get("ok") else "normal",
-                                daily=not native_recovery_only and bool((response.get("extra") or {}).get("committed")))
+                                daily=not native_recovery_only and bool(
+                                    (response.get("extra") or {}).get("committed")
+                                    or (response.get("extra") or {}).get("terminal_skip")))
         external_app = _find_fishing_external_app_in_cave_payload(raw)
         if not external_app:
             with use_identity(identity_id):

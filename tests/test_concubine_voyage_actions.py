@@ -123,6 +123,28 @@ def test_early_voyage_completion_is_not_rewound_by_send_return(env, kind):
     assert env.identity["concubine_phase"] == "idle"
     assert env.identity["concubine_voyage_msg_id"] == 0
     assert (CHAT, ROOT) not in env.identity["pending_tasks"]
+    assert env.identity["concubine_voyage_settled_at"] == (NOW + 1 if kind == "voyage_return" else 0)
+
+
+def test_delayed_and_duplicate_voyage_replies_do_not_extend_fishing_handoff(env):
+    prepare(env, "voyage_return")
+    assert asyncio.run(start(env, "voyage_return"))
+    env.clock[0] = NOW + 3600
+    assert asyncio.run(reply(env, "voyage_return", at=NOW + 1))
+    assert env.identity["concubine_voyage_settled_at"] == NOW + 1
+    assert not asyncio.run(reply(env, "voyage_return", at=NOW + 1))
+    assert env.identity["concubine_voyage_settled_at"] == NOW + 1
+
+
+def test_miniapp_return_sets_clock_once_but_status_reads_do_not_extend_it(env):
+    prepare(env, "voyage_return")
+    with state_module.use_identity(ID):
+        result = concubine.apply_concubine_miniapp_voyage_result(RETURNED, NOW)
+        assert result["handled"]
+        assert env.identity["concubine_voyage_settled_at"] == NOW
+        assert not concubine.apply_concubine_miniapp_voyage_result(RETURNED, NOW + 10)["handled"]
+        assert concubine._apply_voyage_snapshot({"status": "idle", "partner": NAME}, NOW + 500)
+        assert env.identity["concubine_voyage_settled_at"] == NOW
 
 
 @pytest.mark.parametrize("kind", KINDS)

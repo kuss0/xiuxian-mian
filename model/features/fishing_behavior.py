@@ -590,7 +590,8 @@ def normalize_daily_counter(snapshot, now):
         count = 0
         # 公共入口的到期判定会因 last_result 里的 daily_limit 字样直接跳过当天，
         # 所以翻日时必须一并清掉昨天的结果，否则身份会带着旧限次记录一直不开竿。
-        if "daily_limit" in str(snapshot.get("fishing_last_result") or "").lower():
+        last_result = str(snapshot.get("fishing_last_result") or "")
+        if "daily_limit" in last_result.lower() or "今日跳过" in last_result:
             updates["fishing_last_result"] = ""
     else:
         count = max(0, _parse_int(snapshot.get("fishing_daily_count", 0), 0))

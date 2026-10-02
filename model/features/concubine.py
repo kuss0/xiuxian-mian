@@ -230,6 +230,7 @@ CONCUBINE_VOYAGE_RUNTIME_KEYS = (
     "concubine_voyage_status",
     "concubine_voyage_route",
     "concubine_voyage_return_at",
+    "concubine_voyage_settled_at",
     "concubine_voyage_last_result",
     "concubine_voyage_last_error",
     "concubine_voyage_retry_count",
@@ -674,6 +675,7 @@ def _clear_voyage_snapshot():
     state["concubine_voyage_status"] = ""
     state["concubine_voyage_route"] = ""
     state["concubine_voyage_return_at"] = 0
+    state["concubine_voyage_settled_at"] = 0
     state["concubine_voyage_last_result"] = ""
     state["concubine_voyage_last_error"] = ""
     state["concubine_voyage_retry_count"] = 0
@@ -698,6 +700,7 @@ def _voyage_runtime_snapshot():
         "concubine_voyage_status": state.get("concubine_voyage_status", ""),
         "concubine_voyage_route": state.get("concubine_voyage_route", ""),
         "concubine_voyage_return_at": state.get("concubine_voyage_return_at", 0),
+        "concubine_voyage_settled_at": state.get("concubine_voyage_settled_at", 0),
         "concubine_voyage_last_result": state.get("concubine_voyage_last_result", ""),
         "concubine_voyage_last_error": state.get("concubine_voyage_last_error", ""),
         "concubine_voyage_retry_count": state.get("concubine_voyage_retry_count", 0),
@@ -807,6 +810,11 @@ def _is_voyage_eligible(now):
         state["concubine_voyage_last_error"] = f"{route}情缘不足（{affinity}/{minimum}），暂不远航"
         return False
     if _is_voyage_sailing(now) or _is_voyage_return_due(now) or state.get("concubine_voyage_status") == "needs_status":
+        return False
+    from .fishing_dwelling_runtime import voyage_launch_wait_reason
+    fishing_wait = voyage_launch_wait_reason(get_current_identity_id(), now)
+    if fishing_wait:
+        state["concubine_voyage_last_error"] = fishing_wait
         return False
     state["concubine_voyage_last_error"] = ""
     return True
@@ -3638,6 +3646,8 @@ async def _send_voyage_status_command(now):
 
 
 async def _send_voyage_command(now):
+    if not _is_voyage_eligible(now):
+        return False
     miniapp_result = await _send_voyage_miniapp_command("launch", now)
     if miniapp_result is not None:
         return miniapp_result

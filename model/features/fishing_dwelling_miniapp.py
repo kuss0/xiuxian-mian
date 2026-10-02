@@ -10,6 +10,7 @@ from ..webapp_core import (
 )
 from . import fishing_dwelling_protocol as protocol
 from .fishing_dwelling_journal import settlement_complete
+from .fishing_dwelling_supply import idle_context
 
 
 API_PATH = "/api/miniapp/xianxia-dwelling/fishing/"
@@ -173,6 +174,10 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
             initial, _, _, _ = request("context", {"siteId": site_id})
             if not check():
                 return finish("cancelled")
+            idle_context(initial)
+            reason = protocol.cast_block_reason(context, bait_id)
+            if reason and reason != "fishing_bait_missing":
+                raise protocol.ProtocolError(reason)
             if bait_choice:
                 selected = next((row for row in context["baits"] if bait_choice in (row["name"], row["itemId"])), None)
                 if selected is None:

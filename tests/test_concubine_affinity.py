@@ -3084,6 +3084,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             "concubine_voyage_status": "sailing",
             "concubine_voyage_route": "冒险",
             "concubine_voyage_return_at": now + 3600,
+            "concubine_voyage_settled_at": now - 100,
             "concubine_voyage_last_result": "",
             "concubine_voyage_last_error": "等待归航",
             "concubine_voyage_retry_count": 2,
@@ -3097,6 +3098,17 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             restored = concubine._voyage_runtime_snapshot()
 
         self.assertEqual(payload, restored)
+
+    def test_old_voyage_snapshot_preserves_confirmed_return_clock(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_voyage_settled_at"] = now - 100
+            payload = concubine._voyage_runtime_snapshot()
+            payload.pop("concubine_voyage_settled_at")
+            payload["concubine_voyage_last_error"] = "fixture"
+            self.assertTrue(concubine._restore_voyage_runtime_snapshot(payload))
+            self.assertEqual(now - 100, concubine._voyage_runtime_snapshot()["concubine_voyage_settled_at"])
 
     async def test_status_reply_ignored_during_voyage_pending(self):
         now = 1_700_000_000.0

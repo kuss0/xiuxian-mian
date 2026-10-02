@@ -1,4 +1,4 @@
-"""Canary entry for native fishing; retains the existing UI plan and locks."""
+"""Native fishing entry; retains the existing UI plan and locks."""
 
 import time
 from copy import deepcopy
@@ -14,6 +14,7 @@ from .miniapp_common import MiniAppFlowCancelled
 
 
 SITE_CHOICES = {"青溪浅滩": "west-shore", "灵眼寒潭": "waterfall-pool", "乱星海礁": "east-shore"}
+VOYAGE_HANDOFF_SEC = 15 * 60
 
 
 def pending(identity):
@@ -39,13 +40,57 @@ def integrated(raw):
                                             and row.get("status") == "integrated" for row in entries)
 
 
-async def run_selected_identity(operation, session, *, token, can_continue, update_schedule=True, recovery_only=False):
+def voyage_launch_wait_reason(identity_id, now):
+    """Bound the return-to-fishing handoff; never postpone return/status reads."""
+    identity = fishing.get_identity_state(identity_id)
+    if fishing._fishing_send_lock(identity_id).locked():
+        return "钓鱼执行中，暂缓再次远航"
+    record = identity.get(STATE_KEY, {})
+    if record:
+        try:
+            validate(record)
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            record = {}
+        if (record and record["phase"] not in {"settled", "accounted"}
+                and 0 <= now - record["created_at"] < 300):
+            return "当前鱼竿仍在结算窗口，暂缓再次远航"
+    config = fishing.get_miniapp_auto_config()
+    if not (config.get("cave_public_entry_urls") or config.get("cave_public_entry_url")):
+        return ""
+    if not (identity.get("fishing_enabled") or fishing.is_cave_public_auto_enabled("fishing", identity_id)):
+        return ""
+    returned_at = identity.get("concubine_voyage_settled_at", 0)
+    if type(returned_at) not in (int, float) or not 0 < returned_at <= now < returned_at + VOYAGE_HANDOFF_SEC:
+        return ""
+    if not fishing.is_cave_public_identity_available(identity_id):
+        return ""
+    if float(identity.get("next_fishing_time", 0) or 0) >= returned_at + VOYAGE_HANDOFF_SEC:
+        return ""
+    if identity.get("fishing_daily_day") == fishing.get_day_key(now):
+        if int(identity.get("fishing_daily_count", 0) or 0) >= max(1, int(identity.get("fishing_daily_limit", 5) or 5)):
+            return ""
+        last_result = str(identity.get("fishing_last_result") or "")
+        if "今日跳过" in last_result or "daily_limit" in last_result.lower():
+            return ""
+    if pending(identity) or identity.get("fishing_operation") or identity.get("fishing_result_pending"):
+        return ""
+    return "归航后预留钓鱼窗口，最迟 15 分钟后恢复远航"
+
+
+async def run_selected_identity(operation, session, *, token, can_continue, update_schedule=True, recovery_only=False,
+                                allow_public_auto=False):
     """The public caller already owns both locks and verified this player."""
     identity_id = operation.owner.identity_id
     raw = ((session.get("result") or {}).get("data") or {}).get("raw") or {}
     if not integrated(raw):
         return {"ok": False, "message": "未确认洞府原生钓鱼目录，未发送动作", "extra": {"status": "native_directory_missing"}}
-    if not operation.owner.identity.get("fishing_enabled"):
+    public_authorized = allow_public_auto and fishing.is_cave_public_auto_enabled("fishing", identity_id)
+
+    def enabled():
+        return (fishing.is_cave_public_auto_enabled("fishing", identity_id) if public_authorized
+                else bool(operation.owner.identity.get("fishing_enabled")))
+
+    if not enabled():
         return {"ok": False, "message": "钓鱼开关已关闭，未启动原生钓鱼", "extra": {"status": "disabled"}}
     record = operation.owner.identity.get(STATE_KEY) or {}
     supply_record = operation.owner.identity.get(supply.STATE_KEY) or {}
@@ -74,7 +119,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
             supply_settings={"bait_choice": operation.bait_choice, "auto_buy": config.auto_buy_bait_enabled,
                              "buy_count": config.auto_buy_bait_count,
                              "chum_names": config.chum_names if config.auto_chum_enabled else ()},
-            operation_check=lambda: can_continue() and bool(operation.owner.identity.get("fishing_enabled"))
+            operation_check=lambda: can_continue() and enabled()
             and all(operation.owner.identity.get(key) == value for key, value in plan.items()),
         )
     except MiniAppFlowCancelled as exc:
@@ -91,32 +136,53 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
         catches = data.get("catches") if isinstance(data.get("catches"), dict) else {}
         rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
         reason = str(result.get("error") or result.get("status") or "unknown")
+        terminal_skip = (reason in {"fishing_rod_missing", "fishing_daily_limit_reached", "fishing_companion_missing"}
+                         and not result.get("outcome_unknown") and not pending(operation.owner.identity)
+                         and can_continue() and enabled() and cancelled is None)
         message = ("洞府原生钓鱼：" + (fishing._format_count_map(catches) if catches else "空竿")) if committed else "洞府原生钓鱼未完成：" + reason
         if committed and rewards:
             message += "；额外 " + fishing._format_count_map(rewards)
         if supplied:
             message = "洞府钓鱼补给已确认：" + str(data.get("supply_action") or "补给") + "，未抛竿"
-        if (not committed or not update_schedule) and can_continue() and cancelled is None:
-            before = {key: operation.owner.identity.get(key) for key in ("next_fishing_time", "fishing_last_result", "fishing_last_error")}
+        if terminal_skip:
+            message = {
+                "fishing_rod_missing": "洞府原生钓鱼：未持有鱼竿，今日跳过",
+                "fishing_companion_missing": "洞府原生钓鱼：无可用侍妾，今日跳过",
+                "fishing_daily_limit_reached": "洞府原生钓鱼：今日次数已用尽，等待次日（fishing_daily_limit_reached）",
+            }[reason]
+        if (not committed or not update_schedule) and can_continue() and enabled() and cancelled is None:
+            before = {key: operation.owner.identity.get(key) for key in (
+                "next_fishing_time", "fishing_last_result", "fishing_last_error", "fishing_daily_day", "fishing_daily_count")}
             with use_identity(identity_id):
                 now = time.time()
+                if terminal_skip:
+                    _, _, _, daily_updates = fishing.fishing_behavior.normalize_daily_counter(operation.owner.identity, now)
+                    operation.owner.identity.update(daily_updates)
                 delay = max(30 if supplied else 60, float(result.get("retry_after_sec") or 0))
                 if result.get("status") == "supply_pending":
                     delay = max(delay, 1800)
                 if reason in {"fishing_bait_missing", "fishing_rod_missing", "fishing_companion_sailing"}:
                     delay = max(delay, 1800)
-                operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if committed or supplied else reason)
+                operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if committed or supplied or terminal_skip else reason)
                 if update_schedule:
-                    operation.owner.identity["next_fishing_time"] = now + delay
-                if persistence.save_state() is not True:
+                    operation.owner.identity["next_fishing_time"] = (
+                        fishing.fishing_behavior.next_fishing_reset_timestamp(now, fishing._fishing_reset_jitter_sec(identity_id))
+                        if terminal_skip else now + delay)
+                try:
+                    saved = persistence.save_state() is True
+                except Exception:
+                    saved = False
+                if not saved:
                     operation.owner.identity.update(before)
                     persistence.mark_dirty()
                     message = "原生钓鱼状态保存失败，待核对"
-        response = {"ok": committed or supplied, "message": message, "extra": {
-            "status": "settled" if committed else result.get("status", "blocked"), "native": True,
+                    terminal_skip = False
+        response = {"ok": committed or supplied or terminal_skip, "message": message, "extra": {
+            "status": "settled" if committed else "skipped" if terminal_skip else result.get("status", "blocked"), "native": True,
             "outcome_unknown": bool(result.get("outcome_unknown")), "committed": committed,
             "supply_committed": supplied,
             "checkpoint_observations": result.get("checkpoint_observations", []),
+            "terminal_skip": terminal_skip and update_schedule,
         }}
     if cancelled is not None:
         raise MiniAppFlowCancelled(response) from None

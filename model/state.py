@@ -100,6 +100,7 @@ IDENTITY_JSON_COLUMNS.add("concubine_fragment_actions")
 IDENTITY_RUNTIME_COLUMNS.append("concubine_fragment_actions")
 IDENTITY_JSON_COLUMNS.add("concubine_voyage_actions")
 IDENTITY_RUNTIME_COLUMNS.append("concubine_voyage_actions")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_voyage_settled_at")
 IDENTITY_JSON_COLUMNS.add("concubine_tianji_action")
 IDENTITY_RUNTIME_COLUMNS.append("concubine_tianji_action")
 IDENTITY_JSON_COLUMNS.add("concubine_heart_session")
@@ -614,6 +615,7 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_voyage_status": "",
     "concubine_voyage_route": "",
     "concubine_voyage_return_at": 0,
+    "concubine_voyage_settled_at": 0,
     "concubine_voyage_last_result": "",
     "concubine_voyage_last_error": "",
     "concubine_last_snapshot_at": 0,

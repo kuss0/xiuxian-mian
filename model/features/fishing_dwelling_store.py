@@ -238,7 +238,8 @@ class NativeFishingStore:
                     and identity.get("fishing_daily_count", 0) > quota["used"]):
                 raise ProtocolError("native_quota_regressed")
             can_schedule = (update_schedule and record["projection_basis"]["plan"] == basis["plan"]
-                            and bool(identity.get("fishing_enabled"))
+                            and (bool(identity.get("fishing_enabled"))
+                                 or fishing.is_cave_public_auto_enabled("fishing", self.owner.identity_id))
                             and fishing.is_cave_public_identity_available(self.owner.identity_id)
                             and (fishing.get_global_enabled() or fishing._miniapp_http_allowed_during_pause()))
             before = deepcopy(identity)
@@ -263,17 +264,19 @@ class NativeFishingStore:
                         storage_bag._adjust_storage_bag_identity_item(records, self.owner.identity_id, name, count - current)
                     fishing.set_storage_bag_records(records)
                 if quota["day"] == day:
-                    summary = fishing._normalize_fishing_daily_catch_summary(identity.get("fishing_daily_catch_summary_json"))
-                    if summary["day"] != day:
-                        summary = {"day": day, "rods": 0, "fish": {}, "rewards": {}}
-                    summary["rods"] += 1
-                    for name, count in record["catches"].items():
-                        summary["fish"][name] = summary["fish"].get(name, 0) + count
-                    for name, count in rewards.items():
-                        summary["rewards"][name] = summary["rewards"].get(name, 0) + count
                     identity.update(fishing_daily_day=day, fishing_daily_count=quota["used"],
-                                    fishing_daily_limit=quota["limit"], fishing_basket_calibrated_day="",
-                                    fishing_daily_catch_summary_json=json.dumps(summary, ensure_ascii=False, sort_keys=True))
+                                    fishing_daily_limit=quota["limit"], fishing_basket_calibrated_day="")
+                    # A recovery read carries today's quota, not the old rod's date.
+                    if fishing.get_day_key(record["created_at"]) == day:
+                        summary = fishing._normalize_fishing_daily_catch_summary(identity.get("fishing_daily_catch_summary_json"))
+                        if summary["day"] != day:
+                            summary = {"day": day, "rods": 0, "fish": {}, "rewards": {}}
+                        summary["rods"] += 1
+                        for name, count in record["catches"].items():
+                            summary["fish"][name] = summary["fish"].get(name, 0) + count
+                        for name, count in rewards.items():
+                            summary["rewards"][name] = summary["rewards"].get(name, 0) + count
+                        identity["fishing_daily_catch_summary_json"] = json.dumps(summary, ensure_ascii=False, sort_keys=True)
                     if resources is not None:
                         active = resources["active_chum"] or {}
                         identity.update(fishing_active_chum_name=active.get("name", ""),
