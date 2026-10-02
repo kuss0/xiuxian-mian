@@ -541,6 +541,40 @@ def test_native_fish_hands_off_once_to_existing_gift_batch(fishing_db, monkeypat
     }], target_identity_id=h.other_id, stop_on_error=True)
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="Lab promotion blocked: gift batch handoff is not durable across restart")
+def test_native_gift_waiting_behind_another_job_survives_restart(fishing_db, monkeypatch):
+    from model.features import storage_bag
+
+    h = fishing_db
+    h.identity["fishing_transfer_target_id"] = h.other_id
+    for key in ("_storage_bag_transfer_state", "_storage_bag_transfer_batch_state"):
+        monkeypatch.setattr(storage_bag, key, deepcopy(getattr(storage_bag, key)))
+    storage_bag._clear_storage_bag_transfer_state()
+    storage_bag._clear_storage_bag_transfer_batch_state()
+    storage_bag._storage_bag_transfer_state["running"] = True
+    monkeypatch.setattr(storage_bag, "_storage_transfer_batch_log", Mock())
+    start_next = AsyncMock(side_effect=AssertionError("queued transfer must not send"))
+    monkeypatch.setattr(storage_bag, "_start_next_storage_bag_transfer_batch_task", start_next)
+
+    async def scenario():
+        store = settled_store(h)
+        assert store.project(h.now)
+        with state_module.use_identity(h.identity_id):
+            assert await lifecycle.fishing._run_pending_fishing_transfer(h.identity["fishing_transfer_due_at"])
+        assert storage_bag._storage_bag_transfer_batch_state["queue"][0]["items"] == [
+            {"item_name": "fish", "quantity": 2, "method": "gift"}]
+        start_next.assert_not_awaited()
+
+    asyncio.run(scenario())
+    storage_bag._clear_storage_bag_transfer_state()
+    storage_bag._clear_storage_bag_transfer_batch_state()
+    state_module._meta_state["identity_states"] = {}
+    assert persistence.load_state()
+    restored = state_module.get_identity_state(h.identity_id)
+    assert json.loads(restored["fishing_caught_fish_json"] or "{}") == {"fish": 2}
+
+
 def test_v3_fish_bonus_and_consumption_commit_together_without_double_bonus_bait(fishing_db):
     h = fishing_db
 

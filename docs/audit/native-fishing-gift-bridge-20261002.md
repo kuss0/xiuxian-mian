@@ -1,5 +1,30 @@
 # Native Fishing Gift Queue Candidate
 
+## Promotion Blocked: Restart Handoff
+
+The later October 2 review reproduced a missing acceptance case using a real
+isolated SQLite database and the real storage gift-batch enqueue path:
+
+1. Another storage task is running, so native fish enqueue behind it without
+   sending any command.
+2. The gift worker receives in-memory queue acceptance and clears the durable
+   `fishing_caught_fish_json`/deadline.
+3. Simulated process restart clears the module-level storage batch dictionaries;
+   SQLite reload restores neither the waiting gift nor the original fish queue.
+
+The new `test_native_gift_waiting_behind_another_job_survives_restart` failed at
+the final assertion: restored pending fish were `{}`, expected `{"fish": 2}`.
+It is retained as a strict expected failure, not as deployment acceptance.
+The earlier mocked single-handoff test and its passing suite did not cover
+restart durability. This candidate is NOT promotable merely after fishing's
+natural acceptance. A durable, idempotent handoff and recovery boundary must
+precede clearing the source queue; simply retaining and blindly retrying the
+queue could duplicate gifts after an uncertain send.
+
+No production target was enabled, no live DB was tested, and no gift command
+was sent. This is a lost automation obligation in the isolated test, not lost
+fish inventory or a claim of an observed production transfer loss.
+
 ## Scope
 
 Lab-only follow-up to deployed `492d54aa` (documentation head `e876af2c`).
