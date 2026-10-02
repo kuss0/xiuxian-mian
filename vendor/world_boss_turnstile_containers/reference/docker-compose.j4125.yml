@@ -1,0 +1,108 @@
+services:
+  app:
+    build: .
+    network_mode: host
+    env_file:
+      - .env
+      - ./secrets/turnstile-broker.env
+    environment:
+      - TZ=Asia/Shanghai
+      - REDIS_URL=redis://127.0.0.1:6379/0
+      - WORLD_BOSS_INSTANCE_NAME=j4125
+      - WORLD_BOSS_STAGGER_LEADS_MS=180,185,190,195,200,205,210,215,220,225,230,235
+      - WORLD_BOSS_HTTP_KEEPALIVE_EXPIRY_SECONDS=90
+      - WORLD_BOSS_DYNAMIC_REVEAL_V2=true
+      - WORLD_BOSS_DYNAMIC_REVEAL_V3=true
+      - WORLD_BOSS_ROOM_TRANSITION_GRACE_SECONDS=18
+      - WORLD_BOSS_LEAD_PROFILE_V6_ENABLED=false
+      - WORLD_BOSS_LEAD_PROFILE_V6_ROLLBACK_ENABLED=true
+      - WORLD_BOSS_LEAD_PROFILE_V6_ROLLOUT_STAGE=v5
+      - WORLD_BOSS_ROUTE_PROBE_STALE_SECONDS=172800
+      # Camoufox 已通过 token-only 验证；默认继续关闭，等下一场 Boss
+      # 完成 /begin 实战确认后再在 J4125 .env 中打开开关。
+      - WORLD_BOSS_TURNSTILE_ENABLED=${WORLD_BOSS_TURNSTILE_ENABLED:-false}
+      - WORLD_BOSS_TURNSTILE_BROKER_URL=${WORLD_BOSS_TURNSTILE_BROKER_URL:-http://127.0.0.1:8193}
+      - WORLD_BOSS_TURNSTILE_SITE_KEY=0x4AAAAAAEmIsCuTGsikqRH9
+      - WORLD_BOSS_TURNSTILE_ACTION=qyz_world_boss_begin
+      - WORLD_BOSS_TURNSTILE_PAGE_URL=https://asc.aiopenai.app/miniapp/xianxia-world-boss
+      - WORLD_BOSS_TURNSTILE_TIMEOUT_SECONDS=60
+      - WORLD_BOSS_TURNSTILE_RETRY_MAX=1
+    depends_on:
+      redis:
+        condition: service_started
+      turnstile-camoufox:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+
+  turnstile-broker:
+    profiles:
+      - chromium-fallback
+    build:
+      context: .
+      dockerfile: Dockerfile.turnstile-broker
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      - QYZ_BROKER_BROWSER_PATH=/usr/bin/google-chrome
+      - QYZ_BROKER_GPU_MODE=angle-gl
+      - QYZ_BROKER_DISPLAY_MODE=xorg
+    ports:
+      - "127.0.0.1:8192:8192"
+    restart: unless-stopped
+    shm_size: "512m"
+    mem_limit: "1536m"
+    cpus: "2.5"
+    # 每个可见 Chrome worker 会启动多个 renderer/utility 进程；256 会让
+    # HTTP health/request 线程在启动后触及 cgroup 上限。
+    pids_limit: 512
+    cap_add:
+      - SYS_TTY_CONFIG
+    devices:
+      - "/dev/dri/card0:/dev/dri/card0:rwm"
+      - "/dev/dri/renderD128:/dev/dri/renderD128:rwm"
+      - "/dev/tty0:/dev/tty0:rwm"
+      - "/dev/tty1:/dev/tty1:rwm"
+    volumes:
+      - turnstile_profile_worker0:/var/lib/turnstile/profiles/worker-0
+      - turnstile_profile_worker1:/var/lib/turnstile/profiles/worker-1
+
+  # J4125 单机 Windows 指纹实验/候选生产 broker。默认由 app 的
+  # WORLD_BOSS_TURNSTILE_ENABLED=false 保护，下一场 Boss 完成 /begin
+  # 实战确认后再打开开关；旧 Chromium broker 保留用于回滚。
+  turnstile-camoufox:
+    build:
+      context: .
+      dockerfile: Dockerfile.turnstile-camoufox
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      - QYZ_BROKER_BROWSER_ENGINE=camoufox
+      - QYZ_BROKER_DISPLAY_MODE=xvfb
+      - QYZ_BROKER_WORKERS=1
+      - QYZ_BROKER_FINGERPRINT_OS=windows
+      - QYZ_BROKER_FINGERPRINT_LOCALE=zh-CN
+    ports:
+      - "127.0.0.1:8193:8192"
+    restart: unless-stopped
+    shm_size: "512m"
+    mem_limit: "1536m"
+    cpus: "2.0"
+    pids_limit: 512
+    volumes:
+      - turnstile_camoufox_profile:/var/lib/turnstile/profiles/worker-0
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  turnstile_profile_worker0:
+  turnstile_profile_worker1:
+  turnstile_camoufox_profile:

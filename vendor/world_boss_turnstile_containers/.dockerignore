@@ -1,0 +1,11 @@
+# Only the files used by the two broker Dockerfiles enter the build context.
+**
+!Dockerfile.turnstile-camoufox
+!Dockerfile.turnstile-broker
+!requirements.turnstile-camoufox.txt
+!requirements.turnstile-broker.txt
+!scripts/
+!scripts/world_boss_turnstile_broker.py
+!docker/
+!docker/turnstile-broker-entrypoint.sh
+!docker/xorg-j4125.conf

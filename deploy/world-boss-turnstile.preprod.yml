@@ -1,0 +1,29 @@
+# Offline preproduction only: no network, test key, separate volumes.
+name: xiuxian-world-boss-preprod-20260908
+services:
+  broker:
+    build:
+      context: ../vendor/world_boss_turnstile_containers
+      dockerfile: Dockerfile.turnstile-camoufox
+      # Build-only workaround for this host's bridge egress; runtime has no network.
+      network: host
+    environment:
+      TURNSTILE_BROKER_SECRET: preprod-offline-only
+      QYZ_BROKER_HOST: 0.0.0.0
+      QYZ_BROKER_PORT: "8192"
+      QYZ_BROKER_WORKERS: "1"
+      QYZ_BROKER_BROWSER_ENGINE: camoufox
+      QYZ_BROKER_DISPLAY_MODE: xvfb
+    network_mode: none
+    init: true
+    restart: "no"
+    shm_size: 512m
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 512
+    volumes:
+      - profile:/var/lib/turnstile/profiles/worker-0
+      - ../tools/world_boss_turnstile_browser.py:/app/world_boss_turnstile_broker.py:ro
+      - ../vendor/world_boss_turnstile_containers/scripts/world_boss_turnstile_broker.py:/app/upstream_world_boss_turnstile_broker.py:ro
+volumes:
+  profile:

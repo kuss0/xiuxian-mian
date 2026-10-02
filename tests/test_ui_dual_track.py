@@ -154,6 +154,10 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "玩法状态" in script
     assert "诊断" in script
     assert "data-world-boss-window-skip" in script
+    assert "data-world-boss-turnstile-enabled" in script
+    assert "turnstile_enabled" in script
+    assert "登录不可用" in script
+    assert "灰度时强制单登录账户" in script
     assert "var activeMiniAppTab = 'entry'" in script
     assert "自动化动作" in script
     assert "快速执行" in script

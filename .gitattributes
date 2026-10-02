@@ -1,0 +1,2 @@
+# Preserve the supplied package bytes, including its CRLF reference files.
+vendor/world_boss_turnstile_containers/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

@@ -1,0 +1,37 @@
+# Candidate for the main AI: host/systemd application, local broker only.
+# Not deployed by this preproduction task. Requires a locally generated secret.
+name: xiuxian-world-boss-turnstile
+services:
+  broker:
+    image: xiuxian-world-boss-preprod-20260908-broker:latest
+    build:
+      context: ../vendor/world_boss_turnstile_containers
+      dockerfile: Dockerfile.turnstile-camoufox
+      network: host
+    network_mode: host
+    env_file:
+      - ${WORLD_BOSS_BROKER_ENV_FILE:-/root/.config/xiuxian-world-boss/turnstile.env}
+    environment:
+      QYZ_BROKER_HOST: 127.0.0.1
+      QYZ_BROKER_PORT: "8193"
+      QYZ_BROKER_WORKERS: "1"
+      QYZ_BROKER_BROWSER_ENGINE: camoufox
+      QYZ_BROKER_DISPLAY_MODE: xvfb
+    init: true
+    restart: unless-stopped
+    shm_size: 512m
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 512
+    volumes:
+      - profile:/var/lib/turnstile/profiles/worker-0
+      - ../tools/world_boss_turnstile_browser.py:/app/world_boss_turnstile_broker.py:ro
+      - ../vendor/world_boss_turnstile_containers/scripts/world_boss_turnstile_broker.py:/app/upstream_world_boss_turnstile_broker.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8193/healthz', timeout=3)); raise SystemExit(0 if d.get('ok') else 1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+volumes:
+  profile:

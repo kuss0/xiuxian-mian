@@ -12,9 +12,13 @@ from pathlib import Path
 import requests
 from telethon import functions
 
-from ..config import MESSAGES_DIR, TG_REQUESTS_PROXIES
-from ..runtime import _get_identity_client_with_account, account_rpc_slot
-from ..state import get_game_bot_ids, get_identity_account
+from ..config import MESSAGES_DIR, TG_REQUESTS_PROXIES, get_registered_client, is_account_offline
+from ..runtime import _ensure_account_client_ready, account_rpc_slot
+from ..state import (
+    get_game_bot_ids, get_global_enabled, get_global_pause_source, get_identity_account,
+    is_cave_public_identity_available,
+)
+from .miniapp_common import MiniAppIdentityOwner, run_miniapp_blocking_flow
 from ..timing import get_day_key
 from ..webapp_core import (
     MiniAppCaptureStore,
@@ -24,6 +28,7 @@ from ..webapp_core import (
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
     end_miniapp_priority_window,
+    require_miniapp_operation,
     safe_miniapp_event_detail,
     sanitize_webapp_secret_text,
 )
@@ -37,6 +42,7 @@ from .world_boss_miniapp import (
     run_world_boss_joined_battle_lab_flow,
     world_boss_player_id_for_identity,
 )
+from .world_boss_turnstile import turnstile_provider_for
 
 try:
     from websockets.asyncio.client import connect as _websocket_connect
@@ -57,6 +63,58 @@ WORLD_BOSS_TOKEN_REFRESH_STATUSES = {"boss_token_missing", "boss_token_expired"}
 # Do not silently reduce a participant's score.  Any deliberate low-profile
 # behavior belongs in the per-identity window_skip_by_identity setting.
 WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS = 0
+
+
+class WorldBossLoginError(RuntimeError):
+    def __init__(self, code, message):
+        self.code = str(code or "account_login_error")
+        super().__init__(str(message or self.code))
+
+
+class _WorldBossRuntimeStopGuard:
+    """Reflect main-program pause/logout state inside worker threads."""
+
+    def __init__(self, shared_event, identity_ids, operation_check=None):
+        self.shared_event = shared_event
+        self.identity_ids = tuple(
+            int(identity_id or 0)
+            for identity_id in identity_ids or ()
+            if int(identity_id or 0) > 0
+        )
+        self.owners = tuple(MiniAppIdentityOwner.capture(identity_id) for identity_id in self.identity_ids)
+        self.operation_check = operation_check
+
+    def set(self):
+        self.shared_event.set()
+
+    def is_set(self):
+        return (
+            self.shared_event.is_set()
+            or not (get_global_enabled() or get_global_pause_source() == "tianzun_maintenance")
+            or any(owner is None or not owner.is_current() for owner in self.owners)
+            or any(not is_cave_public_identity_available(identity_id) for identity_id in self.identity_ids)
+            or (self.operation_check is not None and not self.operation_check())
+        )
+
+
+def world_boss_identity_login_status(identity_id):
+    identity_id = int(identity_id or 0)
+    account_id = int(get_identity_account(identity_id) or 0)
+    if account_id <= 0:
+        return {"ready": False, "code": "account_missing", "account_id": 0}
+    if is_account_offline(account_id):
+        return {"ready": False, "code": "account_offline", "account_id": account_id}
+    client = get_registered_client(account_id)
+    if client is None:
+        return {"ready": False, "code": "account_not_connected", "account_id": account_id}
+    is_connected = getattr(client, "is_connected", None)
+    if callable(is_connected):
+        try:
+            if not is_connected():
+                return {"ready": False, "code": "account_not_connected", "account_id": account_id}
+        except Exception:
+            return {"ready": False, "code": "account_not_connected", "account_id": account_id}
+    return {"ready": True, "code": "connected", "account_id": account_id}
 
 
 def _world_boss_websocket_proxy():
@@ -391,10 +449,24 @@ async def request_world_boss_miniapp_init_data(identity_id, launch):
         )
     if not request.allowed:
         raise ValueError(request.reason or "world boss MiniApp launch not allowed")
-    account_id, client = _get_identity_client_with_account(identity_id)
-    if client is None:
-        raise RuntimeError("身份客户端不可用")
+    login = world_boss_identity_login_status(identity_id)
+    account_id = int(login.get("account_id") or 0)
+    if not login.get("ready"):
+        messages = {
+            "account_missing": "身份尚未绑定 Telegram 登录账号",
+            "account_offline": "身份绑定的 Telegram 登录账号已离线",
+            "account_not_connected": "身份绑定的 Telegram 登录账号未连接",
+        }
+        raise WorldBossLoginError(login.get("code"), messages.get(login.get("code"), "Telegram 登录账号不可用"))
+    client = get_registered_client(account_id)
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        try:
+            await _ensure_account_client_ready(client)
+            me = await client.get_me()
+        except Exception as exc:
+            raise WorldBossLoginError("account_unauthorized", "Telegram session 未授权，请重新登录") from exc
+        if int(getattr(me, "id", 0) or 0) != account_id:
+            raise WorldBossLoginError("account_mismatch", "身份绑定账号与 Telegram session 不一致")
         bot = await client.get_entity(request.bot_username or adapter.bot_username)
         bot_input = await client.get_input_entity(bot)
         result = await client(functions.messages.RequestMainWebViewRequest(
@@ -452,6 +524,8 @@ async def run_world_boss_miniapp_event(
     progress_callback=None,
     window_skip_by_identity=None,
     launch_refresh_provider=None,
+    turnstile_enabled=False,
+    operation_check=None,
 ):
     """Probe admission with one account, then run serial timelines in parallel.
 
@@ -612,11 +686,12 @@ async def run_world_boss_miniapp_event(
         except Exception as exc:
             if session is not None:
                 session.close()
+            error_status = exc.code if isinstance(exc, WorldBossLoginError) else "runtime_error"
             join_result = {
                 "identity_id": identity_id,
                 "phase": "join",
                 "ok": False,
-                "status": "runtime_error",
+                "status": error_status,
                 "error": str(safe_miniapp_event_detail({"error": str(exc)}).get("error") or "runtime error"),
             }
             await _emit_progress(progress_callback, join_result)
@@ -680,19 +755,33 @@ async def run_world_boss_miniapp_event(
                     if await candidate_feed.start():
                         realtime_feed = candidate_feed
                         realtime_summary["started"] = True
-                battle = await asyncio.to_thread(
-                    run_world_boss_joined_battle_lab_flow,
-                    receipt,
-                    token=battle_token,
-                    entry_token=launch_snapshot["token"],
-                    init_data=init_data,
-                    transport=identity_transport,
-                    capture_sink=capture_sink,
-                    capture_source=f"world_boss:battle:{identity_id}",
-                    window_skip_count=window_skip_count,
-                    stop_event=stop_event,
-                    realtime_waiter=realtime_feed.wait_for_update if realtime_feed else None,
-                    realtime_state_provider=realtime_feed.latest_boss if realtime_feed else None,
+                def battle_flow(operation):
+                    def checked_transport(request):
+                        require_miniapp_operation(operation.check)
+                        return identity_transport(request)
+
+                    return run_world_boss_joined_battle_lab_flow(
+                        receipt,
+                        token=battle_token,
+                        entry_token=launch_snapshot["token"],
+                        init_data=init_data,
+                        transport=checked_transport,
+                        sleeper=operation.sleep,
+                        capture_sink=capture_sink,
+                        capture_source=f"world_boss:battle:{identity_id}",
+                        window_skip_count=window_skip_count,
+                        stop_event=runtime_stop_guard,
+                        realtime_waiter=realtime_feed.wait_for_update if realtime_feed else None,
+                        realtime_state_provider=realtime_feed.latest_boss if realtime_feed else None,
+                        turnstile_provider=turnstile_provider_for(
+                            identity_id,
+                            int(getattr(receipt, "account_id", 0) or get_identity_account(identity_id) or 0),
+                            enabled=bool(turnstile_enabled),
+                        ),
+                    )
+
+                battle = await run_miniapp_blocking_flow(
+                    battle_flow, operation_check=lambda: not runtime_stop_guard.is_set(),
                 )
             finally:
                 if realtime_feed is not None:
@@ -738,6 +827,7 @@ async def run_world_boss_miniapp_event(
     # All selected identities share one server-side event.  Once it closes,
     # stop stale local timelines before they emit more /hit requests.
     stop_event = threading.Event()
+    runtime_stop_guard = None
     begin_miniapp_priority_window(priority_owner)
     try:
         normalized_identity_ids = []
@@ -748,6 +838,7 @@ async def run_world_boss_miniapp_event(
                 identity_id = 0
             if identity_id > 0 and identity_id not in normalized_identity_ids:
                 normalized_identity_ids.append(identity_id)
+        runtime_stop_guard = _WorldBossRuntimeStopGuard(stop_event, normalized_identity_ids, operation_check)
         joined = []
         if normalized_identity_ids:
             canary = await join_one(normalized_identity_ids[0])
@@ -765,6 +856,12 @@ async def run_world_boss_miniapp_event(
             battle_one(context, priority_index)
             for priority_index, context in enumerate(contexts)
         )))
+    except asyncio.CancelledError:
+        # asyncio.to_thread cannot stop an in-flight browser request itself.
+        # The shared guard prevents its worker from submitting begin/hit after
+        # the main task is cancelled, paused, or its login is disabled.
+        stop_event.set()
+        raise
     finally:
         end_miniapp_priority_window(priority_owner)
 

@@ -454,10 +454,14 @@
     automation = automation || {};
     var candidates = Array.isArray(automation.world_boss_candidates) ? automation.world_boss_candidates : [];
     var candidateHtml = candidates.length ? candidates.map(function (item) {
+      var login = item.login || {};
+      var loginReady = !!login.ready;
+      var loginLabel = loginReady ? '登录已连接' : ('登录不可用：' + (login.code || 'unknown'));
+      var configuredEnabled = typeof item.configured_auto_enabled === 'boolean' ? item.configured_auto_enabled : !!item.auto_enabled;
       return '<div class="miniapp-world-boss-candidate">'
         + '<label class="miniapp-world-boss-toggle">'
-        + '<input type="checkbox" data-world-boss-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '>'
-        + '<span>' + esc(item.label || item.identity_id) + '</span>'
+        + '<input type="checkbox" data-world-boss-candidate="' + esc(item.identity_id) + '"' + (configuredEnabled ? ' checked' : '') + '>'
+        + '<span>' + esc(item.label || item.identity_id) + '｜' + esc(loginLabel) + '</span>'
         + '</label>'
         + '<label class="miniapp-world-boss-skip"><span>额外少出手</span>'
         + '<input type="number" min="0" max="32" step="1" data-world-boss-window-skip="' + esc(item.identity_id) + '" value="' + esc(item.window_skip_count || 0) + '">'
@@ -471,10 +475,16 @@
         + '<span>账户 ' + esc(item.account_id) + '｜当前 ' + esc(item.current_label || '待初始化') + '｜已完成 ' + esc(item.completed_count || 0) + '</span>'
         + '</label>';
     }).join('') : '<span class="miniapp-empty">暂无可轮换账户</span>';
+    var turnstileCapability = automation.world_boss_turnstile_capability || {};
+    var turnstileReady = !!(turnstileCapability.environment_enabled && turnstileCapability.secret_configured);
+    var turnstileStatus = turnstileReady ? '验证环境配置已加载' : '验证环境配置未启用或缺失';
+    var effectiveAccountLimit = automation.world_boss_effective_account_limit || automation.world_boss_auto_account_limit || 1;
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
       + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行｜仅按身份配置少出手</span></div>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-turnstile-enabled="1"' + (automation.world_boss_turnstile_enabled ? ' checked' : '') + '><span>Turnstile 浏览器验证（灰度时强制单登录账户）</span></label>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><span>' + esc(turnstileStatus) + '｜实际账户上限 ' + esc(effectiveAccountLimit) + '</span></div>'
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
       + '<div class="miniapp-cave-switches">' + candidateHtml + '</div>'
@@ -838,7 +848,11 @@
     if (!panel) return;
     if (button) button.disabled = true;
     try {
-      var excludedIds = [];
+      var renderedIds = Array.prototype.map.call(panel.querySelectorAll('[data-world-boss-candidate]'), function (input) {
+        return input.getAttribute('data-world-boss-candidate');
+      });
+      var configuredExclusions = ((currentMiniAppSnapshot || {}).automation || {}).world_boss_auto_excluded_identity_ids || [];
+      var excludedIds = configuredExclusions.filter(function (identityId) { return renderedIds.indexOf(String(identityId)) < 0; });
       var windowSkipByIdentity = {};
       panel.querySelectorAll('[data-world-boss-candidate]').forEach(function (input) {
         if (!input.checked) excludedIds.push(input.getAttribute('data-world-boss-candidate'));
@@ -850,6 +864,7 @@
       });
       var data = await post('/api/world-boss-miniapp-config', {
         enabled: !!(panel.querySelector('[data-world-boss-enabled="1"]') || {}).checked,
+        turnstile_enabled: !!(panel.querySelector('[data-world-boss-turnstile-enabled="1"]') || {}).checked,
         account_limit: (panel.querySelector('[data-world-boss-account-limit="1"]') || {}).value || 1,
         excluded_identity_ids: excludedIds,
         window_skip_by_identity: windowSkipByIdentity,

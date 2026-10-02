@@ -1,0 +1,27 @@
+name: tg_game_camoufox_test
+
+services:
+  turnstile-camoufox:
+    build:
+      context: .
+      dockerfile: Dockerfile.turnstile-camoufox
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      - QYZ_BROKER_BROWSER_ENGINE=camoufox
+      - QYZ_BROKER_DISPLAY_MODE=xvfb
+      - QYZ_BROKER_WORKERS=1
+      - QYZ_BROKER_FINGERPRINT_OS=windows
+      - QYZ_BROKER_FINGERPRINT_LOCALE=zh-CN
+    ports:
+      - "127.0.0.1:8193:8192"
+    restart: unless-stopped
+    shm_size: "512m"
+    mem_limit: "1536m"
+    cpus: "2.0"
+    pids_limit: 512
+    volumes:
+      - turnstile_camoufox_profile:/var/lib/turnstile/profiles/worker-0
+
+volumes:
+  turnstile_camoufox_profile:

@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, parse_qsl, urljoin, urlparse
 
 
 SENSITIVE_WEBAPP_QUERY_KEYS = {
+    "turnstileToken",
+    "turnstileIdempotencyKey",
     "tgWebAppData",
     "initData",
     "query_id",
@@ -131,7 +133,7 @@ def get_miniapp_global_rate_limit_snapshot():
 
 
 RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
-    r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|sessionToken|session_token|ticket|chargeTicket|charge_ticket|wsTicket|ws_ticket|startapp|start_param)=([^&#\s]+)",
+    r"(?P<key>turnstileToken|turnstileIdempotencyKey|tgWebAppData|initData|query_id|hash|user|signature|token|sessionToken|session_token|ticket|chargeTicket|charge_ticket|wsTicket|ws_ticket|startapp|start_param)=([^&#\s]+)",
     re.IGNORECASE,
 )
 RE_MINIAPP_START_TOKEN = re.compile(
@@ -143,11 +145,14 @@ RE_WEBAPP_URL = re.compile(
     re.IGNORECASE,
 )
 RE_SECRET_HEADER_ASSIGNMENT = re.compile(
-    r"\b(?P<key>authorization|proxy-authorization|cookie|set-cookie|x-telegram-bot-api-secret-token)\s*[:=]\s*(?P<value>[^\s,;]+(?:\s+[^\s,;]+)?)",
+    r"\b(?P<key>x-turnstile-broker-key|authorization|proxy-authorization|cookie|set-cookie|x-telegram-bot-api-secret-token)\s*[:=]\s*(?P<value>[^\s,;]+(?:\s+[^\s,;]+)?)",
     re.IGNORECASE,
 )
 RE_BEARER_SECRET = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{6,}", re.IGNORECASE)
 SENSITIVE_MINIAPP_EVENT_KEYWORDS = (
+    "turnstile",
+    "broker_secret",
+    "broker-key",
     "tgwebappdata",
     "initdata",
     "init_data",

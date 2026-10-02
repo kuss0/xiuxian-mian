@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      - WORLD_BOSS_INSTANCE_NAME=local
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+      - ./frontend/dist:/app/frontend/dist
+      - ./data:/app/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6399:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+volumes:
+  redis_data:

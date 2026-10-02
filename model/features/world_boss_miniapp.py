@@ -13,6 +13,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from uuid import uuid4
 
 from ..webapp_core import (
     MiniAppAdapter,
@@ -126,6 +127,8 @@ WORLD_BOSS_ERROR_TYPES = (
     "boss_hit_outside_window",
     "boss_client_clock_mismatch",
     "rate_limited",
+    "turnstile_required",
+    "turnstile_failed",
 )
 
 _VERIFICATION_KEYS = (
@@ -524,6 +527,8 @@ def build_world_boss_miniapp_request(
     elapsed_ms=None,
     hold_ms=None,
     boss_proof=None,
+    turnstile_token="",
+    turnstile_idempotency_key="",
     adapter=None,
 ):
     adapter = adapter or build_world_boss_miniapp_adapter()
@@ -536,6 +541,10 @@ def build_world_boss_miniapp_request(
         payload["playerId"] = player_id
     elif endpoint == "begin":
         payload["challengeId"] = str(challenge_id or "").strip()
+        if turnstile_token:
+            payload["turnstileToken"] = str(turnstile_token)
+        if turnstile_idempotency_key:
+            payload["turnstileIdempotencyKey"] = str(turnstile_idempotency_key)
     elif endpoint == "window":
         payload.update({
             "challengeId": str(challenge_id or "").strip(),
@@ -1975,6 +1984,7 @@ def run_world_boss_joined_battle_lab_flow(
     stop_event=None,
     realtime_waiter=None,
     realtime_state_provider=None,
+    turnstile_provider=None,
 ):
     """Wait for room lock, refresh the joined session, then execute one battle."""
 
@@ -2145,27 +2155,82 @@ def run_world_boss_joined_battle_lab_flow(
     )
     sleeper(auto_start_delay)
     if single_battle_protocol:
-        begin_started_at = float(clock())
-        begin_request = build_world_boss_miniapp_request(
-            "begin",
-            token=current_token,
-            init_data=init_data,
-            challenge_id=str(challenge.get("challengeId") or ""),
-            adapter=adapter,
-        )
-        begin_result = execute_miniapp_http_request(
-            begin_request,
-            transport,
-            sleeper=sleeper,
-            backoff_sec=(),
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="begin",
-        )
-        _append_http_event(events, "begin", begin_result)
-        if not begin_result.ok:
+        verification = {}
+        challenge_id = str(challenge.get("challengeId") or "")
+        begin_result = None
+        begin_started_at = 0.0
+        for _begin_attempt in range(2):
+            if stop_event is not None and stop_event.is_set():
+                return _flow_result(False, "cancelled", error="world boss cancelled before begin", events=events)
+            if float(clock()) >= wait_deadline:
+                return _flow_result(False, "boss_battle_deadline", error="world boss battle deadline", events=events)
+            # Broker wait is intentionally outside the begin RTT used for the
+            # server battle-clock midpoint calculation.
+            begin_started_at = float(clock())
+            begin_request = build_world_boss_miniapp_request(
+                "begin",
+                token=current_token,
+                init_data=init_data,
+                challenge_id=challenge_id,
+                adapter=adapter,
+                **verification,
+            )
+            begin_step = "begin_verified" if verification else "begin"
+            begin_result = execute_miniapp_http_request(
+                begin_request,
+                transport,
+                sleeper=sleeper,
+                backoff_sec=(),
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=begin_step,
+            )
+            _append_http_event(events, begin_step, begin_result)
+            if begin_result.ok:
+                break
             status = classify_world_boss_miniapp_error(begin_result.error)
-            return _flow_result(False, status, error=begin_result.error, data=begin_result.data, events=events)
+            if verification:
+                ambiguous = begin_result.error_type == "transient" or int(begin_result.status_code or 0) >= 500
+                if ambiguous:
+                    return _flow_result(
+                        False,
+                        "boss_begin_result_unknown",
+                        error="verified begin result unknown; replay stopped",
+                        data=begin_result.data,
+                        events=events,
+                    )
+                return _flow_result(False, status, error=begin_result.error, data=begin_result.data, events=events)
+            explicit_verification = (
+                begin_result.error_type == "app"
+                and isinstance(begin_result.data, dict)
+                and begin_result.data.get("error") in {"turnstile_required", "turnstile_failed"}
+            )
+            if not explicit_verification or turnstile_provider is None:
+                return _flow_result(False, status, error=begin_result.error, data=begin_result.data, events=events)
+
+            from .world_boss_turnstile import TurnstileBrokerError
+
+            remaining_sec = max(0.0, wait_deadline - float(clock()))
+            if remaining_sec < 5.0:
+                return _flow_result(False, "boss_battle_deadline", error="world boss battle deadline", events=events)
+            try:
+                solved = turnstile_provider(
+                    challenge_id=challenge_id,
+                    timeout_seconds=min(remaining_sec, 90.0),
+                )
+            except TurnstileBrokerError as exc:
+                return _flow_result(False, "turnstile_broker_failed", error=str(exc), events=events)
+            except Exception:
+                return _flow_result(False, "turnstile_broker_failed", error="turnstile_provider_error", events=events)
+            token_value = solved.get("turnstile_token") if isinstance(solved, dict) else None
+            if not isinstance(token_value, str) or not token_value.strip():
+                return _flow_result(False, "turnstile_broker_failed", error="turnstile_token_missing", events=events)
+            verification = {
+                "turnstile_token": token_value.strip(),
+                "turnstile_idempotency_key": str(uuid4()),
+            }
+        if begin_result is None or not begin_result.ok:
+            return _flow_result(False, "begin_failed", error="world boss begin failed", events=events)
         begin_data = begin_result.data if isinstance(begin_result.data, dict) else {}
         starts_in_ms = max(0.0, _float_value(begin_data.get("startsInMs"), 0.0))
         round_trip_ms = max(0.0, (float(clock()) - begin_started_at) * 1000.0)

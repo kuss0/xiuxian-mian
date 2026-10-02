@@ -238,6 +238,8 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
         )
         callback_types = []
+        provider_calls = []
+        provider_marker = object()
 
         async def init_data_provider(identity_id, _launch):
             return f"query_id={identity_id}&hash=secret"
@@ -270,8 +272,16 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 return {"available": True, "connected": True, "reconnect_count": 0, "has_state": False, "last_error": ""}
 
         def fake_battle(_receipt, **kwargs):
-            callback_types.append((callable(kwargs.get("realtime_waiter")), callable(kwargs.get("realtime_state_provider"))))
+            callback_types.append((
+                callable(kwargs.get("realtime_waiter")),
+                callable(kwargs.get("realtime_state_provider")),
+                kwargs.get("turnstile_provider") is provider_marker,
+            ))
             return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}, "error": ""}
+
+        def fake_provider(identity_id, account_id, *, enabled=False):
+            provider_calls.append((identity_id, account_id, enabled))
+            return provider_marker
 
         with (
             patch.object(world_boss_miniapp_runtime, "_websocket_connect", object()),
@@ -279,16 +289,19 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
             patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
             patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+            patch.object(world_boss_miniapp_runtime, "turnstile_provider_for", side_effect=fake_provider),
         ):
             result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
                 [11],
                 event,
                 init_data_provider=init_data_provider,
                 transport=lambda _request: None,
+                turnstile_enabled=True,
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual([(True, True)], callback_types)
+        self.assertEqual([(True, True, True)], callback_types)
+        self.assertEqual([(11, 100, True)], provider_calls)
 
     def test_extract_rotating_bot_qyz_entry(self):
         event = SimpleNamespace(
@@ -349,6 +362,9 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             async def get_entity(self, username):
                 return SimpleNamespace(username=username)
 
+            async def get_me(self):
+                return SimpleNamespace(id=1)
+
             async def get_input_entity(self, bot):
                 return bot
 
@@ -373,11 +389,10 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "dynamic_bot_verified": True,
         }
         with (
-            patch.object(
-                world_boss_miniapp_runtime,
-                "_get_identity_client_with_account",
-                return_value=(1, client),
-            ),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=1),
+            patch.object(world_boss_miniapp_runtime, "is_account_offline", return_value=False),
+            patch.object(world_boss_miniapp_runtime, "get_registered_client", return_value=client),
+            patch.object(world_boss_miniapp_runtime, "_ensure_account_client_ready", new=AsyncMock()),
             patch.object(world_boss_miniapp_runtime, "account_rpc_slot", return_value=RpcSlot()),
         ):
             init_data = await world_boss_miniapp_runtime.request_world_boss_miniapp_init_data(
@@ -387,6 +402,52 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("query_id=abc&hash=SECRET", init_data)
         self.assertEqual("xlqlcy_bot", client.requested_bot)
+
+    async def test_request_init_data_never_falls_back_to_another_login(self):
+        launch = {
+            "token": "qyz_SECRET123",
+            "webview_url": "https://t.me/hantianzun22_bot?startapp=qyz_SECRET123",
+            "bot_username": "hantianzun22_bot",
+        }
+        with (
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=101),
+            patch.object(world_boss_miniapp_runtime, "is_account_offline", return_value=False),
+            patch.object(world_boss_miniapp_runtime, "get_registered_client", return_value=None),
+        ):
+            with self.assertRaises(world_boss_miniapp_runtime.WorldBossLoginError) as raised:
+                await world_boss_miniapp_runtime.request_world_boss_miniapp_init_data(11, launch)
+
+        self.assertEqual("account_not_connected", raised.exception.code)
+
+    async def test_request_init_data_rejects_session_account_mismatch(self):
+        class FakeClient:
+            async def get_me(self):
+                return SimpleNamespace(id=202)
+
+        class RpcSlot:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return False
+
+        client = FakeClient()
+        launch = {
+            "token": "qyz_SECRET123",
+            "webview_url": "https://t.me/hantianzun22_bot?startapp=qyz_SECRET123",
+            "bot_username": "hantianzun22_bot",
+        }
+        with (
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=101),
+            patch.object(world_boss_miniapp_runtime, "is_account_offline", return_value=False),
+            patch.object(world_boss_miniapp_runtime, "get_registered_client", return_value=client),
+            patch.object(world_boss_miniapp_runtime, "_ensure_account_client_ready", new=AsyncMock()),
+            patch.object(world_boss_miniapp_runtime, "account_rpc_slot", return_value=RpcSlot()),
+        ):
+            with self.assertRaises(world_boss_miniapp_runtime.WorldBossLoginError) as raised:
+                await world_boss_miniapp_runtime.request_world_boss_miniapp_init_data(11, launch)
+
+        self.assertEqual("account_mismatch", raised.exception.code)
 
     async def test_all_accounts_join_before_first_battle(self):
         calls = []
@@ -997,7 +1058,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
         )
-        join_transports = {}
+        join_sessions = {}
         sessions = []
 
         class FakeSession:
@@ -1005,7 +1066,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.closed = False
 
             def request(self, *_args, **_kwargs):
-                return None
+                return self
 
             def close(self):
                 self.closed = True
@@ -1019,7 +1080,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return f"query_id={identity_id}&hash=secret"
 
         def fake_join(**kwargs):
-            join_transports[kwargs["identity_id"]] = kwargs["transport"]
+            join_sessions[kwargs["identity_id"]] = kwargs["transport"]({"url": "https://example.invalid/join"})
             return SimpleNamespace(
                 joined=True,
                 session_token="qyz_SESSION",
@@ -1028,11 +1089,12 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         def fake_battle(_receipt, **kwargs):
             identity_id = int(kwargs["capture_source"].rsplit(":", 1)[-1])
-            self.assertIs(join_transports[identity_id], kwargs["transport"])
+            self.assertIs(join_sessions[identity_id], kwargs["transport"]({"url": "https://example.invalid/begin"}))
             return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}, "error": ""}
 
         with (
             patch.object(world_boss_miniapp_runtime.requests, "Session", side_effect=session_factory),
+            patch.object(world_boss_miniapp_runtime._WorldBossRuntimeStopGuard, "is_set", return_value=False),
             patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
             patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
             patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),

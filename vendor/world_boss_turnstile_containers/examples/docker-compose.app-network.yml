@@ -1,0 +1,17 @@
+# Merge only with the normal bridge-network tg_game docker-compose.yml.
+# Do not merge this example with network_mode: host.
+services:
+  app:
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      WORLD_BOSS_TURNSTILE_ENABLED: ${WORLD_BOSS_TURNSTILE_ENABLED:-false}
+      WORLD_BOSS_TURNSTILE_BROKER_URL: http://turnstile-camoufox:8192
+    networks:
+      - default
+      - turnstile
+
+networks:
+  turnstile:
+    external: true
+    name: world-boss-turnstile

@@ -43,6 +43,7 @@ from .world_boss_miniapp_runtime import (
     WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
     extract_world_boss_miniapp_launch,
     run_world_boss_miniapp_event,
+    world_boss_identity_login_status,
 )
 
 
@@ -1684,9 +1685,13 @@ def _world_boss_miniapp_auto_config():
         current_identity_id = _rotation_identity_for_account(account_id)
         if current_identity_id > 0:
             window_skip_by_identity.pop(current_identity_id, None)
+    turnstile_enabled = bool(raw.get("world_boss_turnstile_enabled"))
     return {
         "enabled": bool(raw.get("world_boss_auto_enabled")),
-        "account_limit": account_limit,
+        # The supplied browser broker has one worker and the current production
+        # rollout is single-login. Keep admission bounded when verification is on.
+        "account_limit": min(account_limit, 1) if turnstile_enabled else account_limit,
+        "turnstile_enabled": turnstile_enabled,
         # Compatibility-only field. Entry is intentionally parallel; battle
         # launch spacing is controlled by battle_priority_gap_sec.
         "account_gap_sec": 0,
@@ -1712,7 +1717,17 @@ async def _run_world_boss_miniapp_automation(
     opened_at,
     account_gap_sec,
     window_skip_by_identity=None,
+    turnstile_enabled=False,
 ):
+    def operation_current():
+        current = _world_boss_miniapp_auto_config()
+        return (
+            current["enabled"]
+            and (not turnstile_enabled or current["turnstile_enabled"])
+            and not any(identity_id in current["excluded_identity_ids"] for identity_id in identity_ids)
+            and all(world_boss_identity_login_status(identity_id).get("ready") for identity_id in identity_ids)
+        )
+
     async def record_progress(item):
         run_state = _get_run_state()
         if run_state.get("event_key") != event_key:
@@ -1754,6 +1769,8 @@ async def _run_world_boss_miniapp_automation(
             battle_priority_gap_sec=WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC,
             progress_callback=record_progress,
             window_skip_by_identity=window_skip_by_identity,
+            turnstile_enabled=turnstile_enabled,
+            operation_check=operation_current,
         )
     except Exception as exc:
         result = {"ok": False, "status": "runtime_error", "joined_count": 0, "results": [], "error": _short_text(exc)}
@@ -1893,6 +1910,7 @@ def _start_world_boss_miniapp_automation(
     opened_at,
     account_gap_sec,
     window_skip_by_identity=None,
+    turnstile_enabled=False,
 ):
     global _WORLD_BOSS_MINIAPP_TASK
     if _world_boss_miniapp_task_running():
@@ -1906,6 +1924,7 @@ def _start_world_boss_miniapp_automation(
             opened_at,
             account_gap_sec,
             window_skip_by_identity,
+            turnstile_enabled,
         )
     ))
     return True
@@ -1929,6 +1948,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
         identity_id
         for identity_id in entry_identity_ids
         if identity_id not in auto_config["excluded_identity_ids"]
+        and world_boss_identity_login_status(identity_id).get("ready")
     ][: auto_config["account_limit"]]
     run_state["miniapp_entry_identity_ids"] = entry_identity_ids if run_state["miniapp_only"] else []
     run_state["last_open_log_key"] = event_key
@@ -1957,6 +1977,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
                 now,
                 0,
                 auto_config["window_skip_by_identity"],
+                auto_config["turnstile_enabled"],
             )
             if started:
                 message = (

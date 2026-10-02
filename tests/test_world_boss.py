@@ -1398,6 +1398,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module.set_identity_account(301299112, 102)
         state_module._meta_state["miniapp_auto_config"] = {
             "world_boss_auto_enabled": True,
+            "world_boss_turnstile_enabled": True,
             "world_boss_auto_account_limit": 1,
             "world_boss_auto_account_gap_sec": 3,
         }
@@ -1410,6 +1411,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             patch.object(world_boss, "save_state", return_value=True),
             patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
             patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(world_boss, "world_boss_identity_login_status", return_value={"ready": True, "code": "connected"}),
             patch.object(world_boss, "_start_world_boss_miniapp_automation", return_value=True) as start_mock,
         ):
             opened = await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=event)
@@ -1417,6 +1419,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(opened)
         start_mock.assert_called_once()
         self.assertEqual(1, len(start_mock.call_args.args[1]))
+        self.assertTrue(start_mock.call_args.args[7])
         self.assertIn("自动参与已启动", audit_mock.await_args.args[0])
         send_mock.assert_not_awaited()
         run_state = state_module.get_world_boss_run_state()
@@ -1442,6 +1445,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(world_boss, "save_state", return_value=True),
             patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+            patch.object(world_boss, "world_boss_identity_login_status", return_value={"ready": True, "code": "connected"}),
             patch.object(world_boss, "_start_world_boss_miniapp_automation", return_value=True) as start_mock,
         ):
             await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=event)
@@ -1461,6 +1465,18 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         config = world_boss._world_boss_miniapp_auto_config()
 
         self.assertEqual({301299112: 2}, config["window_skip_by_identity"])
+
+    def test_turnstile_auto_config_caps_main_scheduler_to_one_login(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_auto_enabled": True,
+            "world_boss_turnstile_enabled": True,
+            "world_boss_auto_account_limit": 4,
+        }
+
+        config = world_boss._world_boss_miniapp_auto_config()
+
+        self.assertTrue(config["turnstile_enabled"])
+        self.assertEqual(1, config["account_limit"])
 
     def test_rotation_selects_current_identity_and_uses_full_attacks(self):
         account_id = 301299112

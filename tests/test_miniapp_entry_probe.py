@@ -1344,7 +1344,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         initial = ui.get_miniapp_status_snapshot()["automation"]
         self.assertFalse(initial["world_boss_auto_enabled"])
+        self.assertFalse(initial["world_boss_turnstile_enabled"])
         self.assertEqual(1, initial["world_boss_auto_account_limit"])
+        self.assertEqual(1, initial["world_boss_effective_account_limit"])
         self.assertEqual(0, initial["world_boss_auto_finish_reserve_windows"])
 
         with patch.object(ui, "save_state", return_value=True) as save_mock:
@@ -1367,6 +1369,24 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, automation["world_boss_auto_finish_reserve_windows"])
         self.assertIn("少出手身份 1 个", message)
         save_mock.assert_called_once()
+
+    async def test_world_boss_turnstile_setting_is_explicit_and_caps_effective_login_count(self):
+        state_module._meta_state["miniapp_auto_config"] = {}
+
+        with patch.object(ui, "save_state", return_value=True):
+            ok, message = await ui.ui_set_world_boss_miniapp_config({
+                "enabled": True,
+                "turnstile_enabled": True,
+                "account_limit": 4,
+            })
+
+        automation = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertTrue(ok)
+        self.assertTrue(automation["world_boss_turnstile_enabled"])
+        self.assertEqual(4, automation["world_boss_auto_account_limit"])
+        self.assertEqual(1, automation["world_boss_effective_account_limit"])
+        self.assertIn("验证开启", message)
+        self.assertIn("实际最多 1 个登录账户", message)
 
     async def test_cave_public_batch_claims_slot_before_background_task(self):
         batch_snapshot = dict(ui._cave_public_batch_state)

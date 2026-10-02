@@ -1,0 +1,4 @@
+# Copy to xiuxian.service.d only after creating the root-only environment file.
+# Both the environment and the UI verification switch default to disabled.
+[Service]
+EnvironmentFile=/root/.config/xiuxian-world-boss/turnstile.env

@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "package": "standalone-broker-build-context",
+  "archive_root": "world_boss_turnstile_containers",
+  "created_at": "2026-09-07T18:03:15+08:00",
+  "source_git_commit": "601d0462c1b43cbbdadc342c261330a1b62d1f6a",
+  "source_policy": "Explicit allowlist of tracked workspace files; no runtime secrets or state",
+  "manifest_excludes_itself": true,
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 334,
+      "sha256": "0184db0a5c7bd9983bb1be011c2c5f08239e72865eb41e14575fc516b91f504c",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：仅允许 broker 构建必需文件，真实配置和 reference 不进入构建上下文",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 144,
+      "sha256": "3bd6f0f2dda84a1ae4260142e40f583b2184dcbd44daf48f0b0ce80b3c0f4c08",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：独立容器端口样例",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": "Dockerfile.turnstile-broker",
+      "bytes": 2110,
+      "sha256": "7931597bd8ca2c63abd6a281735282df0e345b4e2cc3af8f7237ec768bd50940",
+      "source": "Dockerfile.turnstile-broker",
+      "source_sha256": "7931597bd8ca2c63abd6a281735282df0e345b4e2cc3af8f7237ec768bd50940",
+      "description": "Chromium/Xorg 回退镜像构建文件",
+      "transformation": null
+    },
+    {
+      "path": "Dockerfile.turnstile-camoufox",
+      "bytes": 1820,
+      "sha256": "9a6b0b0b59a0a13be4ac3d6257e01c85a250ec0cb91980ea26384e4f5eac6e4e",
+      "source": "Dockerfile.turnstile-camoufox",
+      "source_sha256": "9a6b0b0b59a0a13be4ac3d6257e01c85a250ec0cb91980ea26384e4f5eac6e4e",
+      "description": "Camoufox 镜像构建文件",
+      "transformation": null
+    },
+    {
+      "path": "README.md",
+      "bytes": 18967,
+      "sha256": "2ca7bebe2707eadcd04a8ddae6a554496454412b681fc84f6ff2013164c8dd82",
+      "source": null,
+      "source_sha256": null,
+      "description": "本次生成的文件清单与容器部署说明",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": "docker-compose.turnstile.yml",
+      "bytes": 1975,
+      "sha256": "6a51ce679090fd431c212aae1d5ea1ba1fe622dc1b787a71d2463e9f81e75ef7",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：可独立构建的 broker 编排，不依赖 tg_game app 或 Redis",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": "docker/turnstile-broker-entrypoint.sh",
+      "bytes": 3052,
+      "sha256": "8cfcb7a69b6db82d7345d06a5500282deb14272ccb0cc5c3dd44e65bd11c49e9",
+      "source": "docker/turnstile-broker-entrypoint.sh",
+      "source_sha256": "8cfcb7a69b6db82d7345d06a5500282deb14272ccb0cc5c3dd44e65bd11c49e9",
+      "description": "共享容器入口：权限、Xorg 和非 root broker",
+      "transformation": null
+    },
+    {
+      "path": "docker/xorg-j4125.conf",
+      "bytes": 830,
+      "sha256": "c2562f2fad455c968bea229edfc8f83129c080f08800e173461c1f192b296b90",
+      "source": "docker/xorg-j4125.conf",
+      "source_sha256": "c2562f2fad455c968bea229edfc8f83129c080f08800e173461c1f192b296b90",
+      "description": "J4125 Intel GPU 的 Xorg 配置",
+      "transformation": null
+    },
+    {
+      "path": "examples/docker-compose.app-network.yml",
+      "bytes": 479,
+      "sha256": "24ed335ad86af9268ee7f698737463d1c2596798419a1511f59d4ee1b94ec30c",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：普通桥接 app 连接独立 broker 网络的覆盖配置",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": "examples/tg-game-turnstile.env.example",
+      "bytes": 585,
+      "sha256": "25d53ae5ed6def4640fccf812a5adc78d249f42181484b01b4417e1c4aa119e3",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：现有 tg_game 应用接入变量样例",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    },
+    {
+      "path": "reference/.dockerignore",
+      "bytes": 239,
+      "sha256": "723b1f902e0ab7cf08b22012427da266f49e268b7a30d870b852fa0e88642558",
+      "source": ".dockerignore",
+      "source_sha256": "723b1f902e0ab7cf08b22012427da266f49e268b7a30d870b852fa0e88642558",
+      "description": "原构建过滤规则的原样备份",
+      "transformation": null
+    },
+    {
+      "path": "reference/Dockerfile",
+      "bytes": 339,
+      "sha256": "184438a63c2dbcf552ceb057a7424f5e922b1e0fb3add9eb5a5aca312cdcd711",
+      "source": "Dockerfile",
+      "source_sha256": "184438a63c2dbcf552ceb057a7424f5e922b1e0fb3add9eb5a5aca312cdcd711",
+      "description": "原主应用镜像，不是独立 broker 的 Dockerfile",
+      "transformation": null
+    },
+    {
+      "path": "reference/docker-compose.camoufox-test.yml",
+      "bytes": 676,
+      "sha256": "6a0871417f5e6fbedfc29912babac53750e6a220db2d74f8dd5c1ad0e258ac5f",
+      "source": "docker-compose.camoufox-test.yml",
+      "source_sha256": "6a0871417f5e6fbedfc29912babac53750e6a220db2d74f8dd5c1ad0e258ac5f",
+      "description": "原独立 Camoufox 测试编排",
+      "transformation": null
+    },
+    {
+      "path": "reference/docker-compose.j4125.yml",
+      "bytes": 3683,
+      "sha256": "42edee0541a601bbfd80e06403980592a2cf898994e9054b3c30c07e707ef7fd",
+      "source": "docker-compose.j4125.yml",
+      "source_sha256": "42edee0541a601bbfd80e06403980592a2cf898994e9054b3c30c07e707ef7fd",
+      "description": "原 J4125 完整应用编排，仅供合并回完整项目",
+      "transformation": null
+    },
+    {
+      "path": "reference/docker-compose.yml",
+      "bytes": 531,
+      "sha256": "f0a34a33a8561ba04df5fcececddbb5476d54798b1b590bcfeaada4fb1e67b85",
+      "source": "docker-compose.yml",
+      "source_sha256": "f0a34a33a8561ba04df5fcececddbb5476d54798b1b590bcfeaada4fb1e67b85",
+      "description": "原普通 app/Redis 编排",
+      "transformation": null
+    },
+    {
+      "path": "reference/requirements.txt",
+      "bytes": 208,
+      "sha256": "25be59cab27d69399a57dad0f6e0bd38a78c81c2880ecdc2a8b879fdc01667b8",
+      "source": "requirements.txt",
+      "source_sha256": "25be59cab27d69399a57dad0f6e0bd38a78c81c2880ecdc2a8b879fdc01667b8",
+      "description": "原主应用依赖",
+      "transformation": null
+    },
+    {
+      "path": "requirements.turnstile-broker.txt",
+      "bytes": 45,
+      "sha256": "119977ebcc119e488e67657681133e37b0a86a991e9fccb1fcd1b59730b7c14f",
+      "source": "requirements.turnstile-broker.txt",
+      "source_sha256": "119977ebcc119e488e67657681133e37b0a86a991e9fccb1fcd1b59730b7c14f",
+      "description": "DrissionPage 和 pyvirtualdisplay 固定版本",
+      "transformation": null
+    },
+    {
+      "path": "requirements.turnstile-camoufox.txt",
+      "bytes": 38,
+      "sha256": "31ecf648374d1fe99514bb2f7359576a017de0dd157cd8f169746906f125e9db",
+      "source": "requirements.turnstile-camoufox.txt",
+      "source_sha256": "31ecf648374d1fe99514bb2f7359576a017de0dd157cd8f169746906f125e9db",
+      "description": "Camoufox 和 pyvirtualdisplay 固定版本",
+      "transformation": null
+    },
+    {
+      "path": "scripts/world_boss_turnstile_broker.py",
+      "bytes": 60678,
+      "sha256": "25356644178389ba505869e8c1165958d2de798cdcfb49f62a51322aacf2dff8",
+      "source": "scripts/world_boss_turnstile_broker.py",
+      "source_sha256": "25356644178389ba505869e8c1165958d2de798cdcfb49f62a51322aacf2dff8",
+      "description": "两种浏览器镜像共用的完整 broker 服务",
+      "transformation": null
+    },
+    {
+      "path": "secrets/turnstile-broker.env.example",
+      "bytes": 258,
+      "sha256": "4865ccf2de9dc86846155caacad532d9fda9b0ff03aadd2571140783032f0a32",
+      "source": null,
+      "source_sha256": null,
+      "description": "新增：无实际密钥的 broker 配置模板",
+      "transformation": "Generated for this distribution; repository files unchanged"
+    }
+  ]
+}

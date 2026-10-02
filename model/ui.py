@@ -139,7 +139,8 @@ from .features.cave_treasure_runtime import (
 )
 from .features.miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
-from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
+from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS, world_boss_identity_login_status
+from .features.world_boss_turnstile import world_boss_turnstile_capability
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_runtime import (
     TreeMiniAppOperation,
@@ -489,6 +490,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_entry_token_canary_at": 0,
     "cave_public_delay_sec": 20,
     "world_boss_auto_enabled": False,
+    "world_boss_turnstile_enabled": False,
     "world_boss_auto_account_limit": 1,
     # Compatibility-only setting. Runtime entry remains parallel.
     "world_boss_auto_account_gap_sec": 3,
@@ -580,6 +582,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_yuanying_enabled",
         "cave_public_tianti_status_enabled",
         "world_boss_auto_enabled",
+        "world_boss_turnstile_enabled",
     ):
         result[key] = bool(result.get(key))
     try:
@@ -961,20 +964,31 @@ def get_miniapp_auto_config_snapshot(now=None):
         world_boss_candidate_ids = []
     excluded_world_boss_ids = set(config.get("world_boss_auto_excluded_identity_ids") or [])
     world_boss_window_skips = dict(config.get("world_boss_auto_window_skip_by_identity") or {})
-    world_boss_candidates = [
-        {
+    def world_boss_candidate_snapshot(identity_id):
+        login = world_boss_identity_login_status(identity_id)
+        configured_auto_enabled = int(identity_id) not in excluded_world_boss_ids
+        return {
             "identity_id": int(identity_id),
             "label": get_identity_ui_display_name(identity_id),
             "account_id": int(get_identity_account(identity_id) or 0),
-            "auto_enabled": int(identity_id) not in excluded_world_boss_ids,
+            "configured_auto_enabled": configured_auto_enabled,
+            "auto_enabled": configured_auto_enabled and login.get("ready"),
+            "login": login,
             "window_skip_count": int(world_boss_window_skips.get(str(identity_id), 0) or 0),
             "total_window_skip_count": (
                 WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
                 + int(world_boss_window_skips.get(str(identity_id), 0) or 0)
             ),
         }
+    world_boss_candidates = [
+        world_boss_candidate_snapshot(identity_id)
         for identity_id in world_boss_candidate_ids
     ]
+    safe_config["world_boss_turnstile_capability"] = world_boss_turnstile_capability()
+    safe_config["world_boss_effective_account_limit"] = (
+        1 if safe_config.get("world_boss_turnstile_enabled")
+        else safe_config.get("world_boss_auto_account_limit", 1)
+    )
     rotation_account_ids = set(config.get("world_boss_rotation_account_ids") or [])
     rotation_accounts = []
     rotation_state = get_world_boss_rotation_state()
@@ -8319,6 +8333,8 @@ async def ui_set_world_boss_miniapp_config(payload=None):
     previous_rotation_target = str(config.get("world_boss_rotation_target_reward") or "")
     if "enabled" in payload:
         config["world_boss_auto_enabled"] = _coerce_ui_bool(payload.get("enabled"))
+    if "turnstile_enabled" in payload:
+        config["world_boss_turnstile_enabled"] = _coerce_ui_bool(payload.get("turnstile_enabled"))
     if "account_limit" in payload:
         try:
             config["world_boss_auto_account_limit"] = max(1, min(4, int(payload.get("account_limit") or 1)))
@@ -8382,8 +8398,10 @@ async def ui_set_world_boss_miniapp_config(payload=None):
         })
     save_state()
     status = "开启" if config["world_boss_auto_enabled"] else "关闭"
+    turnstile_status = "开启" if config["world_boss_turnstile_enabled"] else "关闭"
+    effective_account_limit = 1 if config["world_boss_turnstile_enabled"] else config["world_boss_auto_account_limit"]
     return True, (
-        f"世界 Boss MiniApp 自动化已{status}｜最多 {config['world_boss_auto_account_limit']} 个登录账户"
+        f"世界 Boss MiniApp 自动化已{status}｜验证{turnstile_status}｜实际最多 {effective_account_limit} 个登录账户"
         "｜账户并行、账户内部串行"
         f"｜排除身份 {len(config['world_boss_auto_excluded_identity_ids'])} 个"
         f"｜少出手身份 {len(config['world_boss_auto_window_skip_by_identity'])} 个"

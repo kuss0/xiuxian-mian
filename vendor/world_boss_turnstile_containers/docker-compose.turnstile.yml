@@ -1,0 +1,75 @@
+name: world-boss-turnstile
+
+services:
+  turnstile-camoufox:
+    build:
+      context: .
+      dockerfile: Dockerfile.turnstile-camoufox
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      QYZ_BROKER_HOST: "0.0.0.0"
+      QYZ_BROKER_PORT: "8192"
+      QYZ_BROKER_BROWSER_ENGINE: camoufox
+      QYZ_BROKER_DISPLAY_MODE: xvfb
+      QYZ_BROKER_WORKERS: "1"
+      QYZ_BROKER_FINGERPRINT_OS: windows
+      QYZ_BROKER_FINGERPRINT_LOCALE: zh-CN
+    ports:
+      - "127.0.0.1:${TURNSTILE_CAMOUFOX_PORT:-8193}:8192"
+    init: true
+    restart: unless-stopped
+    shm_size: "512m"
+    mem_limit: "1536m"
+    cpus: "2.0"
+    pids_limit: 512
+    volumes:
+      - turnstile_camoufox_profile:/var/lib/turnstile/profiles/worker-0
+    networks:
+      - turnstile
+
+  turnstile-broker:
+    profiles:
+      - chromium-fallback
+    build:
+      context: .
+      dockerfile: Dockerfile.turnstile-broker
+    env_file:
+      - ./secrets/turnstile-broker.env
+    environment:
+      QYZ_BROKER_HOST: "0.0.0.0"
+      QYZ_BROKER_PORT: "8192"
+      QYZ_BROKER_BROWSER_ENGINE: chromium
+      QYZ_BROKER_BROWSER_PATH: /usr/bin/google-chrome
+      QYZ_BROKER_WORKERS: "2"
+      QYZ_BROKER_GPU_MODE: angle-gl
+      QYZ_BROKER_DISPLAY_MODE: xorg
+    ports:
+      - "127.0.0.1:${TURNSTILE_CHROMIUM_PORT:-8192}:8192"
+    init: true
+    restart: unless-stopped
+    shm_size: "512m"
+    mem_limit: "1536m"
+    cpus: "2.5"
+    pids_limit: 512
+    cap_add:
+      - SYS_TTY_CONFIG
+    devices:
+      - /dev/dri/card0:/dev/dri/card0:rwm
+      - /dev/dri/renderD128:/dev/dri/renderD128:rwm
+      - /dev/tty0:/dev/tty0:rwm
+      - /dev/tty1:/dev/tty1:rwm
+    volumes:
+      - turnstile_profile_worker0:/var/lib/turnstile/profiles/worker-0
+      - turnstile_profile_worker1:/var/lib/turnstile/profiles/worker-1
+    networks:
+      - turnstile
+
+networks:
+  turnstile:
+    name: world-boss-turnstile
+
+volumes:
+  turnstile_camoufox_profile:
+  turnstile_profile_worker0:
+  turnstile_profile_worker1:

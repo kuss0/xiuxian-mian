@@ -1,0 +1,2 @@
+camoufox==0.5.5
+pyvirtualdisplay==3.0

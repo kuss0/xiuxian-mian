@@ -1,0 +1,59 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    QYZ_BROKER_HOST=0.0.0.0 \
+    QYZ_BROKER_PORT=8192 \
+    QYZ_BROKER_WORKERS=2 \
+    QYZ_BROKER_MAX_QUEUE=8 \
+    QYZ_BROKER_PROFILE_ROOT=/var/lib/turnstile/profiles \
+    QYZ_BROKER_BROWSER_PATH=/usr/bin/google-chrome \
+    QYZ_BROKER_GPU_MODE=angle-gl \
+    QYZ_BROKER_DISPLAY_MODE=xorg
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    fonts-noto-cjk \
+    gnupg \
+    acl \
+    libasound2 \
+    libegl1 \
+    libegl-mesa0 \
+    libgbm1 \
+    libgl1-mesa-dri \
+    libgtk-3-0 \
+    libnss3 \
+    libxss1 \
+    libxtst6 \
+    gosu \
+    xdotool \
+    xserver-xorg-core \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin turnstile \
+    && mkdir -p /var/lib/turnstile/profiles \
+    && chown -R turnstile:turnstile /var/lib/turnstile
+
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+    | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.turnstile-broker.txt .
+RUN pip install --no-cache-dir -r requirements.turnstile-broker.txt
+COPY scripts/world_boss_turnstile_broker.py /app/world_boss_turnstile_broker.py
+COPY docker/turnstile-broker-entrypoint.sh /usr/local/bin/turnstile-broker-entrypoint
+COPY docker/xorg-j4125.conf /etc/X11/xorg-j4125.conf
+RUN chmod 0755 /usr/local/bin/turnstile-broker-entrypoint
+
+EXPOSE 8192
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8192/healthz', timeout=3)); raise SystemExit(0 if d.get('ok') else 1)"
+
+ENTRYPOINT ["/usr/local/bin/turnstile-broker-entrypoint"]
