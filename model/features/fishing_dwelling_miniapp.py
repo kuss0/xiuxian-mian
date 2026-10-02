@@ -1,6 +1,7 @@
 """One native fishing round, using the shared HTTP budget and durable journal."""
 
 from copy import deepcopy
+import logging
 import time
 
 from ..webapp_core import (
@@ -50,6 +51,19 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
         record = journal.record
         settled = bool(record and record["phase"] == "settled")
         supply = supply_journal.record if supply_journal is not None else {}
+        if observations and capture_sink is not None:
+            # The UI drops extras on failures; retain allowlisted readback
+            # evidence in the normal capture file, not only in its response.
+            sample = {"adapter_key": "fishing", "step_key": "native_checkpoint_observation",
+                      "created_at": time.time(), "source": sanitize_webapp_secret_text(capture_source),
+                      "observations": deepcopy(observations)}
+            try:
+                if hasattr(capture_sink, "append"):
+                    capture_sink.append(sample)
+                else:
+                    capture_sink(sample)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Native fishing diagnostic capture failed (%s)", type(exc).__name__)
         return {"ok": settled and status == "settled", "status": status,
                 "error": sanitize_webapp_secret_text(str(error)), "retry_after_sec": retry_after,
                 "data": {"settled_count": 1 if settled else 0,
@@ -234,7 +248,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 raise protocol.ProtocolError("native_unhandled_phase")
         return finish("wait_state")
     except _RequestFailed as exc:
-        if (exc.result.status_code == 409 and exc.result.error == "fishing_checkpoint_stale"
+        if (exc.result.status_code == 409 and exc.result.error_type == "app"
+                and exc.result.error == "fishing_checkpoint_stale"
                 and journal.record and journal.record["pending_action"] == "checkpoint"):
             # Read the original rod while its short checkpoint lease is alive.
             # This is not permission to replay a rejected proof or finish it.

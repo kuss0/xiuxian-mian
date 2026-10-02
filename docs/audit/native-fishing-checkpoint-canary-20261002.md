@@ -65,6 +65,13 @@ version or claims of a successful catch. Native fishing remains canary-only.
   Compile/diff checks passed; candidate deployment pending. Checkpoint root
   cause remains unproven. No broad native rollout or additional quota loop.
 
+`8225fe88` deployed at 08:03:38. Before another canary, inspection found the UI
+discards all extras on unsuccessful responses. The follow-up persists the same
+allowlisted observations in the existing day-sharded fishing capture file as
+`native_checkpoint_observation`; no raw response/auth data and no extra game
+requests. Capture failures cannot change the gameplay result. This keeps a
+rejected checkpoint's immediate state read inspectable without another probe.
+
 ## Live Evidence
 
 Production remains 511b161e. Yesterday's missed rod was accounted by the normal

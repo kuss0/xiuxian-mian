@@ -8,7 +8,7 @@ from test_fishing_dwelling_journal import Store, context, response, fighting
 from test_fishing_dwelling_protocol import Clock
 
 
-def run(store, *, transport=None, current=lambda: True, clock=None, recovery_only=False):
+def run(store, *, transport=None, current=lambda: True, clock=None, recovery_only=False, capture_sink=None):
     clock = clock or Clock()
     calls = []
 
@@ -36,6 +36,7 @@ def run(store, *, transport=None, current=lambda: True, clock=None, recovery_onl
         site_id="west-shore", model_id="ngw", bait_id="bait", transport=dispatch,
         operation_check=current, monotonic=lambda: clock.now, sleeper=clock.sleep,
         recovery_only=recovery_only,
+        capture_sink=capture_sink,
     )
     return result, calls
 
@@ -68,6 +69,14 @@ def test_full_round_runs_checkpoints_and_settles_once():
     assert calls[:3] == ["context", "cast", "hook"]
     assert calls[-1] == "fight" and calls.count("cast") == calls.count("hook") == calls.count("fight") == 1
     assert calls.count("checkpoint") >= 2
+
+
+def test_diagnostic_write_failure_does_not_change_gameplay_result():
+    def broken_capture(_):
+        raise OSError("fixture disk unavailable")
+    result, calls = run(Store(), capture_sink=broken_capture)
+    assert result["ok"] and result["status"] == "settled"
+    assert calls.count("cast") == calls.count("fight") == 1
 
 
 def test_full_round_accepts_official_checkpoint_reply_without_echo():
@@ -207,6 +216,7 @@ def test_missing_rod_or_bait_and_voyage_never_cast_or_change_toggle():
 @pytest.mark.parametrize("readback", ["old", "accepted", "timeout", "foreign"])
 def test_stale_checkpoint_reads_same_rod_once_without_replay(readback):
     store = Store()
+    captures = []
     last_accepted = []
     clock = Clock()
     rejected_at = []
@@ -235,12 +245,14 @@ def test_stale_checkpoint_reads_same_rod_once_without_replay(readback):
             return data
         return {"context": context(), "cast": response(), "hook": fighting()}[action]
 
-    result, calls = run(store, transport=transport, clock=clock)
+    result, calls = run(store, transport=transport, clock=clock, capture_sink=captures)
     assert calls == ["context", "cast", "hook", "checkpoint", "checkpoint", "state"]
     assert result["error"] == "fishing_checkpoint_stale"
     assert store.record["phase"] == "session_owned"
     assert store.record["pending_action"] == ("" if readback == "accepted" else "checkpoint")
     observed = result["checkpoint_observations"]
+    assert captures[-1]["step_key"] == "native_checkpoint_observation"
+    assert captures[-1]["observations"] == observed
     assert "do-not-expose" not in str(observed)
     if readback in {"old", "accepted"}:
         assert observed[-1]["same_session"] is True
