@@ -17,6 +17,7 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
+from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_text
 from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
 
 from .account_membership import (
@@ -3201,17 +3202,17 @@ def _format_low_priority_audit_summary(rows):
     for row in details[:max_details]:
         count = int(row.get("count") or 0)
         last_ts = row.get("last_ts") or "?"
-        text = _truncate_log_text(row.get("plain") or "-", limit=140)
-        detail_lines.append(f"{last_ts} x{count} {text}")
+        text = short_text(" ".join(str(row.get("plain") or "-").split()), 140)
+        repeated = f" x{count}" if count > 1 else ""
+        detail_lines.append(f"{last_ts}{repeated} {text}")
     omitted = max(0, len(details) - len(detail_lines))
     if omitted:
-        detail_lines.append(f"... 另 {omitted} 类低优先级日志未展开")
+        detail_lines.append(f"另 {omitted} 类未列出，详见本地日志")
     now_text = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
-    body = "\n".join(detail_lines) if detail_lines else "无明细"
     return (
-        f"<b>【🍃 低优先级日志汇总 {now_text}】</b>\n"
-        f"累计 {total} 条，{len(rows)} 类。明细：\n"
-        f"<pre>{html.escape(body)}</pre>"
+        f"<b>运行汇总 · {now_text}</b>\n"
+        f"{total} 条记录，{len(rows)} 类\n"
+        + folded_summary_details(detail_lines or ["无明细"])
     )
 
 
@@ -3225,7 +3226,7 @@ def get_audit_push_status_text():
     is_scheduled = _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done()
     lines = [
         "日志推送策略",
-        "低优先级: 进入定时汇总，汇总里保留明细和次数。",
+        "低优先级: 进入定时汇总，明细折叠；重复记录保留次数。",
         "中优先级: 实时发送日志群，不 @。",
         "高优先级: 实时发送日志群，并 @ 管理员。",
         "",
@@ -3275,8 +3276,12 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
         return True
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     audit_priority = _resolve_audit_priority(content, priority)
-    message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
-    plain_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=False, limit=limit)
+    display_content = routine_copy(content) if audit_priority == AUDIT_PRIORITY_LOW else str(content or "")
+    # Clip visible text, not markup bytes, so links/tags and astral characters
+    # survive the caller's display budget. Console logging retains its own copy.
+    identity_id = _resolve_log_identity(scope=scope, send_as_id=send_as_id)
+    message_body = _format_log_identity_prefix(identity_id, html=True) + bounded_html(display_content, min(limit, 3000))
+    plain_body = _format_log_message(display_content, scope=scope, send_as_id=send_as_id, html=False, limit=limit)
     console_log(content, scope=scope, send_as_id=send_as_id, limit=min(limit, 180))
     if audit_priority == AUDIT_PRIORITY_LOW:
         _queue_low_priority_audit(message_body, plain_body)
@@ -3286,7 +3291,8 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
         mentions = _format_admin_mentions_html()
         if mentions:
             attention_line = f"\n关注：{mentions}"
-    message = f"【🍃 监控日志 {now}】\n{message_body}{attention_line}"
+    message_body = fold_audit_body(message_body, critical=audit_priority == AUDIT_PRIORITY_HIGH)
+    message = f"<b>运行通知 · {now}</b>\n{message_body}{attention_line}"
     ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML", buttons=buttons)
     if not ok:
         print(f"send_audit_log failed | content={_truncate_log_text(content, limit=240)}")

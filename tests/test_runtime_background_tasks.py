@@ -84,9 +84,10 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(flushed)
         send_mock.assert_awaited_once()
         message = send_mock.await_args.args[0]
-        self.assertIn("低优先级日志汇总", message)
-        self.assertIn("累计 1 条", message)
-        self.assertIn("x1", message)
+        self.assertIn("运行汇总", message)
+        self.assertIn("1 条记录", message)
+        self.assertNotIn("x1", message)
+        self.assertIn("<blockquote expandable>", message)
         self.assertIn("成熟期至 12:00", message)
 
     async def test_medium_priority_audit_sends_immediately_without_mention(self):
@@ -148,6 +149,44 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("需要人工处理", message)
         self.assertIn("关注：", message)
         self.assertIn('tg://user?id=123456789', message)
+
+    async def test_long_notice_keeps_action_identity_buttons_and_mention(self):
+        send_mock = AsyncMock(return_value=True)
+        buttons = [[object()]]
+        content = '批次结果\n' + '过程记录 ' * 80 + '\n下一步：请手动核实委托'
+        with patch.object(runtime, "_send_log_group_message", new=send_mock), \
+                patch.object(runtime, "console_log"), \
+                patch.object(runtime, "get_send_as_label", return_value="actor<&>"), \
+                patch.object(runtime, "ADMIN_IDS", frozenset({123456789})):
+            ok = await runtime.send_audit_log(
+                content, send_as_id=42, priority="high", limit=1200, buttons=buttons,
+            )
+
+        self.assertTrue(ok)
+        message = send_mock.await_args.args[0]
+        visible, folded = message.split('<blockquote expandable>', 1)
+        self.assertIn('<code>actor&lt;&amp;&gt;</code>', visible)
+        self.assertIn('下一步：请手动核实委托', visible)
+        self.assertIn('过程记录', folded)
+        self.assertIn('tg://user?id=123456789', folded.split('</blockquote>', 1)[1])
+        self.assertIs(buttons, send_mock.await_args.kwargs['buttons'])
+        self.assertEqual('HTML', send_mock.await_args.kwargs['parse_mode'])
+
+    async def test_compact_copy_keeps_original_console_and_repeat_count(self):
+        content = '🧘 洞府闭关 start 完成：已同步｜阶段 running'
+        send_mock = AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", new=send_mock), \
+                patch.object(runtime, "console_log") as console_log:
+            for _ in range(2):
+                await runtime.send_audit_log(content, scope="global", priority="low")
+            await runtime.flush_low_priority_audit_summary()
+
+        self.assertEqual([content, content], [c.args[0] for c in console_log.call_args_list])
+        message = send_mock.await_args.args[0]
+        self.assertIn('2 条记录，1 类', message)
+        self.assertIn('x2', message)
+        self.assertIn('闭关已开始', message)
+        self.assertNotIn('阶段 running', message)
 
     async def test_log_bot_callback_poller_backs_off_on_retry_after(self):
         stop_event = asyncio.Event()

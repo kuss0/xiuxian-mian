@@ -95,6 +95,8 @@ class RareDailyReportParserTest(unittest.TestCase):
             "【坠魔谷奖励一览】\n- 【阴凝之晶】x2（幸运掉落，权重 18，约 16.2%）",
             "inventory give 721558145 虚天残图*1.虚天殿 1421",
             "📦 物资统计: 阴凝之晶\n📊 总计: 9",
+            "运行通知 · 17:20\n入梦寻图：获得【虚天残图】残纹",
+            "运行汇总 · 17:20\n登顶昆吾山，获得【昆吾令】x2",
         ]
         for text in samples:
             with self.subTest(text=text[:24]):

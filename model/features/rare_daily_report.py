@@ -94,6 +94,8 @@ NEGATIVE_TEXT_MARKERS = (
     "暂无可用",
     "低优先级日志汇总",
     "监控日志",
+    "运行汇总",
+    "运行通知",
 )
 POSITIVE_CONTEXT_MARKERS = (
     "换取成功",
