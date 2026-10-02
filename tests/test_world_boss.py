@@ -1809,6 +1809,61 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, run_state["miniapp_auto_results"][-1]["summary"]["realtime_hit_count"])
         self.assertIn("命中2 完美1 伤害300亿 质量分900", audit_mock.await_args.args[0])
 
+    async def test_miniapp_verification_failure_is_reported_without_retries_or_raw_errors(self):
+        now = 1_791_000_000.0
+        identity_id = 301299112
+        cases = (
+            ("turnstile_required", "需要安全验证（turnstile_required）"),
+            ("turnstile_failed", "安全验证未通过（turnstile_failed）"),
+            ("turnstile_failed token=PRIVATE initData=SECRET", ""),
+        )
+        for error, expected_hint in cases:
+            with self.subTest(error=error):
+                event_key = "verification-failure"
+                state_module.set_world_boss_run_state({
+                    "event_key": event_key,
+                    "miniapp_auto_status": "running",
+                    "miniapp_auto_started_at": now,
+                })
+                result = {
+                    "ok": False,
+                    "status": "partial",
+                    "joined_count": 1,
+                    "results": [
+                        {"identity_id": identity_id, "phase": "join", "ok": True, "status": "joined"},
+                        {
+                            "identity_id": identity_id,
+                            "phase": "battle",
+                            "ok": False,
+                            "status": "failed",
+                            "error": error,
+                        },
+                    ],
+                }
+                with (
+                    patch.object(world_boss, "run_world_boss_miniapp_event", new=AsyncMock(return_value=result)) as runtime_mock,
+                    patch.object(world_boss, "save_state", return_value=True),
+                    patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+                ):
+                    await world_boss._run_world_boss_miniapp_automation(
+                        event_key, [identity_id], SimpleNamespace(id=12012), MINIAPP_OPEN_TEXT, now, 0,
+                    )
+
+                runtime_mock.assert_awaited_once()
+                audit_mock.assert_awaited_once()
+                message = audit_mock.await_args.args[0]
+                self.assertIn("入场 1｜结算 0｜部分 0｜失败 1", message)
+                self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
+                if expected_hint:
+                    self.assertIn(expected_hint, message)
+                else:
+                    self.assertNotIn(error, message)
+                    self.assertNotIn("SECRET", message)
+                    self.assertNotIn("PRIVATE", message)
+                run_state = state_module.get_world_boss_run_state()
+                self.assertEqual("partial", run_state["miniapp_auto_status"])
+                self.assertFalse(run_state["miniapp_auto_results"][-1]["ok"])
+
     async def test_miniapp_invalid_join_is_suppressed_and_successful_join_clears_it(self):
         now = 1_786_900_100.0
         identity_id = 3504367852

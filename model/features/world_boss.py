@@ -1824,6 +1824,13 @@ async def _run_world_boss_miniapp_automation(
         if item.get("phase") != "battle" and item.get("ok"):
             continue
         detail = f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
+        if not item.get("ok"):
+            verification_hint = {
+                "turnstile_required": "需要安全验证（turnstile_required）",
+                "turnstile_failed": "安全验证未通过（turnstile_failed）",
+            }.get(str(item.get("error") or ""))
+            if verification_hint:
+                detail += f"｜{verification_hint}"
         if item.get("launch_refreshed"):
             detail += "｜已刷新入口"
         retry_after_sec = max(0.0, _coerce_float(item.get("retry_after_sec"), 0))
