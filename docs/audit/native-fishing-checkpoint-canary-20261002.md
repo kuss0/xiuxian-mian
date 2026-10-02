@@ -72,6 +72,29 @@ allowlisted observations in the existing day-sharded fishing capture file as
 requests. Capture failures cannot change the gameplay result. This keeps a
 rejected checkpoint's immediate state read inspectable without another probe.
 
+## Checkpoint Divergence (08:20 UTC+8)
+
+- `f4d2bb15` deployed at 08:11:56. The next single canary's immediate state
+  read completed 0.7 seconds after the rejection, while the same rod was active.
+- The first checkpoint submitted durationMs=2500 and returned ok/reused=false
+  without a checkpoint echo. The server's subsequent state exposed
+  checkpoint.durationMs=900. The synthetic local 2500 ms checkpoint therefore
+  misrepresented confirmed server progress; adding delay cannot fix this.
+- The next 5000 ms upload was rejected as stale. The readback does NOT explain
+  why the server stored 900 ms, nor prove the full server physics. No snapshot
+  was overwritten with the smaller value. Source: capture record
+  `native_checkpoint_observation` at 1790900029.7929287.
+- Scoped recovery at 08:17:42 completed this missed rod with waterweed x1,
+  correct reward reporting, outcome_unknown=false, and no new cast.
+- The official controller catches checkpoint errors and still submits its
+  cumulative /fight proof. The candidate production native worker therefore
+  omits optional checkpoint uploads, but retains the full 20 ms simulation,
+  real-time waits, ownership checks, and durable one-shot /fight intent.
+  Existing checkpoint paths remain for isolated contract tests and old-receipt
+  recovery. No final request is retried and native ordinary routing stays off.
+- Expanded regression: 1389 passed, 46 subtests passed (35.64 seconds).
+  Full real server catch/settlement acceptance of final-only remains required.
+
 ## Live Evidence
 
 Production remains 511b161e. Yesterday's missed rod was accounted by the normal

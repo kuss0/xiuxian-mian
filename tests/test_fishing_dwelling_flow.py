@@ -8,7 +8,8 @@ from test_fishing_dwelling_journal import Store, context, response, fighting
 from test_fishing_dwelling_protocol import Clock
 
 
-def run(store, *, transport=None, current=lambda: True, clock=None, recovery_only=False, capture_sink=None):
+def run(store, *, transport=None, current=lambda: True, clock=None, recovery_only=False, capture_sink=None,
+        upload_checkpoints=True):
     clock = clock or Clock()
     calls = []
 
@@ -37,6 +38,7 @@ def run(store, *, transport=None, current=lambda: True, clock=None, recovery_onl
         operation_check=current, monotonic=lambda: clock.now, sleeper=clock.sleep,
         recovery_only=recovery_only,
         capture_sink=capture_sink,
+        upload_checkpoints=upload_checkpoints,
     )
     return result, calls
 
@@ -77,6 +79,54 @@ def test_diagnostic_write_failure_does_not_change_gameplay_result():
     result, calls = run(Store(), capture_sink=broken_capture)
     assert result["ok"] and result["status"] == "settled"
     assert calls.count("cast") == calls.count("fight") == 1
+
+
+def test_final_only_fight_retains_full_real_time_proof_and_durable_intent():
+    from model.features.fishing_dwelling_protocol import fight_steps
+    store, clock = Store(), Clock()
+    hook_time = []
+    planned = list(fight_steps(fighting()["session"]["fight"]))[-1][1]
+
+    def transport(action, request, clock):
+        if action == "hook":
+            hook_time.append(clock.now)
+            return fighting()
+        if action == "fight":
+            assert clock.now - hook_time[0] >= planned["durationMs"] / 1000 - 1e-8
+            assert request["payload"]["fishingProof"] == planned
+            assert store.record["pending_payload"]["fishingProof"] == planned
+            assert store.record["pending_action"] == "fight"
+            return response(settled=True)
+        return {"context": context(), "cast": response()}[action]
+
+    result, calls = run(store, clock=clock, transport=transport, upload_checkpoints=False)
+    assert result["ok"] and not result["outcome_unknown"]
+    assert calls == ["context", "cast", "hook", "fight"]
+
+
+def test_final_only_fight_timeout_keeps_exact_final_intent_without_retries():
+    store = Store()
+    def transport(action, request, clock):
+        if action == "fight":
+            raise TimeoutError("final outcome unknown")
+        return {"context": context(), "cast": response(), "hook": fighting()}[action]
+    result, calls = run(store, transport=transport, upload_checkpoints=False)
+    assert result["outcome_unknown"] and calls == ["context", "cast", "hook", "fight"]
+    assert store.record["pending_action"] == "fight"
+    assert store.record["pending_payload"]["fishingProof"]["landed"] is True
+
+
+def test_final_only_fight_still_checks_cancellation_between_game_ticks():
+    store, clock = Store(), Clock()
+    active = [True]
+    def transport(action, request, clock):
+        if action == "hook":
+            active[0] = False
+            return fighting()
+        return {"context": context(), "cast": response()}[action]
+    result, calls = run(store, clock=clock, transport=transport, current=lambda: active[0], upload_checkpoints=False)
+    assert result["status"] == "cancelled"
+    assert calls == ["context", "cast", "hook"]
 
 
 def test_full_round_accepts_official_checkpoint_reply_without_echo():

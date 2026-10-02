@@ -33,7 +33,8 @@ class _RequestFailed(Exception):
 def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bait_id,
                             transport, operation_check, monotonic=time.monotonic, sleeper=time.sleep,
                             capture_sink=None, capture_source="", request_budget=None, basis_provider=None, bait_choice="",
-                            supply_journal=None, supply_settings=None, recovery_only=False, accept_recovery=None):
+                            supply_journal=None, supply_settings=None, recovery_only=False, accept_recovery=None,
+                            upload_checkpoints=True):
     """One supply or cast, without blind retries, next cast or legacy fallback.
 
     The production caller must hold its public-entry/fishing locks, supply a
@@ -227,6 +228,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 checkpoint_not_before = None
                 for final, proof, details in protocol.timed_fight_steps(
                         challenge, is_current=check, monotonic=monotonic, sleeper=wait):
+                    if not final and not upload_checkpoints:
+                        continue
                     action = "fight" if final else "checkpoint"
                     if not final and checkpoint_not_before is not None:
                         delay = checkpoint_not_before - monotonic()
@@ -293,6 +296,11 @@ async def run_native_fishing_production_flow(identity_id, *, player_id, token, i
             supply_journal=store.supply_journal(), supply_settings=supply_settings,
             recovery_only=recovery_only,
             accept_recovery=store.accept_recovery,
+            # The official controller treats checkpoints as best-effort and
+            # submits the full cumulative proof at /fight. Live checkpoint ACKs
+            # currently persist 900 ms for a 2500 ms proof; do not synthesize
+            # that as a full checkpoint or make an optional save a fatal step.
+            upload_checkpoints=False,
         )
 
     try:
