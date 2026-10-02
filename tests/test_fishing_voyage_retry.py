@@ -5,11 +5,14 @@ import pytest
 
 from model.features import cave_treasure_runtime as cave
 from model.features import fishing_dwelling_runtime as native
+from model import state as state_module, ui
+import test_cave_background_lifecycle as background_tests
 import test_fishing_dwelling_runtime as runtime_tests
 from test_fishing_dwelling_runtime import configure, enable_voyage_handoff
 
 
 fishing_env = runtime_tests.fishing_env
+background = background_tests.background
 
 
 def test_sailing_retry_does_not_miss_the_confirmed_return_window(fishing_env, monkeypatch):
@@ -88,3 +91,52 @@ def test_sailing_schedule_failure_preserves_prior_timer(fishing_env, monkeypatch
     assert not result["ok"]
     assert h.identity["next_fishing_time"] == before
     h.daily.assert_not_awaited()
+
+
+def test_real_background_path_keeps_native_retry_without_an_extra_thirty_minutes(background, monkeypatch):
+    h = background
+    now = h.now[0]
+    h.identity.update(
+        fishing_enabled=True, fishing_pond="青溪浅滩", fishing_bait="凡饵",
+        next_fishing_time=now - 1, fishing_daily_day=native.fishing.get_day_key(now),
+        fishing_daily_count=0, fishing_daily_limit=5, concubine_voyage_status="sailing",
+        concubine_voyage_return_at=now + 60,
+    )
+    config = {**h.config, "cave_public_stargazer_enabled": False,
+              "cave_public_fishing_enabled": True, "cave_public_fishing_identity_ids": [h.identity_id]}
+    state_module.set_miniapp_auto_config(config)
+    monkeypatch.setattr(ui, "ui_run_cave_public_entry", h.real_run)
+    monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
+    monkeypatch.setattr(native.fishing, "_SEND_LOCKS", {})
+    monkeypatch.setattr(native.persistence, "save_state", lambda: True)
+    monkeypatch.setattr(cave, "send_audit_log", AsyncMock())
+    monkeypatch.setattr(cave, "_fishing_miniapp_capture_store", lambda now: None)
+    monkeypatch.setattr(native.fishing, "_fishing_miniapp_capture_store", lambda now: None)
+    monkeypatch.setattr(cave, "_load_cave_public_identity_session", AsyncMock(return_value={
+        "ok": True, "init_data": "fixture-init", "player_id": h.identity_id,
+        "result": {"ok": True, "data": {"raw": {
+            "characterModel": {"selectedId": "ngw"},
+            "account": {"commandCenter": {"entries": [{"key": "fishing", "status": "integrated"}]}},
+        }}},
+    }))
+    worker = AsyncMock(return_value={"ok": False, "status": "blocked", "error": "fishing_companion_sailing"})
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+
+    async def run():
+        await (await background_tests.queue_background(h))
+        worker.assert_awaited_once()
+        retry_at = h.identity["next_fishing_time"]
+        assert retry_at == now + native.SAILING_RECHECK_SEC
+        assert not ui._cave_public_background_retry_at.get(("fishing", h.identity_id))
+        assert not ui._cave_public_background_daily_done
+        h.identity.update(concubine_voyage_status="idle", concubine_voyage_settled_at=now + 60)
+        h.now[0] = now + 60
+        assert native.voyage_launch_wait_reason(h.identity_id, h.now[0])
+        early = await ui._run_cave_public_background_scheduler(h.now[0], config)
+        assert not early["started"]
+        h.now[0] = retry_at
+        due = await ui._run_cave_public_background_scheduler(h.now[0], config)
+        assert due["started"] and due["action"] == "fishing"
+        worker.assert_awaited_once()
+
+    asyncio.run(run())

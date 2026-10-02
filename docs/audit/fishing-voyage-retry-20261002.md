@@ -72,3 +72,17 @@ Today's captured HTTP rate peak is 43/90 per minute. SSH fetch of wxjerry
 still reports `aa9dba29`; no further upstream code was merged in this checkpoint.
 The earlier R2 repair `85dd176b` is installed independently, awaiting the
 October 3 04:26:17 scheduled upload. Natural fishing acceptance remains open.
+
+## Background Scheduler Regression
+
+A follow-up test runs the real background scheduler, public UI dispatcher and
+native fishing caller with a mocked server. After sailing schedules a retry,
+the background operation's captured schedule differs from the new timer;
+`schedule_current()` therefore prevents its generic 30-minute error backoff
+from being added. The test verifies no premature or duplicate dispatch, no
+false daily completion, a launch hold after confirmed return, and a new
+background candidate at the saved fishing deadline. No runtime change was
+needed for this check. Expanded background/UI/fishing suite: 389 passed.
+
+At 10:53 the same supervisor PID 145376 remains active, NRestarts 0. A natural
+channel tower settlement at 10:48:52 confirms public MiniApp work continues.
