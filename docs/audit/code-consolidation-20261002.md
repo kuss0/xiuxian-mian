@@ -50,4 +50,14 @@
 
 发布前复核 pending、天星准备窗口及 health/watchdog；旧 worker 正常停机后用 SQLite backup API 创建独立快照，再快进合并并启动一次。检查身份模块开关及 MiniApp 配置保持一致，保留 sidecar 的明确关闭状态。
 
-最终测试结果、提交号、备份路径及发布观察待下方补记。回退时用新的反向提交撤销本批代码，不 reset 工作区、不还原游戏运行数据；已有业务状态无需迁移。
+回退时用新的反向提交撤销本批代码，不 reset 工作区、不还原游戏运行数据；已有业务状态无需迁移。
+
+## 发布验收
+
+- 代码提交 `9a931ec9`，22:01:08 开始受控停机，旧 supervisor/worker 均退出；22:01:15 启动，22:01:41 恢复就绪。只进行了一次服务重启。
+- 备份 `/root/xiuxian-before-consolidation-20261002-220108.db`，权限 0600、quick_check=ok。保留状态库回溯证据，不自动回灌旧游戏状态。
+- 新 supervisor/worker 为 `405325/405326`，`NRestarts=0`。主服务、watchdog、health observer active，sidecar 保持既有 inactive；UI HTTP 200，health/watchdog 正常、pending 为空。
+- 逐项比对 24 身份、每身份 58 个模块开关/参数、身份启用/策略/执行窗及 14 个配置键：仅群路由内 `bot_activity_at_by_group` 的 BOT 活动时间自然更新，排除此观测字段后全部一致。MiniApp 配置未变，两号香火转神识仍关闭。
+- 已逾期的吧唧 `next_pet_formation_time` 从 20:23:31 经既有启动恢复逻辑错峰至 22:05:34，日志明确记录 1 身份/1 计时器；不归因为本次解析改动。WA 野外 00:57:05、裂缝 05:50:41 保持不变，尚未进入保护准备窗口。
+- 22:01:10 observer 的一次 stop-sigterm 提示对应本次受控发布；22:02 后恢复正常，未见新的 worker 异常。短窗口健康不等于所有业务自然链路已验收。
+- 原有 `deploy/xiuxian-r2-backup.sh`、`tests/test_snapshot_sqlite_db.py`、未跟踪 `deploy/backup_engine.py` 内容哈希前后一致，未进入本批提交。
