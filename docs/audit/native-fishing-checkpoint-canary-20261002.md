@@ -1,5 +1,33 @@
 # October 2 Native Fishing Checkpoint Canary
 
+## Current Outcome (08:35 UTC+8)
+
+Production `1a9a8c7d` deployed at 08:22:27 and pushed. Final-only has now passed
+one real catch/settlement canary for Lpprceqei (7538826434):
+
+| Time | Action | Result |
+| --- | --- | --- |
+| 08:23:39 | configured chum | confirmed; no cast |
+| 08:25:07 | cast | success |
+| 08:25:39 | hook | success |
+| 08:25:48 | fight, complete cumulative proof | success |
+
+Session 48731 is accounted, no pending mutation, caught Qinglin small crucian
+carp x1 (`青鳞小鲫`). The local bag increased from 15 to 16. Authoritative quota
+is 5/5 used, zero remaining. No checkpoint upload or retry was sent. Earlier
+failed rods were individually reconciled; two produced waterweed x1 each.
+
+Private acceptance: `/root/xiuxian-native-fishing-final-only-rod-20261002-0825.json`,
+the day-sharded fishing capture, and the accounted native receipt.
+
+Still open: ordinary public-auto routing (currently external discovery only),
+voyage handoff, gift/open follow-up, and previous-day recovery summary counting.
+One catch does not mean all 23 public-selected identities have run. Both primary
+accounts sailed again this morning. Preserve public selection separately from
+standalone module switches when routing native automation. No bulk enable,
+timer resets, or legacy endpoint fallback. World Boss and incense-to-shenshi
+remain off. Main/observer/watchdog active, foreground observations continue.
+
 ## Latest Status (07:45 UTC+8)
 
 - Production is `8eecce9f`. Pacing and recovery-only were deployed at 03:14.
