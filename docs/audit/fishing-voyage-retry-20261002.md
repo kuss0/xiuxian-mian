@@ -86,3 +86,28 @@ needed for this check. Expanded background/UI/fishing suite: 389 passed.
 
 At 10:53 the same supervisor PID 145376 remains active, NRestarts 0. A natural
 channel tower settlement at 10:48:52 confirms public MiniApp work continues.
+
+## Afternoon Natural Observation
+
+Both scheduled voyage returns completed without manual game requests or timer
+resets. Baji settled at 13:34:40 (logged 13:34:42) and relaunched at 13:36:26;
+its new return/check times are 19:36:30/19:43:47. WA settled at 14:20:36
+(logged 14:20:37) and relaunched at 14:22:21; its new return/check times are
+20:22:25/20:26:00. Both are idle/sailing, with empty reply anchors and no
+voyage error. Fishing still starts on October 3; these observations verify
+voyage continuity, not a completed return-to-fishing handoff.
+
+The unrelated Boss diagnostic release `8dbff7a4` was loaded at 14:09:22.
+Comparison with its pre-deployment SQLite snapshot confirmed unchanged
+fishing timers for all 24 identities and unchanged return/rift timers for
+Baji and WA. No fishing run was manufactured for acceptance. Supervisor
+218353 and worker 218357 are healthy after the controlled restart.
+
+Baji's normal small-world maintenance also completed: query 1257362 at
+14:59:32, anchored panel 1257363 at 14:59:34, manifest 1257366 at 14:59:47,
+and success reply 1257367 at 14:59:50, all in chat -1002083016447. The reply
+states faith +15 and a 360-minute prayer wait; local faith is capped at 100,
+phase is idle, anchors are cleared, and the next check is 21:03:48. No new
+god action or spiritual refinement was sent in this chain. Both refinement
+switches remain off. These are passive observations from the message log
+and SQLite, not extra small-world probes.
