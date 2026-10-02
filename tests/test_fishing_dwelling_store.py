@@ -519,9 +519,39 @@ def test_empty_rod_recovery_uses_fresh_baits_without_overwriting_other_loot(fish
             assert items == {"stone": 238, "bait": 8}
         else:
             assert result["committed"] and not result["outcome_unknown"]
+            assert result["ok"] and result["status"] == "settled" and not result["error"]
             assert h.identity[native.STATE_KEY]["phase"] == "accounted"
             assert items == {"stone": 237, "bait": 7}
             assert h.identity["fishing_daily_count"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_recovery_uses_same_journal_for_pending_receipt_and_reported_rewards(fishing_db):
+    h = fishing_db
+
+    async def scenario():
+        store = native.NativeFishingStore(h.identity_id, -100991060001)
+        ledger = store.journal()
+        query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
+                                now=h.now, projection_basis=store.basis())
+        ledger.accept(query, fighting())
+        _, proof, details = next(fight_steps(ledger.record["remote"]["fight"]))
+        ledger.prepare("checkpoint", proof=proof, details=details)
+        data = response(settled=True)
+        data["session"]["result"] = {"ready": True, "caught": False,
+                                     "bonusLoot": [{"name": "waterweed", "qty": 1}]}
+        data["context"]["serverNow"] = h.now * 1000
+        result = await run_native_fishing_production_flow(
+            h.identity_id, player_id=-100991060001, token="df_FIXTURE", init_data="fixture", site_id="west-shore",
+            model_id="ngw", bait_id="bait", transport=lambda request: data, operation_check=lambda: True,
+            recovery_only=True, update_schedule=False,
+        )
+        assert result["committed"] and result["ok"] and result["status"] == "settled"
+        assert not result["outcome_unknown"] and not result["error"]
+        assert result["data"]["rewards"] == {"waterweed": 1}
+        assert h.identity[native.STATE_KEY]["phase"] == "accounted"
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["waterweed"] == 1
 
     asyncio.run(scenario())
 

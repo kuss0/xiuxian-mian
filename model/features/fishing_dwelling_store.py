@@ -180,7 +180,7 @@ class NativeFishingStore:
                     "inventory": fishing.fishing_operations.inventory_basis(self.owner.identity_id)}
         return self._on_loop(capture)
 
-    def accept_recovery(self, query, payload, before_read):
+    def accept_recovery(self, ledger, query, payload, before_read):
         """Rebase only empty rods from a scoped fresh state read, never gains.
 
         Unrelated loot may change the bag while a missed rod is unresolved.
@@ -190,7 +190,6 @@ class NativeFishingStore:
         def apply():
             if query.action != "state":
                 raise ProtocolError("native_refresh_requires_state")
-            ledger = self.journal()
             parsed = ledger.accept(query, payload)
             record = ledger.record
             if (record["version"] != 3 or record["phase"] != "settled" or record["catches"]
@@ -209,7 +208,7 @@ class NativeFishingStore:
             updated["settlement_quota"] = protocol.parse_settlement_quota(payload)
             if updated != record:
                 updated["revision"] += 1
-                self.compare_and_save(record, updated)
+                ledger._commit(updated)
             return parsed
         return self._on_loop(apply)
 

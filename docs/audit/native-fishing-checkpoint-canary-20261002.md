@@ -40,6 +40,31 @@ Private additional evidence:
 The entries below are historical checkpoints, not the current production
 version or claims of a successful catch. Native fishing remains canary-only.
 
+## Recovery Acceptance And Readback Work (08:02 UTC+8)
+
+- `e47e89f3` was deployed at 07:48:28 and pushed. Recovery at 07:49:54
+  accounted session 48666, quota 2/5, with only rice bait changing 15 -> 14.
+  Unrelated loot was preserved; no cast or timer reset accompanied recovery.
+- A single diagnostic canary (session 48719) cast at 07:54:13, hooked at
+  07:54:40, and again failed the second checkpoint at 07:54:46. The external
+  probe did not reach state until 07:55:52, after expiry at 07:55:03. It is
+  NOT evidence about the live checkpoint. Server quota is now 3/5, remaining
+  two; settled missed result includes one waterweed reward.
+- Recovery at 07:57:52 accounted that reward and the bait balance, but the UI
+  still reported outcome_unknown and omitted the reward. Cause: the new
+  store callback created a second journal, leaving the worker's journal stale.
+  The candidate uses the same journal for acceptance and rebase. A real SQLite
+  regression now checks returned rewards/status/unknown as well as DB commit.
+- On exact checkpoint HTTP 409 `fishing_checkpoint_stale`, the candidate
+  performs one immediate scoped state read while the lease is alive. It still
+  does not resend checkpoint, fight, or cast. Readback failure keeps the original
+  pending receipt. Allowlisted numeric observations expose reused, same-session,
+  checkpoint presence/duration and server timestamps without auth fields.
+- Read-only probe gained bounded checkpoint inspection. No write endpoints.
+- Expanded isolated regression: 1385 passed, 46 subtests passed (35.92 seconds).
+  Compile/diff checks passed; candidate deployment pending. Checkpoint root
+  cause remains unproven. No broad native rollout or additional quota loop.
+
 ## Live Evidence
 
 Production remains 511b161e. Yesterday's missed rod was accounted by the normal

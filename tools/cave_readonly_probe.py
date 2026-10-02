@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -88,6 +89,35 @@ def fishing_session_timing_report(remote):
         key: remote[key] for key in ("serverNow", "startedAt", "biteAt", "expiresAt")
         if type(remote.get(key)) is int and 0 < remote[key] < 10**15
     }
+
+
+def fishing_checkpoint_report(remote):
+    """Capture bounded numeric checkpoint evidence, never auth or raw fields."""
+    fight = remote.get("fight")
+    if not isinstance(fight, dict):
+        return None
+
+    def numbers(row, keys):
+        return {key: row[key] for key in keys
+                if type(row.get(key)) in (int, float) and math.isfinite(row[key]) and abs(row[key]) < 10**15}
+
+    report = numbers(fight, ("startedAt", "checkpointIntervalMs", "minDurationMs", "maxDurationMs"))
+    report["checkpoint_present"] = "checkpoint" in fight
+    checkpoint = fight.get("checkpoint")
+    if isinstance(checkpoint, dict):
+        report["checkpoint"] = numbers(checkpoint, ("durationMs",))
+        details = checkpoint.get("details")
+        if isinstance(details, dict):
+            report["checkpoint"]["details"] = numbers(details, (
+                "progress", "tension", "danger_ms", "slack_ms", "samples", "stable_samples"))
+            if type(details.get("holding")) is bool:
+                report["checkpoint"]["details"]["holding"] = details["holding"]
+        events = checkpoint.get("events")
+        if isinstance(events, list) and len(events) <= 1000:
+            report["checkpoint"]["events"] = [
+                {"t": e["t"], "holding": e["holding"]} for e in events if isinstance(e, dict)
+                and type(e.get("t")) is int and 0 <= e["t"] <= 180000 and type(e.get("holding")) is bool]
+    return report
 
 
 def fishing_state_scope(root, identity, owner, player):
@@ -199,6 +229,7 @@ async def probe(args, report):
             report["session"] = {key: remote.get(key) for key in ("status", "phase", "siteId", "mode", "result")} if isinstance(remote, dict) else None
             if isinstance(remote, dict):
                 report["session_timing"] = fishing_session_timing_report(remote)
+                report["fight"] = fishing_checkpoint_report(remote)
                 session_id = remote.get("sessionId")
                 report["session_id_shape"] = {"type": type(session_id).__name__, "length": len(str(session_id)),
                                               "punctuation": sorted(set(re.sub(r"[a-zA-Z0-9]", "", str(session_id))))}

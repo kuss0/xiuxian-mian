@@ -42,6 +42,7 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
     adapter = build_adapter()
     budget = request_budget or MiniAppRequestBudget(adapter.request_policy, clock=monotonic, sleeper=sleeper)
     events, context = [], None
+    observations = []
     retry_after = 0
     settlement_read = False
 
@@ -55,7 +56,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                          "catches": deepcopy(record["catches"]) if settled else {},
                          "rewards": deepcopy((record.get("settlement_resources") or {}).get("rewards", {})) if settled else {},
                          "context": deepcopy(context), "supply_action": supply.get("action", "")},
-                "outcome_unknown": bool(record and record["pending_action"] or supply.get("phase") == "pending"), "events": events}
+                "outcome_unknown": bool(record and record["pending_action"] or supply.get("phase") == "pending"),
+                "events": events, "checkpoint_observations": deepcopy(observations)}
 
     def check():
         journal._check()
@@ -115,12 +117,27 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 journal.cancel_undispatched(query)
             raise _RequestFailed(result)
         data = result.data
+        if action in {"hook", "checkpoint", "state"} and isinstance(data, dict):
+            remote = data.get("session")
+            if isinstance(remote, dict):
+                fight = remote.get("fight") if isinstance(remote.get("fight"), dict) else {}
+                checkpoint = fight.get("checkpoint") if isinstance(fight.get("checkpoint"), dict) else {}
+                observation = {"action": action, "reused": data.get("reused") is True,
+                               "same_session": type(remote.get("sessionId")) is type(expected["session_id"])
+                               and remote.get("sessionId") == expected["session_id"],
+                               "checkpoint_present": "checkpoint" in fight}
+                for key, value in (("checkpoint_ms", checkpoint.get("durationMs")),
+                                   ("server_now_ms", remote.get("serverNow")),
+                                   ("fight_started_ms", fight.get("startedAt"))):
+                    if type(value) is int and 0 <= value < 10**15:
+                        observation[key] = value
+                observations.append(observation)
         if supply_expected is not None:
             supply_journal.accept(supply_expected, data)
         if query is not None:
             # Persist a confirmed response even if the UI toggled automation off
             # while HTTP was in flight. Owner replacement still rejects it.
-            parsed = (accept_recovery(query, data, before_read)
+            parsed = (accept_recovery(journal, query, data, before_read)
                       if action == "state" and accept_recovery is not None else journal.accept(query, data))
         else:
             parsed = None
@@ -217,6 +234,18 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 raise protocol.ProtocolError("native_unhandled_phase")
         return finish("wait_state")
     except _RequestFailed as exc:
+        if (exc.result.status_code == 409 and exc.result.error == "fishing_checkpoint_stale"
+                and journal.record and journal.record["pending_action"] == "checkpoint"):
+            # Read the original rod while its short checkpoint lease is alive.
+            # This is not permission to replay a rejected proof or finish it.
+            try:
+                query, body = journal.recovery()
+                request("state", body, query)
+            except Exception as read_error:
+                observations.append({"action": "state", "readback_failed": True,
+                                     "error_type": type(read_error).__name__})
+            if journal.record["phase"] == "settled":
+                return finish("settled")
         return finish("supply_pending" if supply_journal is not None and supply_journal.record.get("phase") == "pending"
                       else "operation_pending" if journal.record and journal.record["pending_action"] else "request_failed",
                       exc.result.error)

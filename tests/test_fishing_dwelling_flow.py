@@ -204,6 +204,51 @@ def test_missing_rod_or_bait_and_voyage_never_cast_or_change_toggle():
         assert calls == ["context"] and store.record == {}
 
 
+@pytest.mark.parametrize("readback", ["old", "accepted", "timeout", "foreign"])
+def test_stale_checkpoint_reads_same_rod_once_without_replay(readback):
+    store = Store()
+    last_accepted = []
+    clock = Clock()
+    rejected_at = []
+
+    def transport(action, request, clock):
+        if action == "checkpoint":
+            if not last_accepted:
+                last_accepted.append(deepcopy(request["payload"]))
+                return fighting()
+            rejected_at.append(clock.now)
+            return SimpleNamespace(status_code=409, headers={}, json=lambda: {"ok": False, "error": "fishing_checkpoint_stale"})
+        if action == "state":
+            assert clock.now - rejected_at[0] < 1
+            assert request["payload"]["sessionId"] == store.record["session_id"]
+            if readback == "timeout":
+                raise TimeoutError("read unavailable")
+            data = fighting()
+            payload = store.record["pending_payload"] if readback == "accepted" else last_accepted[0]
+            data["session"]["fight"]["checkpoint"] = {
+                "durationMs": payload["fishingProof"]["durationMs"], "events": payload["fishingProof"]["events"],
+                "details": payload["checkpointState"],
+            }
+            if readback == "foreign":
+                data["session"]["sessionId"] = "other"
+            data["token"] = "do-not-expose"
+            return data
+        return {"context": context(), "cast": response(), "hook": fighting()}[action]
+
+    result, calls = run(store, transport=transport, clock=clock)
+    assert calls == ["context", "cast", "hook", "checkpoint", "checkpoint", "state"]
+    assert result["error"] == "fishing_checkpoint_stale"
+    assert store.record["phase"] == "session_owned"
+    assert store.record["pending_action"] == ("" if readback == "accepted" else "checkpoint")
+    observed = result["checkpoint_observations"]
+    assert "do-not-expose" not in str(observed)
+    if readback in {"old", "accepted"}:
+        assert observed[-1]["same_session"] is True
+        assert observed[-1]["checkpoint_ms"] == (5000 if readback == "accepted" else 2500)
+    else:
+        assert observed[-1]["readback_failed"] is True
+
+
 def test_recovered_completed_round_never_requests_context_or_new_cast():
     store = Store()
     def fail_cast(action, request, clock):

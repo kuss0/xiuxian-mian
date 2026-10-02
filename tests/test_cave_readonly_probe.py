@@ -74,6 +74,30 @@ def test_timing_report_keeps_only_numeric_nonsecret_timestamps(probe):
     }) == {}
 
 
+def test_checkpoint_report_keeps_evidence_without_credentials(probe):
+    report = probe["fishing_checkpoint_report"]({"fight": {
+        "startedAt": 1790898000000, "token": "secret", "challengeId": "secret",
+        "checkpoint": {"durationMs": 2500, "secret": "secret",
+                       "events": [{"t": 20, "holding": True, "token": "secret"}],
+                       "details": {"progress": 26.9, "holding": True, "samples": 125, "token": "secret"}},
+    }})
+    assert report == {"startedAt": 1790898000000, "checkpoint_present": True,
+                      "checkpoint": {"durationMs": 2500, "events": [{"t": 20, "holding": True}],
+                                     "details": {"progress": 26.9, "holding": True, "samples": 125}}}
+    assert probe["fishing_checkpoint_report"]({}) is None
+    assert probe["fishing_checkpoint_report"]({"fight": {}}) == {"checkpoint_present": False}
+    assert probe["fishing_checkpoint_report"]({"fight": {"checkpoint": None}}) == {"checkpoint_present": True}
+
+
+def test_checkpoint_report_omits_unbounded_or_nonnumeric_values(probe):
+    report = probe["fishing_checkpoint_report"]({"fight": {
+        "startedAt": "secret", "checkpointIntervalMs": True, "maxDurationMs": float("inf"),
+        "checkpoint": {"durationMs": "secret", "events": [{}] * 1001,
+                       "details": {"progress": float("nan"), "tension": {}, "holding": "secret"}},
+    }})
+    assert report == {"checkpoint_present": True, "checkpoint": {"details": {}}}
+
+
 @pytest.mark.parametrize("change", ["none", "owner", "player", "cast", "site", "missing"])
 def test_state_read_must_use_identity_owned_cast(probe, tmp_path, change):
     folder = tmp_path / "data" / "state"

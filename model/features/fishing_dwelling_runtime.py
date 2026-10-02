@@ -116,6 +116,7 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
             "status": "settled" if committed else result.get("status", "blocked"), "native": True,
             "outcome_unknown": bool(result.get("outcome_unknown")), "committed": committed,
             "supply_committed": supplied,
+            "checkpoint_observations": result.get("checkpoint_observations", []),
         }}
     if cancelled is not None:
         raise MiniAppFlowCancelled(response) from None
