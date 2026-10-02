@@ -1628,7 +1628,7 @@ async def _emit_effect_audits(effect, *, limit=180):
 
 async def _run_pending_fishing_transfer(now):
     snapshot = _state_snapshot()
-    if not snapshot.get("fishing_enabled"):
+    if not snapshot.get("fishing_enabled") or _fishing_has_unresolved_result(snapshot):
         return False
     transfer_items = fishing_behavior.pending_fishing_transfer_items(snapshot)
     if not transfer_items:

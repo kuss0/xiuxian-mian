@@ -3,7 +3,7 @@ from copy import deepcopy
 import json
 import sqlite3
 import threading
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -365,12 +365,15 @@ def test_native_limit_and_schema_default_are_consistent(fishing_db):
     assert persistence._serialize_db_value(native.STATE_KEY, {"oversize": "x" * MAX_BYTES}) == '{"invalid":true}'
 
 
-def settled_store(h):
+def settled_store(h, *, caught=True, bonus=()):
     store = native.NativeFishingStore(h.identity_id, -100991060001)
     ledger = store.journal()
     query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
                             now=h.now, projection_basis=store.basis())
     data = response(settled=True)
+    data["session"]["result"].update(caught=caught, bonusLoot=list(bonus))
+    if not caught:
+        data["session"]["result"]["fish"] = None
     data["context"] = context()["context"]
     data["context"].update(serverNow=h.now * 1000, quota={"used": 1, "remaining": 4, "limit": 5})
     ledger.accept(query, data)
@@ -394,6 +397,148 @@ def test_native_gains_and_accounted_marker_commit_once_together(fishing_db):
     summary = json.loads(identity["fishing_daily_catch_summary_json"])
     assert summary["rods"] == 1 and summary["fish"] == {"fish": 2}
     assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["fish"] == 2
+
+
+@pytest.mark.parametrize("existing_due", [0, 1700000200])
+def test_native_fish_queue_commits_once_with_inventory_and_survives_reload(fishing_db, existing_due):
+    h = fishing_db
+    h.identity.update(fishing_transfer_target_id=h.other_id, fishing_caught_fish_json='{"fish":3,"older":1}',
+                      fishing_transfer_due_at=existing_due)
+
+    async def scenario():
+        store = settled_store(h)
+        assert store.project(h.now)
+        assert not store.project(h.now)
+
+    asyncio.run(scenario())
+    state_module._meta_state["identity_states"] = {}
+    assert persistence.load_state()
+    identity = state_module.get_identity_state(h.identity_id)
+    assert json.loads(identity["fishing_caught_fish_json"]) == {"fish": 5, "older": 1}
+    assert identity["fishing_transfer_target_id"] == h.other_id
+    assert identity["fishing_transfer_due_at"] == (
+        existing_due or h.now + lifecycle.fishing.fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC)
+    assert identity[native.STATE_KEY]["phase"] == "accounted"
+    assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["fish"] == 2
+
+
+@pytest.mark.parametrize("change", ["disabled", "public_only", "canary", "target", "queue", "timer", "no_target"])
+def test_native_queue_respects_existing_transfer_authority_and_plan(fishing_db, monkeypatch, change):
+    h = fishing_db
+    h.identity.update(fishing_transfer_target_id=0 if change == "no_target" else h.other_id,
+                      fishing_caught_fish_json='{"older":1}', fishing_transfer_due_at=h.now + 300)
+
+    async def scenario():
+        if change == "public_only":
+            h.identity["fishing_enabled"] = False
+            monkeypatch.setattr(lifecycle.fishing, "is_cave_public_auto_enabled", lambda *args: True)
+        store = settled_store(h)
+        if change == "disabled":
+            h.identity["fishing_enabled"] = False
+        elif change == "target":
+            h.identity["fishing_transfer_target_id"] = 771122
+        elif change == "queue":
+            h.identity["fishing_caught_fish_json"] = '{"manual":4}'
+        elif change == "timer":
+            h.identity["fishing_transfer_due_at"] = h.now + 500
+        before = {key: h.identity[key] for key in (
+            "fishing_caught_fish_json", "fishing_transfer_due_at", "fishing_transfer_target_id")}
+        assert store.project(h.now, update_schedule=change != "canary")
+        assert {key: h.identity[key] for key in before} == before
+        assert h.identity[native.STATE_KEY]["phase"] == "accounted"
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["fish"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_native_queue_rolls_back_with_inventory_on_save_failure(fishing_db, monkeypatch):
+    h = fishing_db
+    h.identity.update(fishing_transfer_target_id=h.other_id, fishing_caught_fish_json='{"older":1}')
+
+    async def scenario():
+        store = settled_store(h)
+        before = deepcopy(h.identity)
+        inventory = deepcopy(state_module.get_storage_bag_records())
+        monkeypatch.setattr(persistence, "save_state", lambda: False)
+        with pytest.raises(ProtocolError, match="projection_save_failed"):
+            store.project(h.now)
+        assert h.identity == before
+        assert state_module.get_storage_bag_records() == inventory
+        assert persisted(h.identity_id)["phase"] == "settled"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("queue", ['broken', '[]', '{"fish":true}', '{"fish":-1}', '{"fish":1000000000}'])
+def test_native_queue_never_discards_corrupt_or_overflowing_prior_items(fishing_db, queue):
+    h = fishing_db
+    h.identity.update(fishing_transfer_target_id=h.other_id, fishing_caught_fish_json=queue)
+
+    async def scenario():
+        store = settled_store(h)
+        before = deepcopy(h.identity)
+        inventory = deepcopy(state_module.get_storage_bag_records())
+        with pytest.raises(ProtocolError, match="native_transfer"):
+            store.project(h.now)
+        assert h.identity == before
+        assert state_module.get_storage_bag_records() == inventory
+        assert persisted(h.identity_id)["phase"] == "settled"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("caught", [False, True])
+def test_native_queue_contains_only_fish_not_bonus_materials(fishing_db, caught):
+    h = fishing_db
+    h.identity.update(fishing_transfer_target_id=h.other_id, fishing_caught_fish_json='{"older":1}')
+
+    async def scenario():
+        store = settled_store(h, caught=caught, bonus=[{"name": "gem", "qty": 3}])
+        assert store.project(h.now)
+        assert json.loads(h.identity["fishing_caught_fish_json"]) == (
+            {"older": 1, "fish": 2} if caught else {"older": 1})
+        assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"] == (
+            {"fish": 2, "gem": 3, "bait": 5} if caught else {"gem": 3, "bait": 5})
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("key", [native.STATE_KEY, supply.STATE_KEY, "fishing_operation", "fishing_result_pending"])
+def test_gift_queue_cannot_overtake_unresolved_fishing_receipts(fishing_env, monkeypatch, key):
+    h = fishing_env
+    h.identity.update(fishing_transfer_target_id=h.other_id, fishing_caught_fish_json='{"older":1}')
+    h.identity[key] = {"invalid": True}
+    gift = AsyncMock()
+    monkeypatch.setattr(lifecycle.fishing, "start_storage_bag_gift_batch", gift)
+    before = deepcopy(h.identity)
+    with state_module.use_identity(h.identity_id):
+        assert not asyncio.run(lifecycle.fishing._run_pending_fishing_transfer(h.now))
+    gift.assert_not_awaited()
+    assert h.identity == before
+
+
+def test_native_fish_hands_off_once_to_existing_gift_batch(fishing_db, monkeypatch):
+    h = fishing_db
+    h.identity["fishing_transfer_target_id"] = h.other_id
+    gift = AsyncMock(return_value=(True, "queued", {}))
+    monkeypatch.setattr(lifecycle.fishing, "start_storage_bag_gift_batch", gift)
+
+    async def scenario():
+        store = settled_store(h)
+        assert store.project(h.now)
+        with state_module.use_identity(h.identity_id):
+            due = h.identity["fishing_transfer_due_at"]
+            assert not await lifecycle.fishing._run_pending_fishing_transfer(due - 1)
+            assert await lifecycle.fishing._run_pending_fishing_transfer(due)
+            assert not await lifecycle.fishing._run_pending_fishing_transfer(due + 1)
+        assert h.identity["fishing_caught_fish_json"] == ""
+        assert h.identity["fishing_transfer_due_at"] == 0
+
+    asyncio.run(scenario())
+    gift.assert_awaited_once_with([{
+        "source_identity_id": h.identity_id, "target_identity_id": h.other_id,
+        "items": [{"item_name": "fish", "quantity": 2, "method": "gift"}],
+    }], target_identity_id=h.other_id, stop_on_error=True)
 
 
 def test_v3_fish_bonus_and_consumption_commit_together_without_double_bonus_bait(fishing_db):
@@ -723,6 +868,7 @@ def test_new_cast_requires_accounting_and_captures_new_basis(fishing_db):
 
 def test_cancelled_worker_drains_and_keeps_settlement_without_rescheduling(fishing_db):
     h = fishing_db
+    h.identity["fishing_transfer_target_id"] = h.other_id
     entered, release, done = threading.Event(), threading.Event(), threading.Event()
     calls = []
 
@@ -758,6 +904,8 @@ def test_cancelled_worker_drains_and_keeps_settlement_without_rescheduling(fishi
         assert caught.value.result["committed"]
         assert h.identity[native.STATE_KEY]["phase"] == "accounted"
         assert h.identity["next_fishing_time"] == original_timer
+        assert h.identity["fishing_caught_fish_json"] == ""
+        assert h.identity["fishing_transfer_due_at"] == 0
         assert calls == ["context", "cast"]
 
     try:
