@@ -1,8 +1,9 @@
 # Native Fishing Automatic Routing
 
-## Status At 09:20 UTC+8
+## Deployment At 09:31 UTC+8
 
-Candidate only, based on production `5823b1bc`. Production remains unchanged.
+Runtime commit `492d54aa` is deployed and pushed to `xiuxian-mian/main`.
+It was based on `5823b1bc`; production was clean before the fast-forward.
 The preceding final-only proof deployment already completed one real catch:
 see [checkpoint acceptance](native-fishing-checkpoint-canary-20261002.md).
 This document does not claim all selected identities have fished.
@@ -58,13 +59,27 @@ claim they will fish at today's return.
 - Related suite: 4291 passed, 81 subtests passed, 55.04 seconds.
 - Ruff and `git diff --check`: passed.
 - Full isolated suite: 15409 passed, 1399 subtests passed, 436.28 seconds.
-  Compile checks passed. Candidate is ready for a backed-up deployment;
-  natural scheduler/return acceptance remains open.
+  Compile checks passed. Natural scheduler/return acceptance remains open.
 - Production main/observer/watchdog remain active. Watchdog and defensive
   preflight find no pending tasks. Listener sidecar stays explicitly inactive.
 - Current health warning is the retained earlier checkpoint failures, not
   new ordinary-loop failures. Log-bot callback network errors at 09:11 recovered
   at 09:13; deep retreat and tower confirmations continued.
+
+The service was gracefully stopped, PID 0 and inactive verified, then a private
+SQLite backup was taken at
+`/root/xiuxian-before-native-auto-20261002-0928.db` (`quick_check=ok`, mode 0600).
+It restarted once at 09:31:06; main PID 125471, worker 125472, `NRestarts=0`.
+Observer/watchdog were not restarted. Their brief service-down observations
+at 09:30/09:31 are the planned deployment, not crashes.
+
+Post-start comparison of all 24 identities confirms fishing timers, standalone
+fishing switches, World Boss switches and incense-refinement switches unchanged.
+Public fishing still selects 23 identities. The new return fact migrated with
+zero defaults, not fabricated historical returns. At 09:31:38 deep retreat
+started successfully and at 09:31:42 another tower challenge settled normally.
+At 09:34 health reports no abnormal modules or pending tasks; the two earlier
+checkpoint failures remain visible. No new cast was made during deployment.
 
 ## Remaining Acceptance
 
