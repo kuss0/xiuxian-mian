@@ -17,7 +17,7 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
-from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_text
+from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text
 from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
 
 from .account_membership import (
@@ -3202,7 +3202,8 @@ def _format_low_priority_audit_summary(rows):
     for row in details[:max_details]:
         count = int(row.get("count") or 0)
         last_ts = row.get("last_ts") or "?"
-        text = short_text(" ".join(str(row.get("plain") or "-").split()), 140)
+        body = row.get("html") or html.escape(str(row.get("plain") or "-"))
+        text = short_html_text(body, 140)
         repeated = f" x{count}" if count > 1 else ""
         detail_lines.append(f"{last_ts}{repeated} {text}")
     omitted = max(0, len(details) - len(detail_lines))

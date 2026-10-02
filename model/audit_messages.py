@@ -43,6 +43,11 @@ def bounded_html(body, limit):
     return _html_slice(text, entities, 0, end) + "…"
 
 
+def short_html_text(body, limit):
+    text, _ = telegram_html.parse(str(body or ""))
+    return short_text(" ".join(text.split()), limit)
+
+
 _VISIBLE_MARKERS = (
     "需人工", "需要人工", "人工处理", "人工抉择", "待处理", "请手动",
     "禁止", "不要", "暂停", "安全锁", "冻结", "封禁", "停止", "🚨", "🆘", "⚠️",
@@ -112,4 +117,5 @@ def routine_copy(content):
 
 def folded_summary_details(lines, *, limit=3200):
     body = short_text("\n".join(lines), limit)
-    return '<blockquote expandable>' + html.escape(body) + '</blockquote>'
+    # Keep the old summary's no-mention behavior inside the collapsible quote.
+    return '<blockquote expandable><code>' + html.escape(body) + '</code></blockquote>'

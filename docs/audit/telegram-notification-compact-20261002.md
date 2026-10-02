@@ -37,3 +37,14 @@
 ## 当前状态
 
 最终回归已通过。WA 裂缝 17:38:37 发送、17:38:53/54 双模块核销；18:33 待处理队列为空，health observer/watchdog 正常，可以受控上线。后续追加实际部署、备份路径和自然通知验收证据。
+
+## 上线记录
+
+- 运行版本 `7fc871ec`，已推送 `xiuxian-mian/main`。
+- 18:36:35 受控停止主服务，18:36:42 正常退出；SQLite 快照 `/root/xiuxian-before-notification-compact-20261002-1836.db`，权限 0600、`quick_check=ok`。
+- 快进合并后 18:39:28 启动，18:39:47 完成初始化；主 PID `325371`，worker `325383`，24 身份，`NRestarts=0`。此次停机期间 observer 的 inactive 告警为主动发布，不是崩溃。
+- 18:41 health observer、watchdog 正常，pending 队列为空；MiniApp 配置、身份归属、全局启用配置与备份一致。双群配置仅被动更新 `bot_activity_at_by_group` 活动时间。
+- 生产原有 `deploy/xiuxian-r2-backup.sh`、`deploy/backup_engine.py`、`tests/test_snapshot_sqlite_db.py` 的 SHA-256 上线前后相同，未提交这些无关改动。
+- 18:49:37 自然汇总 `52570` 已保存可折叠实体，无发送异常；验收发现原 `plain` 字段中的 `<code>` 被原样显示，且从 `pre` 改成普通引用后，用户名重新被 Telegram 自动识别为提及。
+- 补充修正：展示从已有 HTML 正确提取文本，折叠明细加 `code` 实体维持原先禁止自动提及的行为；不改聚合键、优先级或发送间隔。36 项针对性测试及 20 项子测试通过。
+- 只编辑原样例 `52563` 验证新结构，Bot API HTTP 200，返回相同范围的 `expandable_blockquote` 与 `code`；未追加测试推送。

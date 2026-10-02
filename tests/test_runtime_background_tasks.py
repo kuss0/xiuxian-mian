@@ -188,6 +188,15 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('闭关已开始', message)
         self.assertNotIn('阶段 running', message)
 
+    def test_summary_uses_stored_html_without_showing_raw_tags(self):
+        message = runtime._format_low_priority_audit_summary([{
+            'count': 1, 'last_ts': '18:39:47', 'seq': 1,
+            'plain': '<code>@actor</code> 启动成功',
+            'html': '<code>@actor</code> 启动成功',
+        }])
+        self.assertNotIn('&lt;code&gt;', message)
+        self.assertIn('<blockquote expandable><code>18:39:47 @actor 启动成功</code></blockquote>', message)
+
     async def test_log_bot_callback_poller_backs_off_on_retry_after(self):
         stop_event = asyncio.Event()
         sleep_delays = []

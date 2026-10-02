@@ -1,7 +1,7 @@
 from telethon.extensions import html as telegram_html
-from telethon.tl.types import MessageEntityBlockquote, MessageEntityTextUrl
+from telethon.tl.types import MessageEntityBlockquote, MessageEntityCode, MessageEntityTextUrl
 
-from model.audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, text_units
+from model.audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text, text_units
 
 
 def test_short_notice_stays_short():
@@ -55,7 +55,18 @@ def test_long_single_line_is_folded_except_safety_warning():
 def test_summary_bound_counts_unicode_not_html_bytes():
     text, entities = telegram_html.parse(folded_summary_details(['🧪<&>' * 500] * 20))
     assert text_units(text) <= 3200
-    assert len(entities) == 1 and entities[0].collapsed
+    assert len(entities) == 2
+    assert any(isinstance(e, MessageEntityBlockquote) and e.collapsed for e in entities)
+    assert any(isinstance(e, MessageEntityCode) and e.length == text_units(text) for e in entities)
+
+
+def test_summary_strips_markup_but_protects_names_from_auto_mentions():
+    line = short_html_text('<code>@actor</code> 获得 &lt;碎片&gt;\n已完成', 140)
+    assert line == '@actor 获得 <碎片> 已完成'
+    text, entities = telegram_html.parse(folded_summary_details([line]))
+    assert text == line
+    code = next(e for e in entities if isinstance(e, MessageEntityCode))
+    assert code.offset == 0 and code.length == text_units(text)
 
 
 def test_existing_quote_never_nested():
