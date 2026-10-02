@@ -1,5 +1,6 @@
 """Native fishing entry; retains the existing UI plan and locks."""
 
+import math
 import time
 from copy import deepcopy
 
@@ -15,6 +16,7 @@ from .miniapp_common import MiniAppFlowCancelled
 
 SITE_CHOICES = {"青溪浅滩": "west-shore", "灵眼寒潭": "waterfall-pool", "乱星海礁": "east-shore"}
 VOYAGE_HANDOFF_SEC = 15 * 60
+SAILING_RECHECK_SEC = 10 * 60
 
 
 def pending(identity):
@@ -161,8 +163,16 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                 delay = max(30 if supplied else 60, float(result.get("retry_after_sec") or 0))
                 if result.get("status") == "supply_pending":
                     delay = max(delay, 1800)
-                if reason in {"fishing_bait_missing", "fishing_rod_missing", "fishing_companion_sailing"}:
+                if reason in {"fishing_bait_missing", "fishing_rod_missing"}:
                     delay = max(delay, 1800)
+                if reason == "fishing_companion_sailing":
+                    # A 30-minute retry can miss the entire 15-minute return handoff.
+                    delay = max(delay, SAILING_RECHECK_SEC)
+                    return_at = operation.owner.identity.get("concubine_voyage_return_at")
+                    if (operation.owner.identity.get("concubine_voyage_status") == "sailing"
+                            and type(return_at) in (int, float) and math.isfinite(return_at)
+                            and return_at > now):
+                        delay = max(delay, return_at - now + 60)
                 operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if committed or supplied or terminal_skip else reason)
                 if update_schedule:
                     operation.owner.identity["next_fishing_time"] = (
