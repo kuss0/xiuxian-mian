@@ -333,12 +333,5 @@
     }
   });
 
-  if(typeof renderAll === 'function'){
-    var originalRenderAll = renderAll;
-    renderAll = function(){
-      originalRenderAll();
-      renderFishingConfigPanel();
-    };
-  }
-  window.setTimeout(renderFishingConfigPanel, 0);
+  registerRenderHook('fishing', renderFishingConfigPanel);
 })();

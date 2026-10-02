@@ -307,19 +307,13 @@ function closeOfficialScheduleModal() {
   }
 }
 
-if (typeof renderAll === 'function') {
-  const originalOfficialScheduleRenderAll = renderAll;
-  renderAll = function() {
-    const result = originalOfficialScheduleRenderAll.apply(this, arguments);
-    renderOfficialScheduleButton();
-    if (document.getElementById('official-schedule-modal')?.classList.contains('show')) {
-      fillOfficialScheduleForm();
-      renderOfficialScheduleList();
-    }
-    return result;
-  };
+registerRenderHook('official-schedule', function() {
   renderOfficialScheduleButton();
-}
+  if (document.getElementById('official-schedule-modal')?.classList.contains('show')) {
+    fillOfficialScheduleForm();
+    renderOfficialScheduleList();
+  }
+});
 
 document.addEventListener('click', function(event) {
   if (event.target.closest('[data-open-official-schedule]')) {

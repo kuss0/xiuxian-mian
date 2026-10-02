@@ -157,18 +157,9 @@
     }
   });
 
-  if (typeof window.renderAll === 'function' && !window.renderAll._runtimeHealthPanelWrapped) {
-    const originalRenderAll = window.renderAll;
-    const wrappedRenderAll = function() {
-      const result = originalRenderAll.apply(this, arguments);
-      renderRuntimeHealthPanel();
-      const modal = document.getElementById('runtime-health-modal');
-      if (modal && modal.classList.contains('show')) renderRuntimeHealthModal();
-      return result;
-    };
-    wrappedRenderAll._runtimeHealthPanelWrapped = true;
-    window.renderAll = wrappedRenderAll;
-  }
-
-  renderRuntimeHealthPanel();
+  registerRenderHook('runtime-health', function() {
+    renderRuntimeHealthPanel();
+    const modal = document.getElementById('runtime-health-modal');
+    if (modal && modal.classList.contains('show')) renderRuntimeHealthModal();
+  });
 })();

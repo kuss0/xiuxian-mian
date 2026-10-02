@@ -130,18 +130,12 @@ function closePendingQueueModal() {
   }
 }
 
-if (typeof renderAll === 'function') {
-  const originalRenderAll = renderAll;
-  renderAll = function() {
-    const result = originalRenderAll.apply(this, arguments);
-    renderPendingQueueButton();
-    if (document.getElementById('pending-queue-modal')?.classList.contains('show')) {
-      renderPendingQueueModalBody();
-    }
-    return result;
-  };
+registerRenderHook('queue', function() {
   renderPendingQueueButton();
-}
+  if (document.getElementById('pending-queue-modal')?.classList.contains('show')) {
+    renderPendingQueueModalBody();
+  }
+});
 
 document.addEventListener('click', function(event) {
   if (event.target.closest('[data-open-pending-queue]')) {

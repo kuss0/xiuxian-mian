@@ -291,52 +291,42 @@
     renderSummary = window.renderSummary;
   }
 
-  if (typeof window.renderIdentityList === 'function') {
-    window.renderIdentityList = function (identities, selectedId) {
-      const list = document.getElementById('identity-list');
-      if (!list) return;
-      if (typeof isMobileLayout === 'function' && isMobileLayout()) {
-        list.innerHTML = '';
-        return;
-      }
-      list.innerHTML = (Array.isArray(identities) ? identities : []).map(function (identity) {
-        const active = Number(identity.send_as_id) === Number(selectedId) ? ' identity-item-active' : '';
-        const offline = identity.account_offline ? ' identity-item-offline' : '';
-        const dotClass = isIdentityRunning(identity) ? ' identity-status-dot-on' : ' identity-status-dot-off';
-        return '<button type="button" class="identity-item' + active + offline + '" data-select-identity="' + esc(identity.send_as_id) + '">'
-          + '<div class="identity-item-head"><span class="identity-status-dot' + dotClass + '" title="' + esc(getStatusText(identity)) + '"></span><strong>' + esc(identity.display_name) + '</strong></div>'
-          + '<span>' + esc(getPreviewMeta(identity)) + '</span>'
-          + '</button>';
-      }).join('');
-    };
-    renderIdentityList = window.renderIdentityList;
-  }
-
-  if (typeof window.renderIdentitySelect === 'function') {
-    window.renderIdentitySelect = function (identities, selectedId) {
-      const select = document.getElementById('identity-select-mobile');
-      if (!select) return;
-      if (typeof isMobileLayout === 'function' && !isMobileLayout()) {
-        select.disabled = true;
-        return;
-      }
-      const rows = Array.isArray(identities) ? identities : [];
-      if (!rows.length) {
-        select.innerHTML = '<option value="">暂无身份</option>';
-        select.disabled = true;
-        return;
-      }
-      select.innerHTML = rows.map(function (identity) {
-        return '<option value="' + esc(identity.send_as_id) + '">' + esc(identity.display_name) + ' ｜ ' + esc(getStatusText(identity)) + ' ｜ ' + esc(getPreviewMeta(identity)) + '</option>';
-      }).join('');
-      select.disabled = rows.length <= 1;
-      select.value = selectedId == null ? '' : String(selectedId);
-    };
-    renderIdentitySelect = window.renderIdentitySelect;
-  }
-
-  if (typeof renderAll === 'function') renderAll();
-
+  window.renderIdentityList = function (identities, selectedId) {
+    const list = document.getElementById('identity-list');
+    if (!list) return;
+    if (typeof isMobileLayout === 'function' && isMobileLayout()) {
+      list.innerHTML = '';
+      return;
+    }
+    list.innerHTML = (Array.isArray(identities) ? identities : []).map(function (identity) {
+      const active = Number(identity.send_as_id) === Number(selectedId) ? ' identity-item-active' : '';
+      const offline = identity.account_offline ? ' identity-item-offline' : '';
+      const dotClass = isIdentityRunning(identity) ? ' identity-status-dot-on' : ' identity-status-dot-off';
+      return '<button type="button" class="identity-item' + active + offline + '" data-select-identity="' + esc(identity.send_as_id) + '">'
+        + '<div class="identity-item-head"><span class="identity-status-dot' + dotClass + '" title="' + esc(getStatusText(identity)) + '"></span><strong>' + esc(identity.display_name) + '</strong></div>'
+        + '<span>' + esc(getPreviewMeta(identity)) + '</span>'
+        + '</button>';
+    }).join('');
+  };
+  window.renderIdentitySelect = function (identities, selectedId) {
+    const select = document.getElementById('identity-select-mobile');
+    if (!select) return;
+    if (typeof isMobileLayout === 'function' && !isMobileLayout()) {
+      select.disabled = true;
+      return;
+    }
+    const rows = Array.isArray(identities) ? identities : [];
+    if (!rows.length) {
+      select.innerHTML = '<option value="">暂无身份</option>';
+      select.disabled = true;
+      return;
+    }
+    select.innerHTML = rows.map(function (identity) {
+      return '<option value="' + esc(identity.send_as_id) + '">' + esc(identity.display_name) + ' ｜ ' + esc(getStatusText(identity)) + ' ｜ ' + esc(getPreviewMeta(identity)) + '</option>';
+    }).join('');
+    select.disabled = rows.length <= 1;
+    select.value = selectedId == null ? '' : String(selectedId);
+  };
   document.addEventListener('click', function (event) {
     const button = event.target.closest('[data-refresh-identity-api]');
     if (!button) return;

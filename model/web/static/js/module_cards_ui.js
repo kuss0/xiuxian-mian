@@ -1,8 +1,4 @@
 (function(){
-  if(typeof renderModules !== 'function'){
-    return;
-  }
-
   function esc(value){
     return typeof escapeHtml === 'function'
       ? escapeHtml(value)
@@ -314,7 +310,7 @@
     });
   }
 
-  renderModules = function(identity){
+  window.renderModules = function(identity){
     var grid = document.getElementById('module-grid');
     if(!grid){
       return;
@@ -1332,9 +1328,4 @@
     }
   });
 
-  window.setTimeout(function(){
-    if(typeof renderAll === 'function'){
-      renderAll();
-    }
-  }, 0);
 })();

@@ -282,18 +282,3 @@ document.addEventListener('click', function(event) {
     closePassiveInboxModal();
   }
 });
-
-window.renderPassiveInboxPanel = renderPassiveInboxPanel;
-
-if (typeof window.renderAll === 'function' && !window.renderAll._passiveInboxPanelWrapped) {
-  const originalRenderAll = window.renderAll;
-  const wrappedRenderAll = function() {
-    const result = originalRenderAll.apply(this, arguments);
-    renderPassiveInboxPanel();
-    return result;
-  };
-  wrappedRenderAll._passiveInboxPanelWrapped = true;
-  window.renderAll = wrappedRenderAll;
-}
-
-renderPassiveInboxPanel();

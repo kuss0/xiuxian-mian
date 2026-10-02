@@ -574,18 +574,12 @@ async function toggleReplicaQueryAggregator(enabled) {
   }
 }
 
-if (typeof renderAll === 'function') {
-  const originalRenderAllForDungeon = renderAll;
-  renderAll = function() {
-    const result = originalRenderAllForDungeon.apply(this, arguments);
-    renderDungeonButton();
-    if (document.getElementById('dungeon-modal')?.classList.contains('show')) {
-      renderDungeonModal();
-    }
-    return result;
-  };
+registerRenderHook('dungeon', function() {
   renderDungeonButton();
-}
+  if (document.getElementById('dungeon-modal')?.classList.contains('show')) {
+    renderDungeonModal();
+  }
+});
 
 document.addEventListener('click', function(event) {
   if (event.target.closest('[data-open-dungeon]')) {

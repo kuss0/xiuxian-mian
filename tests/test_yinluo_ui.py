@@ -13,13 +13,13 @@ def test_yinluo_frontend_script_is_loaded_after_main_app():
 
 
 def test_yinluo_module_card_keeps_main_switch_and_action_panel_hook():
-    app_script = (PROJECT_ROOT / "model/web/static/js/app.js").read_text(encoding="utf-8")
+    module_script = (PROJECT_ROOT / "model/web/static/js/module_cards_ui.js").read_text(encoding="utf-8")
     yinluo_script = (PROJECT_ROOT / "model/web/static/js/yinluo_ui.js").read_text(encoding="utf-8")
 
-    hidden_modules_body = app_script.split("const hiddenModules=new Set([", 1)[1].split("]);", 1)[0]
+    hidden_modules_body = module_script.split("var hiddenModules = new Set([", 1)[1].split("]);", 1)[0]
     assert "阴罗宗" not in hidden_modules_body
-    assert "data-toggle-module=\"1\"" in app_script
-    assert "module-title" in app_script
+    assert "data-toggle-module=\"1\"" in module_script
+    assert "module-title" in module_script
 
     assert "data-yinluo-panel" in yinluo_script
     assert "textContent.trim() === '阴罗宗'" in yinluo_script
