@@ -49,3 +49,26 @@ Today's Baji/WA voyages have return clocks 13:33:03/14:11:28 and scheduler
 checks 13:34:36/14:20:33. They do not gain an unscheduled fishing run today.
 Verify future sailing-to-return-to-fishing transitions at natural eligibility,
 and verify the next day's aggregate report without modifying historical rows.
+
+## Deployment Checkpoint
+
+`15df30a4` is deployed and pushed to `xiuxian-mian/main`. Main service was
+explicitly stopped at 10:23:16, exited successfully at 10:23:26, and restarted
+at 10:24:32 Asia/Shanghai. Both old PIDs had exited before backup and merge.
+Backup: `/root/xiuxian-before-voyage-retry-20261002-1023.db`, quick_check OK,
+private mode 0600. New supervisor/worker PIDs are 145376/145387, NRestarts 0.
+Observer/watchdog PIDs 15735/15731 were not restarted. The brief service-down
+warning during deployment reflects this explicit stop, not a crash.
+
+At 10:26-10:28 all 24 identities were restored; comparison with the pre-deploy
+backup found zero changes to fishing timers or fishing/Boss/refinement flags.
+The sole changed ordinary timer is Baji's disabled pet-formation timer, spread
+by the existing startup recovery; its switch remains off. Pending, overdue
+pending and stuck-phase lists are empty. Watchdog is OK; health retains only
+the two pre-deploy fishing-checkpoint failures as warnings, plus informational
+channel-send freeze. No new native cast or forced voyage return was issued.
+
+Today's captured HTTP rate peak is 43/90 per minute. SSH fetch of wxjerry
+still reports `aa9dba29`; no further upstream code was merged in this checkpoint.
+The earlier R2 repair `85dd176b` is installed independently, awaiting the
+October 3 04:26:17 scheduled upload. Natural fishing acceptance remains open.

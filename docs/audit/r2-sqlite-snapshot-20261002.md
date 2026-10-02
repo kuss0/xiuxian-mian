@@ -54,6 +54,12 @@ Installing this fix and verifying a local copy are not cloud-upload acceptance.
 Do not clear the failed-unit marker just to make the health display green.
 No immediate backup run or game-service restart is required for installation.
 
+`85dd176b` was merged and pushed on October 2. The installed script was compared
+byte-for-byte with the versioned copy; the old operator script is retained at
+`/root/xiuxian-r2-acceptance-20261002-9Twrzk/xiuxian-r2-backup.before.sh`.
+Installation did not restart any service. The timer's next execution is
+October 3 at 04:26:17 Asia/Shanghai; its failed marker was left visible.
+
 Fishing remains on the deployed natural schedule. World Boss and both incense
 refinement switches remain off; channel sends stay frozen and Attempt stays
 shadow-only. This repair changes no business timers or game runtime code.
