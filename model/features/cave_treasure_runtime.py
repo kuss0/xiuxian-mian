@@ -5334,6 +5334,7 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
     }
     if normalized_command not in allowed_commands:
         return {"ok": False, "message": "洞府天机阁动作不在受控白名单", "extra": {}}
+    action_label = "远航归来" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "月殿寻痕"
     owner = MiniAppIdentityOwner.capture(identity_id)
     if identity_id <= 0 or owner is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
@@ -5403,7 +5404,7 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
             extra.update(status="identity_unverified")
             return {"ok": False, "message": player_error, "extra": extra}
         if result.get("ok") is not True or not _cave_tianjige_action_succeeded(data) or not message:
-            response = {"ok": False, "message": f"洞府天机阁远航归来未确认：{result.get('error') or result.get('status') or '无可识别回包'}", "extra": extra}
+            response = {"ok": False, "message": f"洞府天机阁{action_label}未确认：{result.get('error') or result.get('status') or '无可识别回包'}", "extra": extra}
             await _audit_cave_tianjige_read_only(identity_id, response)
             return response
         with use_identity(identity_id):
@@ -5412,7 +5413,7 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
                 kind="voyage_return" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "voyage",
             )
         if not applied.get("handled"):
-            response = {"ok": False, "message": "洞府天机阁远航归来回包未通过现有解析器，已停止补发", "extra": {**extra, "status": "unparsed"}}
+            response = {"ok": False, "message": f"洞府天机阁{action_label}回包未通过现有解析器，已停止补发", "extra": {**extra, "status": "unparsed"}}
             await _audit_cave_tianjige_read_only(identity_id, response)
             return response
         response = {
@@ -5420,7 +5421,7 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
             "message": "洞府天机阁远航归来已结算" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "洞府天机阁月殿寻痕已发起",
             "extra": {**extra, "voyage": applied},
         }
-        await _audit_cave_tianjige_read_only(identity_id, response, detail="远航归来已由 MiniApp 回包核销", priority="low")
+        await _audit_cave_tianjige_read_only(identity_id, response, priority="low")
         return response
 
 

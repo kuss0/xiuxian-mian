@@ -433,6 +433,49 @@ def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(runtime):
     assert runtime.identity["concubine_affinity"] == 172
     assert "月殿寻痕" in runtime.identity["concubine_voyage_last_result"]
     runtime.save.assert_called_once_with()
+    assert runtime.audit.await_args.args[0] == "📖 洞府天机阁远航归来已结算"
+    assert runtime.audit.await_args.kwargs["priority"] == "low"
+
+
+@pytest.mark.parametrize("outcome", ["started", "transport_failed", "unparsed"])
+def test_public_tianjige_voyage_launch_audit_names_current_action(runtime, outcome):
+    runtime.identity.update(
+        concubine_name="南宫婉·月影", concubine_kind="道心侍妾",
+        concubine_availability="available",
+        concubine_affinity=166, concubine_last_snapshot_at=NOW,
+        concubine_voyage_status="idle", concubine_voyage_route="月殿寻痕",
+        concubine_voyage_return_at=0, concubine_voyage_enabled=True,
+    )
+    message = (
+        "【乱星海远航·启】\n你命侍妾【南宫婉·月影】沿 月殿寻痕 航线远行。\n"
+        "预计归航时间：12小时后。"
+    )
+    runtime.flow.return_value["data"]["actionResult"]["rawMessage"] = message
+    if outcome == "transport_failed":
+        runtime.flow.return_value.update(ok=False, status="timeout", action_dispatched=True, outcome_unknown=True)
+    elif outcome == "unparsed":
+        runtime.flow.return_value["data"]["actionResult"]["rawMessage"] = "未知回包"
+    response = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
+        1001, ENTRY, ".侍妾远航 月殿寻痕", now=NOW,
+    ))
+    assert "月殿寻痕" in response["message"]
+    assert "远航归来" not in response["message"]
+    assert "远航归来" not in runtime.audit.await_args.args[0]
+    runtime.flow.assert_awaited_once()
+    if outcome == "started":
+        assert response["ok"]
+        assert runtime.identity["concubine_voyage_status"] == "sailing"
+        assert runtime.audit.await_args.args[0] == "📖 洞府天机阁月殿寻痕已发起"
+        assert runtime.audit.await_args.kwargs["priority"] == "low"
+        runtime.save.assert_called_once_with()
+    else:
+        assert not response["ok"]
+        assert runtime.identity["concubine_voyage_status"] == "idle"
+        runtime.save.assert_not_called()
+        if outcome == "transport_failed":
+            assert response["extra"]["outcome_unknown"] is True
+        else:
+            assert response["extra"]["status"] == "unparsed"
 
 
 @pytest.mark.parametrize("message", [

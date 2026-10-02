@@ -52,3 +52,10 @@
 - 修正前一致性快照 `/root/xiuxian-before-notification-no-mention-20261002-1857.db`，0600、`quick_check=ok`。18:58 health/watchdog 正常；24 身份、每身份 52 项模块开关，以及 MiniApp/身份归属/全局配置与首次上线前一致，两号香火转神识仍关闭。
 - 19:07:58 自然汇总 `52571`（Telegram 时间 19:07:59）验收通过：2 条记录、2 类；`MessageEntityBlockquote(collapsed=True)` 与 `MessageEntityCode` 范围相同；无 `MessageEntityMention`、无裸 HTML 标签。没有额外测试推送或调整汇总周期。
 - 19:06 health observer/watchdog 均正常，主 PID `332358`、`NRestarts=0`。本项已销号，常驻健康监测服务保持运行。
+
+## 后续自然消息复核
+
+- 20:00 回捞：`52572` 短告警保持展开，`52573` 的两条业务通知保留折叠，均无意外提及；health/watchdog 正常。
+- 发现 `52573` 中“月殿寻痕已发起”错误共用了“远航归来已由 MiniApp 回包核销”的固定尾巴。只读 capture 确认 19:43 两次请求各自 HTTP 200/ok；数据库已结算后进入 `sailing`，预计 2026-10-03 01:43:55 归来，业务状态并未反转。
+- 修正仅删除重复的成功尾巴，并按归来/发起区分失败通知；原成功响应、优先级、发送次数、状态机和资源扣除逻辑不变。
+- 补充发起成功、传输未确认、解析失败及原归来成功通知测试；相关回归 `417 passed, 6 subtests passed`。编译与 diff 检查通过，不人为再次触发远航。
