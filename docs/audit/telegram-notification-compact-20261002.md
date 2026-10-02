@@ -36,7 +36,7 @@
 
 ## 当前状态
 
-最终回归已通过。WA 裂缝 17:38:37 发送、17:38:53/54 双模块核销；18:33 待处理队列为空，health observer/watchdog 正常，可以受控上线。后续追加实际部署、备份路径和自然通知验收证据。
+已上线、推送并完成自然通知验收。运行修正版 `00213f14`；最终全量 `15558 passed, 1408 subtests passed`，436.29 秒。WA 裂缝在发布前已正常核销，发布未修改业务策略和账号开关。
 
 ## 上线记录
 
@@ -48,3 +48,7 @@
 - 18:49:37 自然汇总 `52570` 已保存可折叠实体，无发送异常；验收发现原 `plain` 字段中的 `<code>` 被原样显示，且从 `pre` 改成普通引用后，用户名重新被 Telegram 自动识别为提及。
 - 补充修正：展示从已有 HTML 正确提取文本，折叠明细加 `code` 实体维持原先禁止自动提及的行为；不改聚合键、优先级或发送间隔。36 项针对性测试及 20 项子测试通过。
 - 只编辑原样例 `52563` 验证新结构，Bot API HTTP 200，返回相同范围的 `expandable_blockquote` 与 `code`；未追加测试推送。
+- 修正版 `00213f14` 日志相关回归 `83 passed, 61 subtests passed`，已推送 `xiuxian-mian/main`。18:57:40 开始受控停止，18:57:48 正常退出，18:57:49 启动，18:58:09 初始化完成；主 PID `332358`、worker `332359`，`NRestarts=0`。
+- 修正前一致性快照 `/root/xiuxian-before-notification-no-mention-20261002-1857.db`，0600、`quick_check=ok`。18:58 health/watchdog 正常；24 身份、每身份 52 项模块开关，以及 MiniApp/身份归属/全局配置与首次上线前一致，两号香火转神识仍关闭。
+- 19:07:58 自然汇总 `52571`（Telegram 时间 19:07:59）验收通过：2 条记录、2 类；`MessageEntityBlockquote(collapsed=True)` 与 `MessageEntityCode` 范围相同；无 `MessageEntityMention`、无裸 HTML 标签。没有额外测试推送或调整汇总周期。
+- 19:06 health observer/watchdog 均正常，主 PID `332358`、`NRestarts=0`。本项已销号，常驻健康监测服务保持运行。
