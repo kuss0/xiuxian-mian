@@ -64,3 +64,23 @@ tool-only change; its last deployed baseline remains 15,436 passed.
 
 The next natural scheduling/return handoff and new-day summary remain open.
 The native gift Lab remains blocked on durable/idempotent queue handoff.
+
+## Daily Notification Follow-Up
+
+The ordinary fishing scheduler already aggregates public-only selections, and
+`normalize_daily_counter()` already clears prior-day skip/exhaustion markers.
+The suspected early-completion rollover was not reproduced; no runtime repair
+is justified. Added an end-to-end regression for no-rod, no-companion, exhausted
+quota and legacy-unavailable wording. Two consecutive report scans must wait
+for today's fresh outcome, preserve the fishing timer and old resource summary,
+then emit only once after today's terminal skip. Old fish cannot enter that
+report. The report/runtime/native/caller/result/voyage suite passed 336 tests
+and 21 subtests; Ruff and diff checks passed. Tests/docs only, no restart.
+
+At 12:33 the daily semantic scan still showed the same four early fishing
+checkpoint failures and one early external-entry throttle, with no new HTTP
+error samples. Peak request rate remained 43/90. Health/watchdog remained OK.
+WA's 05:59 to 12:00 faith change 97 -> 95 lacks a directly bound explanatory
+event and stays unexplained; population 320000 and stability 100 in the latest
+panel are not evidence of a disaster. No extra panel request or maintenance
+action was issued to manufacture evidence.

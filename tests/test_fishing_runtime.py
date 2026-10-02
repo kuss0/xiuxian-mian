@@ -1176,6 +1176,63 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(state_module.get_identity_display_name(skipped_id), text)
         self.assertEqual(day_key, state_module.get_identity_state(skipped_id)["fishing_daily_summary_day"])
 
+    async def test_daily_report_rollover_waits_for_fresh_public_identity_result(self):
+        identity_id = self._prepare_identity()
+        skipped_id = 301299112
+        state_module.ensure_identity_registered(skipped_id)
+        now = self._local_ts(2026, 10, 3, 0, 2, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id, skipped_id],
+        }
+        finished = state_module.get_identity_state(identity_id)
+        waiting = state_module.get_identity_state(skipped_id)
+        for old_result in (
+            "洞府原生钓鱼：未持有鱼竿，今日跳过",
+            "洞府原生钓鱼：无可用侍妾，今日跳过",
+            "洞府原生钓鱼：今日次数已用尽，等待次日（fishing_daily_limit_reached）",
+            "未开放灵溪垂钓，今日跳过",
+        ):
+            with self.subTest(old_result=old_result):
+                finished.update(fishing_enabled=False, fishing_daily_day=day_key,
+                                fishing_daily_count=5, fishing_daily_limit=5, fishing_daily_summary_day="",
+                                fishing_daily_catch_summary_json=json.dumps({
+                                    "day": day_key, "rods": 5, "fish": {"青鳞小鲫": 1}, "rewards": {},
+                                }, ensure_ascii=False))
+                waiting.update(fishing_enabled=False, fishing_daily_day="2026-10-02",
+                               fishing_daily_count=5, fishing_daily_limit=5, fishing_daily_summary_day="2026-10-02",
+                               fishing_daily_catch_summary_json=json.dumps({
+                                   "day": "2026-10-02", "rods": 5, "fish": {"旧鱼": 5}, "rewards": {},
+                               }, ensure_ascii=False), fishing_last_result=old_result, next_fishing_time=now + 600)
+                before_summary = waiting["fishing_daily_catch_summary_json"]
+                with (
+                    state_module.use_identity(identity_id),
+                    patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                    patch.object(fishing_runtime, "save_state"),
+                ):
+                    for _ in range(2):
+                        self.assertFalse(await fishing_runtime._send_fishing_daily_completion_summary(now))
+                    audit_mock.assert_not_awaited()
+                    self.assertEqual(day_key, waiting["fishing_daily_day"])
+                    self.assertEqual(0, waiting["fishing_daily_count"])
+                    self.assertEqual("", waiting["fishing_last_result"])
+                    self.assertEqual(now + 600, waiting["next_fishing_time"])
+                    self.assertEqual(before_summary, waiting["fishing_daily_catch_summary_json"])
+                    self.assertEqual("2026-10-02", waiting["fishing_daily_summary_day"])
+
+                    # Only today's newly parsed terminal response releases the aggregate.
+                    waiting["fishing_last_result"] = "洞府原生钓鱼：未持有鱼竿，今日跳过"
+                    self.assertTrue(await fishing_runtime._send_fishing_daily_completion_summary(now + 601))
+                    audit_mock.assert_awaited_once()
+                    text = audit_mock.await_args.args[0]
+                    self.assertIn("青鳞小鲫x1", text)
+                    self.assertNotIn("旧鱼", text)
+                    self.assertEqual(day_key, waiting["fishing_daily_summary_day"])
+                    self.assertFalse(await fishing_runtime._send_fishing_daily_completion_summary(now + 602))
+                    audit_mock.assert_awaited_once()
+
     async def test_daily_completion_ignores_public_identities_without_bait(self):
         identity_id = self._prepare_identity()
         skipped_id = 301299112
