@@ -199,7 +199,6 @@ _REPLICA_DISPATCH_COMMAND_RE = re.compile(
     rf"^(?P<command>{'|'.join(re.escape(meta['dispatch_command']) for meta in _REPLICA_KIND_META.values())})\s+(?P<room_id>\d+)(?:\s+(?P<rest>.+))?$"
 )
 _VIRTUAL_HALL_MATCH_COMMAND_RE = re.compile(r"^\.匹配虚天殿\s+(?P<room_id>\d+)\s*$")
-_VIRTUAL_HALL_AUTO_OPEN_COMMAND_RE = re.compile(r"^\.开启虚天殿\s+(?P<selector>\S+)\s*$")
 _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE = re.compile(r"^\.开启副本(?:\s+(?P<rest>.+))?$")
 _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE = re.compile(r"^\.加入副本(?:\s+(?P<rest>.+))?$")
 _REPLICA_ENTER_COMMAND_RE = re.compile(rf"^(?P<command>{'|'.join(re.escape(meta['enter_command']) for meta in _REPLICA_KIND_META.values())})\s*$")
@@ -8244,10 +8243,6 @@ def _schedule_virtual_hall_auto_audit(text):
     _fire_and_forget(send_audit_log(text, scope="global", limit=180))
 
 
-def _make_virtual_hall_auto_flow_id(chat_id, identity_id, now):
-    return f"{int(chat_id or 0)}:{int(identity_id or 0)}:{int(float(now or 0) * 1000)}"
-
-
 def _upsert_virtual_hall_auto_flow(flow):
     if not isinstance(flow, dict):
         return False
@@ -8360,21 +8355,6 @@ def _find_virtual_hall_auto_opening_flow(reply_to_msg_id=0, send_as_id=0, leader
         if matches:
             return matches[0]
     return None
-
-
-def _has_active_virtual_hall_auto_flow(replica_chat_id, leader_identity_id, now=None):
-    flows = _cleanup_virtual_hall_auto_open_flows(now)
-    for flow in flows.values():
-        if not isinstance(flow, dict):
-            continue
-        if str(flow.get("phase") or "") not in _VIRTUAL_HALL_AUTO_OPEN_ACTIVE_PHASES:
-            continue
-        if int(flow.get("replica_chat_id") or 0) != int(replica_chat_id or 0):
-            continue
-        if int(flow.get("leader_identity_id") or 0) != int(leader_identity_id or 0):
-            continue
-        return True
-    return False
 
 
 def _find_latest_virtual_hall_auto_flow(replica_chat_id=0, phases=None, now=None):
@@ -11547,40 +11527,6 @@ def _get_virtual_hall_auto_dispatch_usernames(flow):
     return usernames
 
 
-def _merge_virtual_hall_auto_dispatch_usernames(flow, usernames, now, msg_id=0, sender_id=0):
-    if not isinstance(flow, dict):
-        return []
-    leader_username = _normalize_replica_username(flow.get("leader_username") or "")
-    dispatch_usernames = _get_virtual_hall_auto_dispatch_usernames(flow)
-    added = []
-    for username in _normalize_replica_username_list(usernames):
-        if username == leader_username or username in dispatch_usernames:
-            continue
-        if len(dispatch_usernames) >= 4:
-            break
-        dispatch_usernames.append(username)
-        added.append(username)
-    required_usernames = _normalize_replica_username_list([leader_username, *dispatch_usernames])
-    flow.update({
-        "phase": "monitoring",
-        "dispatch_msg_id": int(msg_id or 0),
-        "dispatch_sender_id": int(sender_id or 0),
-        "dispatch_seen_at": float(now or 0),
-        "dispatch_usernames": dispatch_usernames,
-        "required_usernames": required_usernames,
-        "allowed_usernames": required_usernames,
-        "expires_at": float(now or 0) + _VIRTUAL_HALL_AUTO_OPEN_TIMEOUT_SEC,
-        "updated_at": float(now or 0),
-    })
-    if added:
-        flow["dispatch_revision"] = int(flow.get("dispatch_revision") or 0) + 1
-    else:
-        flow["dispatch_revision"] = int(flow.get("dispatch_revision") or 0)
-    if not isinstance(flow.get("missing_join_requests"), dict):
-        flow["missing_join_requests"] = {}
-    return added
-
-
 def _virtual_hall_auto_missing_check_delay(user_count):
     return max(0, int(user_count or 0) - 1) * 2 + 2
 
@@ -11755,117 +11701,6 @@ async def _maybe_send_virtual_hall_auto_missing_dispatch_command(flow, accountin
     flow["missing_join_requests"] = requests
     delay = _set_virtual_hall_auto_missing_check_after(flow, now, len(eligible))
     flow["updated_at"] = float(now or 0)
-    _upsert_virtual_hall_auto_flow(flow)
-    _schedule_virtual_hall_auto_deferred_team_check(flow.get("flow_id"), delay)
-    return True
-
-
-async def _handle_virtual_hall_auto_open_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if not raw_text.startswith(_VIRTUAL_HALL_OPEN_COMMAND):
-        return False
-    if not _is_replica_listener_self_event(event, listener_account_id):
-        return True
-    match = _VIRTUAL_HALL_AUTO_OPEN_COMMAND_RE.match(raw_text)
-    if not match:
-        await _send_replica_group_message(event.client, event.chat_id, "用法：.开启虚天殿 <身份>", listener_account_id=listener_account_id, log_text="用法：.开启虚天殿 <身份>")
-        return True
-    selector = str(match.group("selector") or "").strip()
-    identity_id = resolve_identity_selector(selector)
-    if identity_id is None:
-        await _send_replica_group_message(event.client, event.chat_id, f"未找到身份：{selector}", listener_account_id=listener_account_id, log_text=f"未找到身份：{selector}")
-        return True
-    now = time.time()
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    if _has_active_virtual_hall_auto_flow(chat_id, identity_id, now):
-        await _send_replica_group_message(event.client, event.chat_id, f"身份 {selector} 已有自动虚天殿流程进行中", listener_account_id=listener_account_id, log_text=f"身份 {selector} 已有自动虚天殿流程进行中")
-        return True
-    leader_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-    flow_id = _make_virtual_hall_auto_flow_id(chat_id, identity_id, now)
-    flow = {
-        "flow_id": flow_id,
-        "phase": "opening",
-        "replica_chat_id": chat_id,
-        "listener_account_id": int(listener_account_id or 0),
-        "leader_identity_id": int(identity_id or 0),
-        "leader_username": leader_username,
-        "selector": selector,
-        "replica_command_msg_id": int(getattr(event, "id", 0) or 0),
-        "open_command_msg_id": 0,
-        "open_requested_at": now,
-        "kick_pending_usernames": {},
-        "kick_results": {},
-        "kicked_usernames": [],
-        "expires_at": now + _VIRTUAL_HALL_AUTO_OPEN_TIMEOUT_SEC,
-        "updated_at": now,
-        "last_error": "",
-    }
-    _upsert_virtual_hall_auto_flow(flow)
-    msg = await send_game_command(
-        _VIRTUAL_HALL_OPEN_COMMAND,
-        track=False,
-        send_as_id=identity_id,
-        **_replica_send_intent(
-            op_id=f"virtual_hall_auto_open:{chat_id}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
-            chain_id=f"virtual_hall_auto:{flow_id}",
-        ),
-    )
-    msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
-    if msg_id <= 0:
-        flow.update({"phase": "failed", "last_error": "开房命令发送失败", "expires_at": now + _VIRTUAL_HALL_AUTO_OPEN_DONE_TTL_SEC, "updated_at": time.time()})
-        _upsert_virtual_hall_auto_flow(flow)
-        await _send_virtual_hall_auto_replica_notice(flow, f".开启虚天殿 发送失败：{selector}")
-        return True
-    flow.update({"open_command_msg_id": msg_id, "updated_at": time.time()})
-    _upsert_virtual_hall_auto_flow(flow)
-    return True
-
-
-async def _handle_virtual_hall_auto_dissolve_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if raw_text != _VIRTUAL_HALL_DISSOLVE_COMMAND:
-        return False
-    if not _is_replica_listener_self_event(event, listener_account_id):
-        return True
-    now = time.time()
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    flow = _find_latest_virtual_hall_auto_flow(replica_chat_id=chat_id, phases={"waiting_dispatch", "monitoring"}, now=now)
-    if not flow:
-        await _send_replica_group_message(event.client, event.chat_id, "没有可解散的自动虚天殿副本", listener_account_id=listener_account_id, log_text="没有可解散的自动虚天殿副本")
-        return True
-    if await _request_virtual_hall_auto_dissolve(flow, [], now, manual=True):
-        await _send_virtual_hall_auto_replica_notice(flow, "已发送解散副本命令")
-    else:
-        await _send_virtual_hall_auto_replica_notice(flow, "解散副本命令发送失败")
-    return True
-
-
-async def _handle_virtual_hall_auto_dispatch_observer(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    replica_kind, room_id, usernames = _parse_replica_dispatch_command(getattr(event, "raw_text", "") or "")
-    if replica_kind != _REPLICA_KIND_VIRTUAL_HALL or not room_id or not usernames:
-        return False
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    flow = _find_virtual_hall_auto_flow_by_room(room_id, replica_chat_id=chat_id, phases={"waiting_dispatch", "monitoring"})
-    if not flow:
-        return False
-    now = time.time()
-    _merge_virtual_hall_auto_dispatch_usernames(
-        flow,
-        usernames,
-        now,
-        msg_id=getattr(event, "id", 0),
-        sender_id=getattr(event, "sender_id", 0),
-    )
-    delay = _set_virtual_hall_auto_missing_check_after(flow, now, len(_normalize_replica_username_list(usernames)))
     _upsert_virtual_hall_auto_flow(flow)
     _schedule_virtual_hall_auto_deferred_team_check(flow.get("flow_id"), delay)
     return True
@@ -14194,39 +14029,6 @@ async def _handle_replica_dispatch_group_command(event):
         participant_identity_ids=participant_identity_ids,
         participant_fallback_to_all=False,
     )
-
-
-async def _handle_replica_dispatch_command(event):
-    if not _get_replica_event_listener_account_id(event):
-        return False
-    replica_kind, replica_id, usernames = _parse_replica_dispatch_command(getattr(event, "raw_text", "") or "")
-    if not replica_kind or not replica_id:
-        return False
-    if not usernames:
-        return True
-    dispatch_participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind, dispatch=True)
-    identity_ids_by_username = _get_enabled_replica_identity_ids_by_username(
-        participant_identity_ids=dispatch_participant_ids,
-        fallback_to_all=False,
-    )
-    seen_identity_ids = set()
-    command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {replica_id}"
-    for username in usernames:
-        identity_id = identity_ids_by_username.get(username)
-        if not identity_id or identity_id in seen_identity_ids:
-            continue
-        seen_identity_ids.add(identity_id)
-        await send_game_command(
-            command,
-            track=False,
-            send_as_id=identity_id,
-            priority="urgent_reactive",
-            **_replica_send_intent(
-                op_id=f"replica_dispatch:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
-                chain_id=f"replica_dispatch:{replica_kind}:{replica_id}",
-            ),
-        )
-    return True
 
 
 async def _handle_legacy_replica_dispatch_notice(event):

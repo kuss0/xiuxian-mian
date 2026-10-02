@@ -2,6 +2,8 @@ import copy
 import contextvars
 from contextlib import contextmanager
 
+from .config_values import coerce_bool as _coerce_meta_bool
+
 from .config import (
     CHECKIN_WINDOW_END_HOUR_UTC,
     CHECKIN_WINDOW_START_HOUR_UTC,
@@ -1997,21 +1999,6 @@ def get_replica_run_state():
 def set_replica_run_state(records):
     _set_meta_dict("replica_run_state", records)
     return get_replica_run_state()
-
-
-def _coerce_meta_bool(value, default=False):
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    text = str(value).strip().casefold()
-    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
-        return True
-    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
-        return False
-    return bool(default)
 
 
 def _normalize_replica_virtual_hall_match_enabled_map(enabled_map):

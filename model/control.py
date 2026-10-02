@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import identity_refresh as _refresh
+from .config_values import coerce_bool as _coerce_control_bool
 from .profile_observation import (
     apply_profile_observation, field_clocks, observation_is_newer,
     telegram_profile_evidence, valid_evidence,
@@ -548,21 +549,6 @@ def get_message_box_shadow_status_text(limit=500):
             f"- 快照文件：{path}",
         ]
     )
-
-
-def _coerce_control_bool(value, default=False):
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    text = str(value).strip().casefold()
-    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
-        return True
-    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
-        return False
-    return bool(default)
 
 
 def _state_positive_int(key):

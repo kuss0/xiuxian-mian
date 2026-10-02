@@ -20,7 +20,20 @@ from functools import partial
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
+from .storage_bag_api_payload import (
+    DEFAULT_STORAGE_BAG_ITEM_NAME_MAP as _STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP,
+    parse_json_maybe as _tianjige_parse_json_maybe,
+    flatten_api_row as _tianjige_flatten_api_row,
+    storage_bag_api_candidate_from_value as _storage_bag_api_candidate_from_value,
+    storage_bag_api_normalize_item_name as _storage_bag_api_normalize_item_name,
+    storage_bag_api_item_count as _storage_bag_api_item_count,
+    storage_bag_api_add_item as _storage_bag_api_add_item,
+    storage_bag_api_resolve_item_name as _storage_bag_api_resolve_item_name,
+    storage_bag_api_extract_items as _storage_bag_api_extract_items,
+    storage_bag_api_extract_owner_fields as _storage_bag_api_extract_owner_fields,
+)
 from .message_keys import message_key_parts
+from .config_values import coerce_bool as _coerce_ui_bool
 from .profile_observation import apply_profile_observation, timestamp as profile_timestamp
 
 try:
@@ -1847,15 +1860,6 @@ def _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup):
     return identity_id
 
 
-def _storage_bag_api_candidate_from_value(value, *, normalize_suffix=False):
-    candidate = str(value or "").strip().lstrip("@")
-    if not candidate:
-        return ""
-    if normalize_suffix:
-        candidate = re.sub(r"-\d{4,}$", "", candidate).strip()
-    return candidate
-
-
 def _storage_bag_api_cultivator_candidates(identity_id):
     profile = get_send_as_profile(identity_id)
     raw_candidates = [
@@ -1878,137 +1882,6 @@ def _storage_bag_api_cultivator_candidates(identity_id):
         seen.add(key)
         candidates.append(candidate)
     return candidates
-
-
-def _storage_bag_api_normalize_item_name(value):
-    text = str(value or "").strip()
-    return text.strip("[]【】")
-
-
-_STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP = {
-    "item_fishing_bait_plain": "凡饵",
-    "item_fishing_bait_spirit_rice": "灵米饵",
-    "item_fishing_bait_demon_blood": "妖血饵",
-}
-
-
-def _storage_bag_api_item_count(value):
-    try:
-        return int(str(value or 0).replace(",", "") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _storage_bag_api_add_item(items, name, count):
-    name = _storage_bag_api_normalize_item_name(name)
-    count = _storage_bag_api_item_count(count)
-    if not name or count <= 0:
-        return
-    items[name] = items.get(name, 0) + count
-
-
-def _storage_bag_api_resolve_item_name(item_name, item_name_map):
-    item_name = _storage_bag_api_normalize_item_name(item_name)
-    return str((item_name_map or {}).get(item_name) or _STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP.get(item_name) or item_name).strip()
-
-
-def _storage_bag_api_extract_items(raw_inventory, item_name_map=None):
-    items = {}
-    seen_inventory = False
-
-    if isinstance(raw_inventory, list):
-        seen_inventory = True
-        for item in raw_inventory:
-            if not isinstance(item, dict):
-                continue
-            _storage_bag_api_add_item(
-                items,
-                item.get("name")
-                or item.get("item_name")
-                or item.get("display_name")
-                or item.get("title")
-                or _storage_bag_api_resolve_item_name(item.get("item_id") or item.get("id"), item_name_map),
-                item.get("quantity") or item.get("amount") or item.get("count") or item.get("num") or item.get("value"),
-            )
-        return items, seen_inventory
-
-    if not isinstance(raw_inventory, dict):
-        return items, seen_inventory
-
-    seen_inventory = True
-    for key in ("items", "current", "materials", "inventory", "storage", "bag", "snapshots"):
-        value = raw_inventory.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    _storage_bag_api_add_item(
-                        items,
-                        item.get("name")
-                        or item.get("item_name")
-                        or item.get("display_name")
-                        or item.get("title")
-                        or _storage_bag_api_resolve_item_name(item.get("item_id") or item.get("id"), item_name_map),
-                        item.get("quantity") or item.get("amount") or item.get("count") or item.get("num") or item.get("value"),
-                    )
-        elif isinstance(value, dict):
-            if key in {"materials", "inventory", "storage", "bag"}:
-                for item_name, amount in value.items():
-                    if isinstance(amount, dict):
-                        _storage_bag_api_add_item(
-                            items,
-                            amount.get("name")
-                            or amount.get("item_name")
-                            or amount.get("display_name")
-                            or amount.get("title")
-                            or _storage_bag_api_resolve_item_name(item_name, item_name_map),
-                            amount.get("quantity") or amount.get("amount") or amount.get("count") or amount.get("num") or amount.get("value"),
-                        )
-                    else:
-                        _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
-            elif key == "items":
-                for item_name, amount in value.items():
-                    _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
-
-    if not items:
-        for item_name, amount in raw_inventory.items():
-            if item_name in {"owner", "owner_username", "source", "event_time", "raw_message_id", "chat_id", "msg_id", "updated_at"}:
-                continue
-            if isinstance(amount, (int, float, str)):
-                _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
-    return items, seen_inventory
-
-
-def _storage_bag_api_extract_owner_fields(row):
-    if not isinstance(row, dict):
-        return 0, ""
-    identity_id = 0
-    row = _tianjige_flatten_api_row(row)
-    for key in (
-        "identity_id",
-        "send_as_id",
-        "telegram_id",
-        "telegram_user_id",
-        "tg_id",
-        "user_id",
-        "character_id",
-        "cultivator_id",
-        "owner_id",
-        "id",
-    ):
-        try:
-            candidate = int(row.get(key) or 0)
-        except (TypeError, ValueError):
-            candidate = 0
-        if candidate != 0:
-            identity_id = candidate
-            break
-    owner_text = ""
-    for key in ("owner", "owner_username", "username", "telegram_username", "dao_name", "daohao", "label", "role_name", "name"):
-        value = str(row.get(key) or "").strip()
-        if value:
-            owner_text = value
-            break
-    return identity_id, owner_text
 
 
 def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_owner_text=""):
@@ -2222,43 +2095,6 @@ def _tianjige_compact_jsonable(value, *, max_items=8, max_depth=2):
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return _tianjige_string(value)
-
-
-def _tianjige_parse_json_maybe(value):
-    if isinstance(value, str):
-        text = value.strip()
-        if text and text[0] in "[{":
-            try:
-                return json.loads(text)
-            except ValueError:
-                return value
-    return value
-
-
-def _tianjige_flatten_api_row(row):
-    row = row if isinstance(row, dict) else {}
-    flat = {}
-    containers = (
-        "user",
-        "owner",
-        "profile",
-        "character",
-        "cultivator",
-        "role",
-        "player",
-        "status_info",
-        "state",
-    )
-    for key in containers:
-        value = _tianjige_parse_json_maybe(row.get(key))
-        if isinstance(value, dict):
-            flat.update(value)
-    flat.update(row)
-
-    dongfu = _tianjige_parse_json_maybe(row.get("dongfu") or row.get("cave"))
-    if isinstance(dongfu, dict):
-        flat.setdefault("dongfu", dongfu)
-    return flat
 
 
 def _tianjige_extract_known_fields(row, names):
@@ -4431,21 +4267,6 @@ def _normalize_ui_int_list(raw_value, *, allow_negative=False):
         seen.add(item)
         normalized.append(item)
     return normalized
-
-
-def _coerce_ui_bool(value, default=False):
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    text = str(value).strip().casefold()
-    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
-        return True
-    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
-        return False
-    return bool(default)
 
 
 def _get_replica_account_options():
