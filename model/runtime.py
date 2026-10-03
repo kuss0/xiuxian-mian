@@ -2819,7 +2819,7 @@ def _note_log_delivery(text, chat_id, transport, outcome, started, parse_mode, *
             pass
 
 
-async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
+async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None, allow_unknown_fallback=True):
     if LOG_SEND_MODE == "bot" and time.time() >= _LOG_BOT_BACKOFF_UNTIL:
         started, outcome = time.monotonic(), "unknown"
         error_text = None
@@ -2840,13 +2840,22 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             if ok:
                 return True
             retry_after = _mark_log_bot_backoff(error_text)
+            if not allow_unknown_fallback and bot_delivery_outcome(False, error_text) != "unconfirmed":
+                print("routine summary Bot delivery unknown; account fallback skipped")
+                return False
             if retry_after:
                 print(f"_send_log_group_message bot backoff {retry_after}s: {error_text} | text={text}")
             else:
                 print(f"_send_log_group_message bot fallback: {error_text} | text={text}")
         except asyncio.TimeoutError:
+            if not allow_unknown_fallback:
+                print("routine summary Bot timeout; account fallback skipped")
+                return False
             print(f"_send_log_group_message bot timeout | text={text}")
         except Exception as e:
+            if not allow_unknown_fallback:
+                print("routine summary Bot outcome unproven; account fallback skipped")
+                return False
             print(f"_send_log_group_message bot failed: {e} | text={text}")
         finally:
             _note_log_delivery(text, LOG_GROUP_ID, "bot", outcome, started, parse_mode, error_text=error_text)
@@ -3351,7 +3360,7 @@ def get_audit_push_status_text():
 async def flush_low_priority_audit_summary():
     if LOG_GROUP_STRUCTURED_SUMMARY:
         async def send_summary(message):
-            return await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
+            return await _send_log_group_message(message, link_preview=False, parse_mode="HTML", allow_unknown_fallback=False)
         return await _get_audit_summary_store().flush(
             _format_low_priority_audit_summary, send_summary, _audit_summary_interval(),
         )

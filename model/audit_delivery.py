@@ -1,4 +1,4 @@
-"""Content-free telemetry for notification transport attempts, not game sends."""
+"""Notification delivery evidence and content-free telemetry, not game sends."""
 
 import hashlib
 import json
@@ -13,7 +13,7 @@ RECEIPT_PREFIX = "TG_NOTIFICATION_DELIVERY "
 
 
 def bot_delivery_outcome(ok, error_text):
-    """Classify receipts only; never use this to authorize a fallback send."""
+    """Classify evidence; transport callers must explicitly choose fallback policy."""
     if ok is True:
         return "confirmed"
     text = error_text.strip() if isinstance(error_text, str) else ""
