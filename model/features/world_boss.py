@@ -1894,12 +1894,19 @@ async def _run_world_boss_miniapp_automation(
         gate_detail += f"｜入口刷新 {run_state['miniapp_auto_launch_refresh_count']} 次"
     if joined_count < len(identity_ids) and failed and not settled:
         gate_detail += "｜探针未通过，后续身份未放行"
-    await send_audit_log(
-        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}{gate_detail}\n{details}",
+    notice = f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}{gate_detail}\n{details}"
+    signature = _miniapp_result_notice_signature(run_state)
+    delivered = await send_audit_log(
+        notice,
         scope="global",
         priority="high" if failed else "medium",
         limit=420,
     )
+    if delivered is True and len(notice.encode("utf-16-le")) // 2 <= 420:
+        latest = _get_run_state()
+        if latest.get("event_key") == event_key and _miniapp_result_notice_signature(latest) == signature:
+            latest["miniapp_result_notice_signature"] = signature
+            _set_run_state(latest)
 
 
 def _start_world_boss_miniapp_automation(
@@ -2185,6 +2192,23 @@ def _format_local_world_boss_result(parsed):
     return "\n".join(lines)
 
 
+def _miniapp_result_notice_signature(run_state):
+    payload = [run_state.get("event_key"), run_state.get("miniapp_auto_results") or []]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+
+
+def _redundant_miniapp_conclusion(run_state, result, local_result, rotation_advances):
+    return bool(
+        run_state.get("miniapp_only")
+        and result == "功成"
+        and not local_result
+        and not rotation_advances
+        and not any(_normalize_summary(run_state.get("summary")).values())
+        and run_state.get("miniapp_auto_results")
+        and run_state.get("miniapp_result_notice_signature") == _miniapp_result_notice_signature(run_state)
+    )
+
+
 def _miniapp_confirmed_contribution(run_state):
     identities = 0
     hits = 0
@@ -2290,12 +2314,15 @@ async def _close_event(parsed, now, *, log=True):
                 detail += f"，下场切换 {_identity_label(next_id)}" if next_id else "，该账户轮换完成"
                 rotation_text.append(detail)
             base += "\n身份轮换：" + "；".join(rotation_text)
-        await send_audit_log(
-            base,
-            scope="global",
-            priority="medium",
-            limit=700,
-        )
+        if _redundant_miniapp_conclusion(run_state, result, local_result, rotation_advances or parsed.get("rare_drops")):
+            console_log(base, scope="global", limit=700)
+        else:
+            await send_audit_log(
+                base,
+                scope="global",
+                priority="medium",
+                limit=700,
+            )
     latest_state = _get_run_state(now)
     if str(latest_state.get("event_key") or "") == event_key:
         latest_state["miniapp_conclusion_evidence"] = conclusion_evidence

@@ -2100,6 +2100,79 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(same_account_weak, selected)
         self.assertEqual(len(selected), len({state_module.get_identity_account(identity_id) for identity_id in selected}))
 
+    async def test_miniapp_notice_marker_requires_confirmed_untruncated_delivery(self):
+        for delivered, error in ((True, ""), (False, ""), (None, ""), (True, "x" * 600)):
+            with self.subTest(delivered=delivered, long_error=bool(error)):
+                state_module.set_world_boss_run_state({"event_key": "notice-test", "miniapp_only": True})
+                result = {"status": "settled", "joined_count": 1, "results": [{
+                    "identity_id": 301299112, "phase": "battle", "ok": True,
+                    "status": "settled", "summary": {"hits": 16, "perfects": 14},
+                }]}
+                with (
+                    patch.object(world_boss, "save_state", return_value=True),
+                    patch.object(world_boss, "run_world_boss_miniapp_event", new=AsyncMock(return_value=result)),
+                    patch.object(world_boss, "send_audit_log", new=AsyncMock(return_value=delivered)),
+                    patch.object(world_boss, "_update_world_boss_identity_eligibility_from_result"),
+                    patch.object(world_boss, "_identity_label", return_value=error or "Baji"),
+                ):
+                    await world_boss._run_world_boss_miniapp_automation(
+                        "notice-test", [301299112], None, "", 0, 0,
+                    )
+                state = state_module.get_world_boss_run_state()
+                self.assertEqual(delivered is True and not error, bool(state.get("miniapp_result_notice_signature")))
+
+    async def test_miniapp_notice_completion_does_not_overwrite_new_event(self):
+        state_module.set_world_boss_run_state({"event_key": "old-event", "miniapp_only": True})
+
+        async def switch_event(*_args, **_kwargs):
+            state_module.set_world_boss_run_state({"event_key": "new-event", "active": True})
+            return True
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=AsyncMock(return_value={
+                "status": "settled", "joined_count": 1, "results": [],
+            })),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock(side_effect=switch_event)),
+        ):
+            await world_boss._run_world_boss_miniapp_automation("old-event", [301299112], None, "", 0, 0)
+        state = state_module.get_world_boss_run_state()
+        self.assertEqual("new-event", state["event_key"])
+        self.assertTrue(state["active"])
+        self.assertFalse(state.get("miniapp_result_notice_signature"))
+
+    async def test_confirmed_miniapp_notice_suppresses_only_redundant_success(self):
+        now = 1_781_319_200.0
+        for case in ("duplicate", "unconfirmed", "changed", "other_event", "failure", "reward", "rare_drop"):
+            with self.subTest(case=case):
+                state = {
+                    "event_key": "notice-test", "miniapp_only": True,
+                    "miniapp_auto_results": [{"identity_id": 301299112, "phase": "battle",
+                                              "ok": True, "status": "settled", "summary": {"hits": 16}}],
+                }
+                state["miniapp_result_notice_signature"] = world_boss._miniapp_result_notice_signature(state)
+                if case == "unconfirmed":
+                    state.pop("miniapp_result_notice_signature")
+                if case == "changed":
+                    state["miniapp_auto_results"][0]["summary"]["hits"] = 17
+                if case == "other_event":
+                    state["event_key"] = "next-event"
+                state_module.set_world_boss_run_state(state)
+                parsed = {"result": "败退" if case == "failure" else "功成", "key": "end"}
+                if case == "rare_drop":
+                    parsed["rare_drops"] = [{"username": "someone", "reward": "rare"}]
+                with (
+                    patch.object(world_boss, "save_state", return_value=True),
+                    patch.object(world_boss, "_maybe_log_progress", new=AsyncMock()),
+                    patch.object(world_boss, "_advance_world_boss_rotations", return_value=[]),
+                    patch.object(world_boss, "_format_local_world_boss_result", return_value="new reward" if case == "reward" else ""),
+                    patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit,
+                    patch.object(world_boss, "console_log"),
+                ):
+                    await world_boss._close_event(parsed, now)
+                self.assertEqual(0 if case == "duplicate" else 1, audit.await_count)
+                self.assertFalse(state_module.get_world_boss_run_state()["active"])
+
     async def test_miniapp_conclusion_logs_local_contribution_and_rewards(self):
         now = 1_781_319_200.0
         self._register(8659059191, label="WalterWA2000", world_boss_enabled=True)

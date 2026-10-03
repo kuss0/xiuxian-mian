@@ -47,6 +47,22 @@ Environment=LOG_GROUP_STRUCTURED_SUMMARY=0
 - 结构化摘要继续关闭；独立存储故障/held 状态监测及结果未知回退策略
   仍未完整收尾，不因为这次采样全成功就跳过。
 
+### TG-03 首个收口：Boss 无新增事实的胜利结论
+
+个人 MiniApp 结果通知返回明确 `True` 且正文未超过展示上限时，记录本场
+事件及完整结果的签名。发送完成后重新读取状态，仅在事件和结果仍一致时
+写入标记，不覆盖发送期间开始的新事件。
+
+只有 MiniApp-only、全服功成、结果签名一致、无命令链贡献、无本方新增排名
+或奖励、无稀有掉落、无轮换时，后续全服结论才仅写本地日志。状态核销照常
+执行。发送失败或未知、正文截断、结论先到、结果变化、全服失败均保留通知。
+不新增补发，不修改共享发送层，结构化摘要开关仍关闭。
+
+回归：225 tests / 14 subtests passed，Ruff 和 diff 检查通过；测试覆盖确认
+回执、失败/未知、截断、跨事件竞态、结果变化、新奖励和全服失败。现有结论
+校准及迟到结果测试一并通过。生产降噪效果仍需下一场自然事件验证，TG-03
+不作整体销号；通知并发交错时保守保留通知，不声称 exactly-once。
+
 ```bash
 journalctl -u xiuxian.service --since '2026-10-03 12:44:51' -o json --no-pager | .venv/bin/python tools/notification_report.py --project-root /opt/xiuxian-main --journal - --output data/analysis/notification-rollout-20261003.json
 ```
