@@ -80,3 +80,26 @@ Production acceptance still needs real summary receipts, at least 24 hours of
 observation and a complete natural daily result. Unknown delivery has no natural
 sample yet. Further module grouping, default urgent fallback, operator resolution
 of held batches, gift handoff, backup delivery and MiniApp debts remain open.
+
+## October 3 Limited Production Rollout
+
+- `923e8ebd` fast-forwarded into production and pushed to `xiuxian-mian/main`.
+- Controlled stop at 21:38:14 CST; old worker exited normally at 21:38:19.
+  Snapshot `/root/xiuxian-before-summary-gray-20261003-2138.db` passed
+  `quick_check`. Startup at 21:40:24, main PID `944072`, observer PID `944086`.
+  Both report `NRestarts=0`. Short observer downtime alerts correspond to this
+  explicit rollout, not a crash. Watchdog remained running.
+- Runtime process environment: delivery metrics 1, structured summary 1.
+  `.env` has neither key. Observer drop-in adds the required-store check.
+  Store creation and pending records independently confirm the enabled route.
+- 24 identities recovered. Compared with the stopped-state backup, all 52
+  module enable columns are unchanged. WA/Baji fishing, rift and wild-training
+  timers are unchanged. Startup staggered two already-due timers normally;
+  this is not a claim that every timestamp is byte-for-byte identical.
+- Post-merge isolated regression: **66 passed, 11 subtests**. At 21:41:59,
+  observer `ok`, summary available, 2 pending records, held/unresolved/retired 0.
+  Watchdog ok, game pending empty. WA's next wild action is 00:30:07, outside
+  its preparation window. Inactive listener remains inactive.
+- The first natural structured send has not yet occurred at this checkpoint.
+  Its window opens around 22:10:25 CST; no synthetic notification or forced
+  game action was used. Keep 24h/day-result acceptance open.
