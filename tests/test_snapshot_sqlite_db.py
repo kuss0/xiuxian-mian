@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import shlex
 import shutil
@@ -142,6 +143,7 @@ def test_r2_script_uploads_only_verified_snapshots_and_restores_services(tmp_pat
     scripts = {
         "systemctl": 'printf "systemctl %s\\n" "$*" >> "$CALL_LOG"\n',
         "restic": 'printf "restic %s\\n" "$*" >> "$CALL_LOG"\n',
+        "logger": "exit 0\n",
         "cp": "exit 0\n",
         "rsync": (
             "exit 24\n" if failure == "rsync" else f'exec {shlex.quote(rsync)} "$@"\n'
@@ -157,12 +159,17 @@ def test_r2_script_uploads_only_verified_snapshots_and_restores_services(tmp_pat
         "export RESTIC_PASSWORD=fake\nexport RESTIC_REPOSITORY=/unused\n"
     )
     call_log = tmp_path / "calls"
-    snapshot = tmp_path / "snapshot"
+    backup_root = tmp_path / "backups"
+    snapshot = backup_root / "snapshot"
     backup = snapshot / "project" / "data" / "state" / "chaogu_state.db"
     backup.parent.mkdir(parents=True)
     backup.write_bytes(b"previous snapshot")
     stale_wal = Path(str(backup) + "-wal")
     stale_wal.write_bytes(b"old WAL must not be replayed")
+    (snapshot / ".backup-owner.json").write_text(json.dumps({
+        "version": 2, "kind": "xiuxian", "instance": "test-xiuxian-instance",
+        "target": str(snapshot), "sources": [str(project)],
+    }))
     try:
         result = subprocess.run(
             ["bash", str(root / "deploy" / "xiuxian-r2-backup.sh")],
@@ -173,17 +180,19 @@ def test_r2_script_uploads_only_verified_snapshots_and_restores_services(tmp_pat
                 "ENV_FILE": str(env_file),
                 "PROJECT_DIR": str(project),
                 "SNAPSHOT_DIR": str(snapshot),
-                "LOCK_FILE": str(tmp_path / "lock"),
+                "BACKUP_ROOT": str(backup_root),
+                "BACKUP_INSTANCE_ID": "test-xiuxian-instance",
+                "READY_STABLE_SEC": "0.01",
                 "CALL_LOG": str(call_log),
                 "XIUXIAN_BACKUP_STOP_SERVICES": "1",
                 "RESTIC_CHECK_AFTER": "0",
             },
             text=True, capture_output=True, timeout=20,
         )
-        calls = call_log.read_text().splitlines()
+        calls = call_log.read_text().splitlines() if call_log.exists() else []
         stopped = [line for line in calls if line.startswith("systemctl stop ")]
         started = [line for line in calls if line.startswith("systemctl start ")]
-        assert len(stopped) == 3
+        assert len(stopped) == (0 if failure == "database" else 4)
         assert started == [line.replace(" stop ", " start ") for line in reversed(stopped)]
         uploads = [line for line in calls if line.startswith("restic backup ")]
         if failure:
@@ -196,8 +205,8 @@ def test_r2_script_uploads_only_verified_snapshots_and_restores_services(tmp_pat
             assert result.returncode == 0, result.stdout + result.stderr
             assert len(uploads) == 1
             assert not stale_wal.exists()
-            assert "quick_check=ok" in result.stdout
             with sqlite3.connect(backup.as_uri() + "?immutable=1", uri=True) as copied:
+                assert copied.execute("PRAGMA quick_check").fetchone() == ("ok",)
                 assert copied.execute("SELECT * FROM facts").fetchone() == ("confirmed",)
     finally:
         if connection:
