@@ -103,3 +103,22 @@ of held batches, gift handoff, backup delivery and MiniApp debts remain open.
 - The first natural structured send has not yet occurred at this checkpoint.
   Its window opens around 22:10:25 CST; no synthetic notification or forced
   game action was used. Keep 24h/day-result acceptance open.
+
+### First Natural Summary And Urgent-Route Sample
+
+At 22:10:37 CST, Bot receipt `72d2beba4f2f4fb88bb3fac32b8a183d` confirmed the
+first structured summary: 230 visible UTF-16 units, 4 lines, no mention links,
+688ms. The previously observed two pending startup records became pending 0,
+held 0, retired 0; next window 22:40:35. Observer at 22:13:46 reported `ok`.
+This confirms the existing low-priority bucket's natural delivery/checkpoint
+path, not a natural deep-retreat/YuanYing sample: both rows had empty summary_kind.
+
+At 22:11:59, the existing final (3/3) Hehuan follow-up independently received
+Bot confirmation, 82 UTF-16 units and one explicit mention link. Its real
+delivery demonstrates the urgent route was not held for the summary window.
+No extra gameplay or test notification was triggered for either sample.
+
+Main PID remains `944072`, observer `944086`, watchdog `553969`; no automatic
+restarts. The next configured YuanYing windows start around October 4 00:30,
+and deep retreat around 00:59. Keep natural migrated-module, unknown-delivery,
+24h and complete daily-result acceptance open. No overall TG debt closure.

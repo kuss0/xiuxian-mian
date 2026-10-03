@@ -97,3 +97,9 @@ There is no runtime rollback for this source-only delivery. A later rollback
 of the shared engine needs coordinated review of all its callers and a copy
 of the current installation; reverting only this wrapper to its old shell
 implementation would discard the reviewed recovery and retention contracts.
+
+Delivery checkpoint: `3664f884` merged and pushed to `xiuxian-mian/main`.
+Preserved the existing engine executable bit and all installed file hashes.
+Post-merge isolated backup tests: **35 passed**. At 22:13, main PID `944072`
+and both monitors remained active with no automatic restarts; health/watchdog
+ok. Only the unrelated auto-updated quiz bank remains dirty in production.
