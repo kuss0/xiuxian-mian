@@ -32,6 +32,21 @@ Environment=LOG_GROUP_STRUCTURED_SUMMARY=0
 
 ## 采样与后续
 
+### 2026-10-03 下午复核
+
+- 当前累计采到 7 次传输尝试，均 confirmed；相同正文重复 0，显式
+  mention 链接 2，送达耗时 P50 667ms / P95 1048ms。样本不足以评估全天
+  降噪比例，且不覆盖独立 watchdog/日报。
+- Boss 事件 `2026-10-03:12599460` 实际发了三条：13:40:15 入场、
+  13:42:51 个人结算、13:44:21 全服结论附个人汇总。后两条不是相同正文，
+  但重复展示同场个人成果，属于 TG-03 待收口项，不能以正文重复为零销号。
+- 收口约束：保留有时效的入场提醒；同场个人结果只汇报一次。全服结束
+  如果带来此前未知的个人结算或奖励，仍需保留新增事实；不得仅凭全服
+  胜利生成个人成功。需覆盖结论先到、个人结算先到和失败后回捞的测试，
+  不直接把所有全服结论静音。
+- 结构化摘要继续关闭；独立存储故障/held 状态监测及结果未知回退策略
+  仍未完整收尾，不因为这次采样全成功就跳过。
+
 ```bash
 journalctl -u xiuxian.service --since '2026-10-03 12:44:51' -o json --no-pager | .venv/bin/python tools/notification_report.py --project-root /opt/xiuxian-main --journal - --output data/analysis/notification-rollout-20261003.json
 ```
