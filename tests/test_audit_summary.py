@@ -216,10 +216,34 @@ class NotificationDeliveryRuntimeTests(IsolatedAsyncioTestCase):
 
     async def test_disabled_metrics_and_unconfirmed_secondary_response(self):
         with patch.object(runtime, "emit_delivery_receipt") as receipt, \
-                patch.object(runtime, "_send_chat_via_log_bot", return_value=(False, "denied")):
+                patch.object(runtime, "_send_chat_via_log_bot", return_value=(False, 'HTTP 403: {"ok":false,"error_code":403}')):
             assert await runtime.send_log_bot_notification(-1, "body") is False
             assert receipt.call_args.kwargs["outcome"] == "unconfirmed"
             receipt.reset_mock()
             with patch.object(runtime, "LOG_GROUP_DELIVERY_METRICS", False):
                 assert await runtime.send_log_bot_notification(-1, "body") is False
             receipt.assert_not_called()
+
+    async def test_returned_timeout_is_unknown_without_changing_account_fallback(self):
+        account_client = MagicMock()
+        with patch.object(runtime, "emit_delivery_receipt") as receipt, \
+                patch.object(runtime, "_send_log_group_via_bot", return_value=(False, "timeout: read timed out")), \
+                patch.object(runtime, "_get_any_authed_client_with_account", return_value=(1, account_client)), \
+                patch.object(runtime, "_run_account_rpc", AsyncMock()) as account:
+            assert await runtime._send_log_group_message("body") is True
+        account.assert_awaited_once()
+        assert [(c.kwargs["transport"], c.kwargs["outcome"]) for c in receipt.call_args_list] == [("bot", "unknown"), ("account", "confirmed")]
+
+    async def test_requests_timeout_reaches_secondary_receipt_as_unknown(self):
+        with patch.object(runtime, "emit_delivery_receipt") as receipt, \
+                patch.object(runtime.requests, "post", side_effect=runtime.requests.exceptions.ReadTimeout("read timeout")):
+            assert await runtime.send_log_bot_notification(-1, "body") is False
+        assert receipt.call_args.kwargs["outcome"] == "unknown"
+
+    async def test_classifier_failure_cannot_change_backoff_or_return_value(self):
+        error = 'HTTP 429: {"ok":false,"error_code":429,"parameters":{"retry_after":60}}'
+        with patch.object(runtime, "bot_delivery_outcome", side_effect=RuntimeError("metrics only")), \
+                patch.object(runtime, "_send_chat_via_log_bot", return_value=(False, error)), \
+                patch.object(runtime, "_mark_log_bot_backoff", return_value=60) as backoff:
+            assert await runtime.send_log_bot_notification(-1, "body") is False
+        backoff.assert_called_once_with(error)

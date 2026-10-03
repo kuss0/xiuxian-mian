@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from model.audit_delivery import RECEIPT_PREFIX, delivery_receipt, emit_delivery_receipt
+from model.audit_delivery import RECEIPT_PREFIX, bot_delivery_outcome, delivery_receipt, emit_delivery_receipt
 from tools.notification_report import delivery_report, inventory
 
 
@@ -13,6 +13,31 @@ def receipt(**changes):
 
 def line(value):
     return RECEIPT_PREFIX + json.dumps(value)
+
+
+@pytest.mark.parametrize("error", [
+    "timeout: read timed out", "proxy error: unreachable", "Connection reset by peer",
+    'HTTP 502: {"ok":false,"error_code":502}', 'HTTP 403: <html>proxy</html>',
+    'HTTP 500: {"ok":false,"error_code":400}', 'HTTP 200: {"ok":false,"error_code":400}',
+    '{"ok":false,"error_code":true}', '{"ok":false,"error_code":"429"}',
+    '{"ok":true}', '{"ok":false}', "null", "[]", "denied", "", "[" * 2000 + "]" * 2000,
+])
+def test_unproven_bot_failures_are_unknown(error):
+    assert bot_delivery_outcome(False, error) == "unknown"
+
+
+@pytest.mark.parametrize("error", [
+    "missing bot token", "invalid chat id", '{"ok":false,"error_code":400}',
+    'HTTP 403: {"ok":false,"error_code":403}',
+    'HTTP 429: {"ok":false,"error_code":429,"parameters":{"retry_after":60}}',
+])
+def test_explicit_bot_rejections_are_unconfirmed(error):
+    assert bot_delivery_outcome(False, error) == "unconfirmed"
+
+
+def test_only_literal_success_is_confirmed():
+    assert bot_delivery_outcome(True, "") == "confirmed"
+    assert bot_delivery_outcome("true", "") == "unknown"
 
 
 def test_receipt_contains_only_metadata_and_counts_visible_unicode():

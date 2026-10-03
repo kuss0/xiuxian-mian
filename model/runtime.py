@@ -18,7 +18,7 @@ from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
 from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text
-from .audit_delivery import emit_delivery_receipt
+from .audit_delivery import bot_delivery_outcome, emit_delivery_receipt
 from .audit_summary import SUMMARY_TITLES, format_grouped_summary, routine_bucket_key
 from .audit_summary_store import AuditSummaryStore
 from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
@@ -2775,6 +2775,7 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
         print(f"send_log_bot_notification bot backoff active | chat={chat_id}")
         return False
     started, outcome = time.monotonic(), "unknown"
+    error_text = None
     try:
         ok, error_text = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2787,7 +2788,7 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
             ),
             timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
         )
-        outcome = "confirmed" if ok else "unconfirmed"
+        outcome = "confirmed" if ok else "unknown"
     except asyncio.TimeoutError:
         print(f"send_log_bot_notification timeout | chat={chat_id}")
         return False
@@ -2795,7 +2796,7 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
         print(f"send_log_bot_notification failed: {exc} | chat={chat_id}")
         return False
     finally:
-        _note_log_delivery(text, chat_id, "bot", outcome, started, parse_mode)
+        _note_log_delivery(text, chat_id, "bot", outcome, started, parse_mode, error_text=error_text)
     if ok:
         return True
     retry_after = _mark_log_bot_backoff(error_text)
@@ -2806,9 +2807,11 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
     return False
 
 
-def _note_log_delivery(text, chat_id, transport, outcome, started, parse_mode):
+def _note_log_delivery(text, chat_id, transport, outcome, started, parse_mode, *, error_text=None):
     if LOG_GROUP_DELIVERY_METRICS:
         try:
+            if transport == "bot" and outcome != "confirmed" and error_text is not None:
+                outcome = bot_delivery_outcome(False, error_text)
             emit_delivery_receipt(text, chat_id=chat_id, transport=transport, outcome=outcome,
                                   elapsed_sec=time.monotonic() - started, parse_mode=parse_mode)
         except Exception:
@@ -2819,6 +2822,7 @@ def _note_log_delivery(text, chat_id, transport, outcome, started, parse_mode):
 async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
     if LOG_SEND_MODE == "bot" and time.time() >= _LOG_BOT_BACKOFF_UNTIL:
         started, outcome = time.monotonic(), "unknown"
+        error_text = None
         try:
             ok, error_text = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -2832,7 +2836,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
                 ),
                 timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
             )
-            outcome = "confirmed" if ok else "unconfirmed"
+            outcome = "confirmed" if ok else "unknown"
             if ok:
                 return True
             retry_after = _mark_log_bot_backoff(error_text)
@@ -2845,7 +2849,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
         except Exception as e:
             print(f"_send_log_group_message bot failed: {e} | text={text}")
         finally:
-            _note_log_delivery(text, LOG_GROUP_ID, "bot", outcome, started, parse_mode)
+            _note_log_delivery(text, LOG_GROUP_ID, "bot", outcome, started, parse_mode, error_text=error_text)
     started, outcome = time.monotonic(), "unknown"
     try:
         account_id, _fb = _get_any_authed_client_with_account()

@@ -12,6 +12,34 @@ from telethon.extensions import html as telegram_html
 RECEIPT_PREFIX = "TG_NOTIFICATION_DELIVERY "
 
 
+def bot_delivery_outcome(ok, error_text):
+    """Classify receipts only; never use this to authorize a fallback send."""
+    if ok is True:
+        return "confirmed"
+    text = error_text.strip() if isinstance(error_text, str) else ""
+    if ok is not False:
+        return "unknown"
+    if text in {"missing bot token", "invalid chat id"}:
+        return "unconfirmed"
+    status = None
+    match = re.match(r"^HTTP (\d{3}):\s*(.*)$", text, re.DOTALL)
+    if match:
+        status = int(match[1])
+        text = match[2]
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return "unknown"
+    if not isinstance(body, dict) or body.get("ok") is not False:
+        return "unknown"
+    code = body.get("error_code")
+    if type(code) is int and 400 <= code < 500 and (status is None or status == code):
+        return "unconfirmed"
+    # Timeouts, connection/proxy failures, 5xx and malformed replies do not
+    # establish non-delivery, even when the requests helper returned normally.
+    return "unknown"
+
+
 def delivery_receipt(text, *, chat_id, transport, outcome, elapsed_sec, parse_mode=None):
     if transport not in {"bot", "account"} or outcome not in {"confirmed", "unconfirmed", "unknown"}:
         raise ValueError("Invalid notification transport result")
