@@ -259,10 +259,22 @@ class _WorldBossRealtimeFeed:
                                 self.reconnect_count += 1
                             first_connection = False
                             while not self._closed.is_set():
-                                raw_message = await asyncio.wait_for(
-                                    websocket.recv(),
-                                    timeout=WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC,
-                                )
+                                try:
+                                    raw_message = await asyncio.wait_for(
+                                        websocket.recv(),
+                                        timeout=WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC,
+                                    )
+                                except asyncio.TimeoutError:
+                                    # Quiet business state does not mean the socket is dead.
+                                    async def probe_connection():
+                                        pong = await websocket.ping()
+                                        await pong
+
+                                    await asyncio.wait_for(
+                                        probe_connection(),
+                                        timeout=WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC,
+                                    )
+                                    continue
                                 message = decode_world_boss_websocket_message(raw_message)
                                 if message.get("type") == "ping":
                                     await websocket.send('{"type":"pong"}')

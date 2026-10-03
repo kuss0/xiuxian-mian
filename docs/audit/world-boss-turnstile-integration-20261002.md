@@ -68,6 +68,39 @@
 
 The natural-event gate is not yet closed by the above standalone probes.
 
+## Natural-event checkpoint, 2026-10-03
+
+- Event `2026-10-03:12599460`: Baji (`301299112`) joined at 13:40:15
+  CST and recorded personal settlement at 13:42:51. The read-only production
+  `world_boss_run_state` contains accepted hits 16/16, accepted perfects 14,
+  damage 648043068 yi, grade A, quality score 100 and `full_window_run=true`.
+  These are personal battle results, separate from the 13:44:21 public victory.
+- The retained summary does not establish whether this event required and
+  accepted a Turnstile token. Do not close the verification-specific gate merely
+  because the personal battle settled; no extra live begin was sent to prove it.
+- Optional WebSocket feed reports three reconnects and a state timeout. Current
+  receive timeout is five seconds. Code inspection confirms this feed wakes
+  pre-battle HTTP polling; it does not drive hold/release timing. There is no
+  evidence attributing the two non-perfect hits to these reconnects. Server
+  message cadence remains to be established before changing timeout policy.
+- Focused offline regression on the current checkout: 201 tests and 3 subtests
+  passed across world_boss, world_boss_miniapp, world_boss_miniapp_runtime,
+  world_boss_turnstile and world_boss_turnstile_lifecycle. Live test DB access
+  was disabled. No gameplay settings, runtime code or service state changed.
+
+### Follow-up: distinguish idle sockets from failed sockets
+
+Code review found that a five-second receive timeout always discarded the
+WebSocket, even when the transport could still answer protocol pings. The
+follow-up patch probes ping/pong on receive timeout and reconnects only if that
+bounded probe fails. HTTP polling, action selection, verification policy and
+hold/release timing are unchanged. This fixes unnecessary reconnects on a quiet
+healthy socket; it does not prove all three observed reconnects had that cause.
+
+Offline tests cover both an idle socket with pong and a socket without pong.
+The focused suite now passes 203 tests and 3 subtests; Ruff passes. Natural-event
+reconnect behaviour still requires observation after deployment.
+
 ## Production checkpoint, 16:48 CST
 
 - Deployed and pushed `9adacd6c` to **xiuxian-mian/main**, not upstream origin.

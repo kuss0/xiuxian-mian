@@ -141,6 +141,84 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/ws/miniapp/xianxia-world-boss/state?ticket=ws-secret", received_url[0])
         await feed.close()
 
+    async def test_realtime_feed_keeps_quiet_socket_with_live_pong(self):
+        probes = asyncio.Event()
+        tickets = []
+
+        class FakeWebsocket:
+            async def recv(self):
+                await asyncio.Event().wait()
+
+            async def ping(self):
+                pong = asyncio.get_running_loop().create_future()
+                pong.set_result(None)
+                probes.set()
+                return pong
+
+        class FakeConnection:
+            async def __aenter__(self):
+                return FakeWebsocket()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        def transport(_request):
+            tickets.append(1)
+            return 200, {"ok": True, "ticket": "ws-secret"}
+
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11, token="qyz_SESSION", init_data="query_id=11",
+            transport=transport, connector=lambda *_args, **_kwargs: FakeConnection(),
+        )
+        with patch.object(world_boss_miniapp_runtime, "WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC", 0.01):
+            await feed.start()
+            try:
+                await asyncio.wait_for(probes.wait(), 1)
+                self.assertTrue(feed.connected)
+                self.assertEqual(1, len(tickets))
+                self.assertEqual(0, feed.reconnect_count)
+                self.assertEqual("", feed.last_error)
+            finally:
+                await feed.close()
+        self.assertIsNone(feed._task)
+
+    async def test_realtime_feed_reconnects_when_idle_probe_has_no_pong(self):
+        connected_again = asyncio.Event()
+        connections = []
+
+        class FakeWebsocket:
+            async def recv(self):
+                await asyncio.Event().wait()
+
+            async def ping(self):
+                return asyncio.get_running_loop().create_future()
+
+        class FakeConnection:
+            async def __aenter__(self):
+                connections.append(1)
+                if len(connections) >= 2:
+                    connected_again.set()
+                return FakeWebsocket()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11, token="qyz_SESSION", init_data="query_id=11",
+            transport=lambda _request: (200, {"ok": True, "ticket": "ws-secret"}),
+            connector=lambda *_args, **_kwargs: FakeConnection(),
+        )
+        with (
+            patch.object(world_boss_miniapp_runtime, "WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC", 0.01),
+            patch.object(world_boss_miniapp_runtime, "WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC", 0.01),
+        ):
+            await feed.start()
+            try:
+                await asyncio.wait_for(connected_again.wait(), 1)
+                self.assertGreaterEqual(feed.reconnect_count, 1)
+            finally:
+                await feed.close()
+
     async def test_realtime_feed_reconnects_after_connection_failure(self):
         connect_attempts = 0
         ticket_attempts = 0
