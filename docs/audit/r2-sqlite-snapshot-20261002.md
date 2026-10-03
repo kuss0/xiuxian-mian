@@ -1,5 +1,19 @@
 # R2 SQLite Snapshot Repair
 
+## October 3 Scheduled Acceptance
+
+The scheduled service ran at 04:38:16 CST and completed at 04:40:20 with
+`Result=success`, `ExecMainStatus=0`. Journal records restic snapshot
+`a816d136` saved, followed by a repository check with no errors. Main service
+and both monitors were restored before upload completed. The pending cloud
+upload acceptance below is therefore satisfied for this scheduled run.
+
+This does not certify the newer uncommitted backup-engine refactor: the
+working tree still contains changes to the wrapper and snapshot tests plus
+an untracked `deploy/backup_engine.py`. Source/deployment reconciliation and
+separate review/commit remain open. This evidence review did not trigger a
+backup, clear a failure marker, or modify those files.
+
 ## Incident
 
 At 2026-10-02 04:22:21 Asia/Shanghai, the existing R2 backup stopped the main

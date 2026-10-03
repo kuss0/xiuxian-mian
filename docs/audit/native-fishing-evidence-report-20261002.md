@@ -1,5 +1,26 @@
 # Native Fishing Evidence Report
 
+## October 3 Natural Acceptance
+
+At 17:02 CST the read-only report found 23 selected identities: four with
+today's accounted native settlements, 13 with no companion and six with no
+rod. No identity warnings remain. Baji, WA, Lpprceqei and xueuode5 each have
+five summary rods matching saved quota 5/5 and next-day timers. This includes
+a channel identity selected through public-auto while its standalone switch
+is off; it is not merely evidence from the three standalone-enabled accounts.
+
+Main journal shows Baji return at 01:48:37, five catch settlements from
+01:51:06 through 02:00:33, and relaunch at 02:00:38. WA returned at 02:29:49,
+settled five rods from 02:32:29 through 02:42:17 and relaunched at 02:42:22.
+Both natural handoffs completed inside the 15-minute fishing window.
+The 02:42:17 daily log records 20/20 rods and four characters. This confirms
+new-day summary generation, not an independently retained Telegram receipt.
+
+Natural public-native scheduling, ineligible-identity skips, voyage handoff
+and today's summary accounting are accepted. Gift/open follow-up remains a
+separate unfinished item. No timers, receipts or historical rows were edited,
+and no live game probe was used. The October 2 pending items below are history.
+
 ## Scope
 
 `tools/native_fishing_report.py` reads the local state DB in a single read-only
