@@ -18,6 +18,9 @@ from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
 from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text
+from .audit_delivery import emit_delivery_receipt
+from .audit_summary import SUMMARY_TITLES, format_grouped_summary, routine_bucket_key
+from .audit_summary_store import AuditSummaryStore
 from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
 
 from .account_membership import (
@@ -183,6 +186,8 @@ from .config import (
     CMD_FISHING_STATUS,
     LOG_BOT_TOKEN,
     LOG_GROUP_ID,
+    LOG_GROUP_DELIVERY_METRICS,
+    LOG_GROUP_STRUCTURED_SUMMARY,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS,
     LOG_SEND_MODE,
@@ -2769,6 +2774,7 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
     if time.time() < _LOG_BOT_BACKOFF_UNTIL:
         print(f"send_log_bot_notification bot backoff active | chat={chat_id}")
         return False
+    started, outcome = time.monotonic(), "unknown"
     try:
         ok, error_text = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2781,12 +2787,15 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
             ),
             timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
         )
+        outcome = "confirmed" if ok else "unconfirmed"
     except asyncio.TimeoutError:
         print(f"send_log_bot_notification timeout | chat={chat_id}")
         return False
     except Exception as exc:
         print(f"send_log_bot_notification failed: {exc} | chat={chat_id}")
         return False
+    finally:
+        _note_log_delivery(text, chat_id, "bot", outcome, started, parse_mode)
     if ok:
         return True
     retry_after = _mark_log_bot_backoff(error_text)
@@ -2797,8 +2806,19 @@ async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_
     return False
 
 
+def _note_log_delivery(text, chat_id, transport, outcome, started, parse_mode):
+    if LOG_GROUP_DELIVERY_METRICS:
+        try:
+            emit_delivery_receipt(text, chat_id=chat_id, transport=transport, outcome=outcome,
+                                  elapsed_sec=time.monotonic() - started, parse_mode=parse_mode)
+        except Exception:
+            # Metrics must not affect transport results, including during shutdown.
+            pass
+
+
 async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
     if LOG_SEND_MODE == "bot" and time.time() >= _LOG_BOT_BACKOFF_UNTIL:
+        started, outcome = time.monotonic(), "unknown"
         try:
             ok, error_text = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -2812,6 +2832,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
                 ),
                 timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
             )
+            outcome = "confirmed" if ok else "unconfirmed"
             if ok:
                 return True
             retry_after = _mark_log_bot_backoff(error_text)
@@ -2823,6 +2844,9 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             print(f"_send_log_group_message bot timeout | text={text}")
         except Exception as e:
             print(f"_send_log_group_message bot failed: {e} | text={text}")
+        finally:
+            _note_log_delivery(text, LOG_GROUP_ID, "bot", outcome, started, parse_mode)
+    started, outcome = time.monotonic(), "unknown"
     try:
         account_id, _fb = _get_any_authed_client_with_account()
         send_kwargs = {}
@@ -2849,6 +2873,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             client_obj=_fb,
             timeout=LOG_ACCOUNT_SEND_TIMEOUT_SEC,
         )
+        outcome = "confirmed"
         return True
     except asyncio.TimeoutError:
         print(f"_send_log_group_message account timeout | text={text}")
@@ -2856,6 +2881,8 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
     except Exception as e:
         print(f"_send_log_group_message account failed: {e} | text={text}")
         return False
+    finally:
+        _note_log_delivery(text, LOG_GROUP_ID, "account", outcome, started, parse_mode)
 
 
 def mono(text):
@@ -2980,6 +3007,23 @@ _low_priority_audit_bucket = {}
 _low_priority_audit_order = []
 _low_priority_audit_flush_task = None
 _low_priority_audit_seq = 0
+_audit_summary_store = None
+
+
+def _get_audit_summary_store():
+    global _audit_summary_store
+    if _audit_summary_store is None:
+        _audit_summary_store = AuditSummaryStore(
+            os.path.join(STATE_DIR, "audit_summary.db"),
+            _low_priority_audit_bucket, _low_priority_audit_order,
+        )
+    return _audit_summary_store
+
+
+async def resume_audit_summary():
+    if LOG_GROUP_STRUCTURED_SUMMARY:
+        await _get_audit_summary_store().resume(_audit_summary_interval())
+        _schedule_low_priority_audit_flush()
 
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
@@ -3120,18 +3164,19 @@ def _schedule_low_priority_audit_flush(*, force=False):
     global _low_priority_audit_flush_task
     if not _low_priority_audit_bucket:
         return
-    if not force and _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done():
+    if (LOG_GROUP_STRUCTURED_SUMMARY or not force) and _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done():
         return
     _low_priority_audit_flush_task = asyncio.create_task(_flush_low_priority_audit_after_delay())
     _background_tasks.add(_low_priority_audit_flush_task)
     _low_priority_audit_flush_task.add_done_callback(_handle_low_priority_audit_flush_done)
 
 
-def _queue_low_priority_audit(message_body, plain_body):
+def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", identity_id=None, content=""):
     global _low_priority_audit_seq
     now = time.time()
     now_text = datetime.fromtimestamp(now, TZ_LOCAL).strftime("%H:%M:%S")
-    key = str(plain_body or "").strip() or "-"
+    plain_key = str(plain_body or "").strip() or "-"
+    key = routine_bucket_key(summary_kind, identity_id, content) if summary_kind else plain_key
     row = _low_priority_audit_bucket.get(key)
     if row is None:
         _low_priority_audit_seq += 1
@@ -3139,14 +3184,21 @@ def _queue_low_priority_audit(message_body, plain_body):
             "count": 0,
             "first_ts": now_text,
             "last_ts": now_text,
-            "plain": key,
+            "plain": plain_key,
             "html": message_body,
             "seq": _low_priority_audit_seq,
+            "bucket_key": key,
+            "summary_kind": summary_kind,
+            "identity_id": identity_id,
+            "first_at": now,
         }
         _low_priority_audit_bucket[key] = row
         _low_priority_audit_order.append(key)
     row["count"] += 1
     row["last_ts"] = now_text
+    row["last_at"] = now
+    row["html"] = message_body
+    row["plain"] = plain_key
     _schedule_low_priority_audit_flush()
 
 
@@ -3165,6 +3217,8 @@ def _handle_low_priority_audit_flush_done(done_task):
     if exc is not None:
         console_log(f"⚠️ 低优先级日志汇总任务异常：{_truncate_log_text(exc, limit=120)}", limit=180)
         traceback.print_exception(type(exc), exc, exc.__traceback__)
+    if LOG_GROUP_STRUCTURED_SUMMARY:
+        _schedule_low_priority_audit_flush()
 
 
 def _snapshot_low_priority_audit_bucket():
@@ -3181,7 +3235,7 @@ def _snapshot_low_priority_audit_bucket():
 def _restore_low_priority_audit_rows(rows):
     global _low_priority_audit_seq
     for row in rows:
-        key = str(row.get("plain") or "").strip() or "-"
+        key = row.get("bucket_key") or str(row.get("plain") or "").strip() or "-"
         existing = _low_priority_audit_bucket.get(key)
         if existing is None:
             if int(row.get("seq") or 0) <= 0:
@@ -3191,10 +3245,18 @@ def _restore_low_priority_audit_rows(rows):
             _low_priority_audit_order.append(key)
             continue
         existing["count"] += int(row.get("count") or 0)
-        existing["last_ts"] = row.get("last_ts") or existing.get("last_ts")
+        if float(row.get("last_at") or 0) > float(existing.get("last_at") or 0):
+            for field in ("last_ts", "last_at", "plain", "html"):
+                if field in row:
+                    existing[field] = row[field]
+        if row.get("first_at") is not None:
+            existing["first_at"] = min(float(existing.get("first_at", row["first_at"])), row["first_at"])
 
 
 def _format_low_priority_audit_summary(rows):
+    if LOG_GROUP_STRUCTURED_SUMMARY:
+        return format_grouped_summary(rows, now_text=datetime.now(TZ_LOCAL).strftime("%H:%M:%S"),
+                                      max_details=LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS)
     total = sum(int(row.get("count") or 0) for row in rows)
     details = sorted(rows, key=lambda row: (-int(row.get("count") or 0), int(row.get("seq") or 0)))
     max_details = int(LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS or 20)
@@ -3222,6 +3284,31 @@ def get_low_priority_audit_pending_counts():
     return total, len(_low_priority_audit_bucket)
 
 
+def get_audit_summary_delivery_note():
+    """Current queue disposition for explicit user queries, not a send receipt."""
+    if not LOG_GROUP_STRUCTURED_SUMMARY or _audit_summary_store is None:
+        return ""
+    store = _audit_summary_store
+    total, _ = get_low_priority_audit_pending_counts()
+    lines = []
+    if store.last_error:
+        lines.append("摘要存储或投递出现异常，请查看日志推送状态；尚未确认送达的记录不会标记成功。")
+    if store.sending:
+        lines.append("当前摘要正在发送，未重复发起。")
+    elif total and store.clock() < store.next_at:
+        next_text = datetime.fromtimestamp(store.next_at, TZ_LOCAL).strftime("%m-%d %H:%M:%S")
+        lines.append(f"待发 {total} 条，等待摘要窗口：{next_text} UTC+8。")
+    elif total:
+        lines.append(f"待发 {total} 条尚未发送，保留至后续摘要窗口。")
+    if store.held:
+        # The active batch is checkpointed before transport; it is not yet an
+        # unresolved historical delivery while this process is still sending.
+        held = max(0, len(store.held) - int(store.sending))
+        if held:
+            lines.append(f"另有 {held} 批投递结果待核查，不自动重发。")
+    return "\n".join(lines) or "当前没有待发送的摘要。"
+
+
 def get_audit_push_status_text():
     total, kind_count = get_low_priority_audit_pending_counts()
     is_scheduled = _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done()
@@ -3231,11 +3318,18 @@ def get_audit_push_status_text():
         "中优先级: 实时发送日志群，不 @。",
         "高优先级: 实时发送日志群，并 @ 管理员。",
         "",
-        f"低优先级汇总间隔: {LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC} 秒",
+        f"低优先级汇总间隔: {_audit_summary_interval()} 秒",
         f"汇总明细上限: {LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS} 类",
         f"待汇总: {total} 条 / {kind_count} 类",
         f"定时任务: {'已排程' if is_scheduled else '未排程'}",
     ]
+    if LOG_GROUP_STRUCTURED_SUMMARY:
+        lines.append("Lab 结构化摘要: 仅闭关/元婴确认结果；其他中高优先级保持原策略。")
+        store = _audit_summary_store
+        if store is not None:
+            lines.append(f"摘要投递待核查: {len(store.held)} 批（不自动重发）；超期/超量仅保留计数: {store.retired_records} 条")
+            if store.last_error:
+                lines.append(f"摘要持久化/投递异常: {store.last_error}；紧急通知不受影响")
     rows = sorted(
         _low_priority_audit_bucket.values(),
         key=lambda row: (-int(row.get("count") or 0), int(row.get("seq") or 0)),
@@ -3251,11 +3345,17 @@ def get_audit_push_status_text():
 
 
 async def flush_low_priority_audit_summary():
+    if LOG_GROUP_STRUCTURED_SUMMARY:
+        async def send_summary(message):
+            return await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
+        return await _get_audit_summary_store().flush(
+            _format_low_priority_audit_summary, send_summary, _audit_summary_interval(),
+        )
     rows = _snapshot_low_priority_audit_bucket()
     if not rows:
         return True
-    message = _format_low_priority_audit_summary(rows)
     try:
+        message = _format_low_priority_audit_summary(rows)
         ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
     except Exception:
         ok = False
@@ -3267,25 +3367,43 @@ async def flush_low_priority_audit_summary():
     return ok
 
 
+def _audit_summary_interval():
+    return max(1800, LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC) if LOG_GROUP_STRUCTURED_SUMMARY else LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC
+
+
 async def _flush_low_priority_audit_after_delay():
-    await asyncio.sleep(LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC)
+    await asyncio.sleep(_audit_summary_interval())
     await flush_low_priority_audit_summary()
 
 
-async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None):
+async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None, summary_kind=""):
     if _should_suppress_dungeon_quiet_failure_audit(content, scope=scope, send_as_id=send_as_id):
         return True
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     audit_priority = _resolve_audit_priority(content, priority)
+    # Only explicitly migrated, confirmed routine observations may be regrouped.
+    # Human-action markers and interactive messages always keep the old route.
+    if not (LOG_GROUP_STRUCTURED_SUMMARY and summary_kind in SUMMARY_TITLES and not buttons
+            and audit_priority != AUDIT_PRIORITY_HIGH
+            and _resolve_audit_priority(content) != AUDIT_PRIORITY_HIGH):
+        summary_kind = ""
+    if summary_kind:
+        audit_priority = AUDIT_PRIORITY_LOW
     display_content = routine_copy(content) if audit_priority == AUDIT_PRIORITY_LOW else str(content or "")
     # Clip visible text, not markup bytes, so links/tags and astral characters
     # survive the caller's display budget. Console logging retains its own copy.
     identity_id = _resolve_log_identity(scope=scope, send_as_id=send_as_id)
     message_body = _format_log_identity_prefix(identity_id, html=True) + bounded_html(display_content, min(limit, 3000))
-    plain_body = _format_log_message(display_content, scope=scope, send_as_id=send_as_id, html=False, limit=limit)
+    plain_body = _format_log_message(display_content, scope=scope, send_as_id=send_as_id, html=False,
+                                    limit=min(limit, 3000) if LOG_GROUP_STRUCTURED_SUMMARY else limit)
     console_log(content, scope=scope, send_as_id=send_as_id, limit=min(limit, 180))
     if audit_priority == AUDIT_PRIORITY_LOW:
-        _queue_low_priority_audit(message_body, plain_body)
+        def add_row():
+            _queue_low_priority_audit(message_body, plain_body, summary_kind=summary_kind,
+                                     identity_id=identity_id, content=content)
+        if LOG_GROUP_STRUCTURED_SUMMARY:
+            return await _get_audit_summary_store().enqueue(add_row, _audit_summary_interval())
+        add_row()
         return True
     attention_line = ""
     if audit_priority == AUDIT_PRIORITY_HIGH:
@@ -5750,6 +5868,7 @@ __all__ = [
     "gc_ui_sessions",
     "flush_low_priority_audit_summary",
     "get_audit_push_status_text",
+    "get_audit_summary_delivery_note",
     "get_bot_health_snapshot",
     "get_bot_last_seen_at",
     "get_game_send_queue_snapshot",

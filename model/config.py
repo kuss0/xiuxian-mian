@@ -137,6 +137,8 @@ LOG_SEND_MODE = str(os.environ.get("LOG_SEND_MODE", "account") or "account").str
 if LOG_SEND_MODE not in {"account", "bot"}:
     LOG_SEND_MODE = "account"
 LOG_BOT_TOKEN = str(os.environ.get("LOG_BOT_TOKEN", "") or "").strip()
+LOG_GROUP_DELIVERY_METRICS = str(os.environ.get("LOG_GROUP_DELIVERY_METRICS", "0")).lower() in {"1", "true"}
+LOG_GROUP_STRUCTURED_SUMMARY = str(os.environ.get("LOG_GROUP_STRUCTURED_SUMMARY", "0")).lower() in {"1", "true"}
 try:
     LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC = max(60, int(os.environ.get("LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC", "600")))
 except (TypeError, ValueError):

@@ -25,6 +25,7 @@ from ..inventory_delta import prepare_inventory_delta, record_inventory_delta, s
 from ..miniapp_state import prepare_miniapp_state, record_miniapp_state
 from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
+from ..audit_summary import confirmed_summary_kind
 from ..state import get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_miniapp_state_records, set_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, get_day_key
 from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppRequestBudget, miniapp_retry_after_sec, require_miniapp_operation
@@ -4804,6 +4805,7 @@ async def _audit_cave_yuanying(message, identity_id, response):
     try:
         await send_audit_log(
             f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=320,
+            summary_kind=confirmed_summary_kind("yuanying", response),
         )
     except asyncio.CancelledError:
         raise MiniAppFlowCancelled(response) from None
@@ -5763,6 +5765,7 @@ async def _audit_cave_retreat(message, identity_id, response, *, priority="low")
     try:
         await send_audit_log(
             f"🧘 {message}", scope="identity", send_as_id=identity_id, priority=priority, limit=260,
+            summary_kind=confirmed_summary_kind("deep_retreat", response),
         )
     except asyncio.CancelledError:
         raise MiniAppFlowCancelled(response) from None

@@ -236,6 +236,7 @@ from .message_box import (
 )
 from .verified_event import from_telegram_event, is_new_delivery, telegram_event_timestamp
 from .runtime import (
+    resume_audit_summary,
     MAINTENANCE_PAUSE_SOURCE,
     _fire_and_forget,
     _is_logged_game_bot_reply,
@@ -4132,6 +4133,7 @@ async def bootstrap():
     loaded = load_state()
     if not loaded and has_persisted_identity_rows():
         raise RuntimeError("SQLite 状态加载失败，已阻止首次初始化以避免覆盖既有身份计时器。")
+    await resume_audit_summary()
     saved_accounts = get_accounts()
 
     # 多账号模式下只启动账号 client，避免主 session 也挂一个空转 Telegram 会话。

@@ -285,6 +285,7 @@ from .runtime import (
     clear_pending_tasks_by_commands,
     flush_low_priority_audit_summary,
     get_audit_push_status_text,
+    get_audit_summary_delivery_note,
     get_game_send_queue_snapshot,
     is_retired_miniapp_group_command,
     get_low_priority_audit_pending_counts,
@@ -6662,13 +6663,13 @@ async def handle_log_group_command(event):
     if RE_CMD_AUDIT_FLUSH_SUMMARY.match(text):
         total, kind_count = get_low_priority_audit_pending_counts()
         if total <= 0:
-            body = "当前没有待汇总的低优先级日志。"
+            body = get_audit_summary_delivery_note() or "当前没有待汇总的低优先级日志。"
         else:
             flushed = await flush_low_priority_audit_summary()
             if flushed:
                 body = f"已发送低优先级日志汇总：{total} 条 / {kind_count} 类。"
             else:
-                body = f"发送失败，明细已保留，稍后会自动重试：{total} 条 / {kind_count} 类。"
+                body = get_audit_summary_delivery_note() or f"发送失败，明细已保留，稍后会自动重试：{total} 条 / {kind_count} 类。"
         await _reply_log_group_card(
             event,
             "低优先级日志汇总",
