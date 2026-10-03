@@ -1,5 +1,7 @@
 # Telegram 通知第一阶段上线
 
+后续更新：13:38:07 已上线回执分类修正 `f149bbe4`，见 [分类修正与验证](telegram-notification-outcomes-20261003.md)。仍是仅采样阶段，以下 PID 和回执为首轮上线历史。
+
 ## 生效范围
 
 用户在验收后要求上线。本次将验收代码 `814cc620` 从 Lab fast-forward 合入生产 `main`，已推送 `xiuxian-mian/main`。
