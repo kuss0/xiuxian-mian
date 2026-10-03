@@ -25,6 +25,10 @@ from typing import Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from model.audit_summary_health import read_summary_health
+
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 OPTIONAL_INACTIVE_SERVICES = {
     "xiuxian-listener.service",
@@ -34,7 +38,7 @@ OPTIONAL_INACTIVE_SERVICES = {
     "xiuxian-safety-watchdog.service",
 }
 LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
-HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
+HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴|audit summary checkpoint unavailable:", re.I)
 WARN_PATTERN = re.compile(
     r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|安全锁|全局锁|锁死|阻断",
     re.I,
@@ -346,6 +350,7 @@ class ObserverConfig:
     state_dir: Path
     business_window_sec: int
     max_journal_lines: int = 2000
+    notification_summary_required: bool = False
 
     @property
     def latest_path(self) -> Path:
@@ -2432,6 +2437,10 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
             sample=alert.get("sample"),
         )
 
+    for alert in (snapshot.get("notification_summary") or {}).get("alerts") or []:
+        add_risk(alert["code"], alert["message"], alert["severity"],
+                 12 if alert["severity"] == "error" else 5)
+
     sent_count = int(message_state.get("sent_count") or 0)
     window_min = max(1, int(int(message_state.get("window_sec") or 0) / 60))
     if sent_count >= 90:
@@ -2552,6 +2561,12 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
                 "hard": (item.get("hard") or [])[-3:],
                 "warn": (item.get("warn") or [])[-3:],
             })
+    summary = snapshot.get("notification_summary") or {}
+    if summary:
+        refs.insert(0, {"kind": "notification_summary", "path": summary.get("path"),
+                        "status": summary.get("status"), "pending_records": summary.get("pending_records"),
+                        "unresolved_batches": summary.get("unresolved_batches"),
+                        "retired_records": summary.get("retired_records")})
     return refs[:30]
 
 
@@ -2731,6 +2746,11 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
         "business": business,
         "policy": "read-only: no game commands, no Tianjige API calls",
     }
+    summary = read_summary_health(cfg.project_root / "data" / "state" / "audit_summary.db", now,
+                                  required=cfg.notification_summary_required)
+    snapshot["notification_summary"] = summary
+    snapshot["status"], _ = merge_status(str(snapshot["status"]), summary["alerts"])
+    snapshot["reasons"].extend(alert["message"] for alert in summary["alerts"])
     snapshot["health"] = build_health_payload(snapshot, cfg)
     snapshot["evidence_refs"] = build_evidence_refs(snapshot)
     return snapshot
@@ -2877,6 +2897,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-journal-lines", type=int, default=2000)
     parser.add_argument("--business-window-sec", type=int, default=30 * 60)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--notification-summary-required", action="store_true",
+                        help="alert if the separately enabled routine summary checkpoint is missing")
     return parser.parse_args(argv)
 
 
@@ -2893,6 +2915,7 @@ def build_config(args: argparse.Namespace) -> ObserverConfig:
         state_dir=project_root / "data" / "state" / "health_observer",
         business_window_sec=max(300, int(args.business_window_sec or 1800)),
         max_journal_lines=max(100, min(10000, int(args.max_journal_lines or 2000))),
+        notification_summary_required=bool(args.notification_summary_required),
     )
 
 

@@ -64,6 +64,29 @@ def _validate_row(row):
     return row
 
 
+def validate_summary_checkpoint(data):
+    """Validate the on-disk format without importing game state or configuration."""
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("unsupported summary checkpoint")
+    rows, held = data["rows"], data["held"]
+    if not isinstance(rows, list) or len(rows) > MAX_ROWS + 1 or not isinstance(held, list) or len(held) > MAX_HELD:
+        raise ValueError("invalid summary capacity")
+    rows = [_validate_row(dict(row) if isinstance(row, dict) else row) for row in rows]
+    if len({row["bucket_key"] for row in rows}) != len(rows):
+        raise ValueError("duplicate summary rows")
+    for item in held:
+        if not isinstance(item, dict) or _encoded_size(item) > MAX_HELD_BYTES:
+            raise ValueError("invalid held summary")
+        for field in ("id", "hash", "message"):
+            if not isinstance(item.get(field), str) or len(item[field]) > 32768:
+                raise ValueError("invalid held text")
+        _number(item.get("at"))
+        _number(item.get("count"), integer=True)
+    next_at = _number(data["next_at"])
+    retired = _number(data["retired_records"], integer=True)
+    return rows, held, next_at, retired
+
+
 class AuditSummaryStore:
     def __init__(self, path, bucket, order, *, clock=time.time, report=print):
         self.path = Path(path)
@@ -125,24 +148,7 @@ class AuditSummaryStore:
         try:
             data = await self._io()
             if data is not None:
-                if not isinstance(data, dict) or data.get("version") != 1:
-                    raise ValueError("unsupported summary checkpoint")
-                rows, held = data["rows"], data["held"]
-                if not isinstance(rows, list) or len(rows) > MAX_ROWS + 1 or not isinstance(held, list) or len(held) > MAX_HELD:
-                    raise ValueError("invalid summary capacity")
-                rows = [_validate_row(row) for row in rows]
-                if len({row["bucket_key"] for row in rows}) != len(rows):
-                    raise ValueError("duplicate summary rows")
-                for item in held:
-                    if not isinstance(item, dict) or _encoded_size(item) > MAX_HELD_BYTES:
-                        raise ValueError("invalid held summary")
-                    for field in ("id", "hash", "message"):
-                        if not isinstance(item.get(field), str) or len(item[field]) > 32768:
-                            raise ValueError("invalid held text")
-                    _number(item.get("at"))
-                    _number(item.get("count"), integer=True)
-                next_at = _number(data["next_at"])
-                retired = _number(data["retired_records"], integer=True)
+                rows, held, next_at, retired = validate_summary_checkpoint(data)
                 # Do not alter memory until the entire checkpoint validates.
                 for row in rows:
                     key = row["bucket_key"]
