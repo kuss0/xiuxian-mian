@@ -3974,6 +3974,16 @@ class _CaveFateCardsOperation:
         if not error and previous.get("challenge_date", "") > fate_state.get("challenge_date", ""):
             error = "fate_day_regressed"
         if error:
+            if error == "fate_progress_regressed":
+                old_quest = basis.get("quest") or {}
+                quest = fate_state.get("quest") or {}
+                console_log(
+                    "天机命脉进度回读下降："
+                    f"previous_progress={_parse_int(old_quest.get('progress'), 0)}｜"
+                    f"observed_progress={_parse_int(quest.get('progress'), 0)}｜"
+                    f"target={_parse_int(quest.get('target'), 0)}",
+                    scope="identity", send_as_id=self.owner.identity_id, limit=220,
+                )
             raise MiniAppRequestAborted(error)
         if previous.get("owner_account_id") not in (None, self.owner.account_id):
             raise MiniAppRequestAborted("fate_record_owner_unverified")

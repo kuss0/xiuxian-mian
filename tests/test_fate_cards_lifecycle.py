@@ -661,6 +661,32 @@ def test_new_run_cannot_regress_a_verified_same_day_snapshot(env):
     assert state_module.get_miniapp_state_records()["1001:fate_cards"] == previous
 
 
+def test_progress_regression_logs_only_numbers_and_keeps_the_original_guard(env):
+    before = api.parse_fate_cards_state(native(progress=5))
+    before["quest"]["description"] = "token=SECRET"
+    record = {"state": {
+        "challenge_date": DAY, "status": "waiting_deep_retreat",
+        "snapshot": before, "owner_account_id": 11,
+    }}
+    state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
+    env.probe.return_value = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=0))}}
+    env.save.reset_mock()
+
+    result = run()
+
+    assert not result["ok"]
+    assert result["message"].endswith("fate_progress_regressed")
+    env.action.assert_not_awaited()
+    env.save.assert_not_called()
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"] == record
+    cave.console_log.assert_called_once()
+    log = cave.console_log.call_args.args[0]
+    assert "previous_progress=5" in log and "observed_progress=0" in log and "target=30" in log
+    assert "SECRET" not in log and "token=" not in log and before["record_key"] not in log
+    assert cave.console_log.call_args.kwargs["send_as_id"] == 1001
+    cave.send_audit_log.assert_not_awaited()
+
+
 def test_reward_from_another_record_is_not_adopted_by_reconciliation(env):
     initial = env.probe.return_value
     settled = api.parse_fate_cards_state(native(progress=30, status="settled"))
