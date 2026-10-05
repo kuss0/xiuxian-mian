@@ -1,7 +1,7 @@
 # Rift Result Notification Deduplication
 
 Base: `9488f9e8`. Lab: `/root/xiuxian-rift-notification-20261006`.
-Status: validated candidate; main-worker loading deferred to normal maintenance.
+Status: `abe572d4` merged and pushed; main-worker loading deferred to normal maintenance.
 
 ## Natural Evidence
 
@@ -65,3 +65,13 @@ staged startup wording and this patch load at the next normal maintenance.
 Do not claim the existing 06:57 digest verifies new-code behavior. Natural
 single-result acceptance remains pending after loading. Existing queued and
 held notifications are untouched; rollback is code-only, never game state.
+
+## Disk-Only Merge Checkpoint
+
+07:07 CST: fast-forward merge and push completed; post-merge isolated tests
+passed (229 tests, five subtests). Main supervisor 2207210, worker 2207227,
+observer 2241531 and watchdog 2178662 are unchanged, NRestarts zero. No
+runtime restart, database write or switch change was performed for this
+patch. The learned quiz bank remains the sole unrelated dirty file. Pending
+game queue is empty; the known historical fishing cancellation and held
+notification remain visible. Do not label this patch runtime-deployed yet.
