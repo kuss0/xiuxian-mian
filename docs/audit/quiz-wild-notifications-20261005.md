@@ -107,3 +107,14 @@ after rollout remain separate from offline test acceptance.
 - No synthetic live quiz, notification or wild action was sent. Natural
   post-release quiz timeout and wild summary samples remain to be observed.
   The auto-updated quiz bank is the only uncommitted production file.
+
+## Natural External Timeout Acceptance
+
+On October 6 at 05:00:13, external player @TachibanaKaoru timed out on the
+same Qianlan Ice Flame question family. The local journal contains the
+console-only timeout; the watcher remained unowned. There was no corresponding
+TG delivery attempt or summary checkpoint row. The surrounding trial-start
+receipt is timestamped 05:00:04, a different event. This validates the external
+timeout suppression naturally, without sending a test question or changing
+question-bank learning. Managed-identity and conflict notifications remain
+separate paths; this sample does not certify all of them.

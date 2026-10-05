@@ -90,3 +90,19 @@ warning is the existing delivery-review batch, not a new overdue queue.
 
 Natural batch notification still awaits the 05:00 window. No extra trial,
 fishing cast, Boss activation or notification test was sent for validation.
+
+## Natural Completion Acceptance
+
+The scheduled second wave `cave_public_1791234003_12` ran naturally from
+05:00:03 to 05:12:59 on October 6. All 12 identities completed, with 36
+settlements and +516 Tianji remnants. The completion and material outcomes
+arrived in one confirmed Bot delivery, receipt
+`b4fc54798e714e97a00b353c8c9d730f`: 119 UTF-16 units, three lines, no mentions.
+The wave persisted today's completion with retry_at=0. This closes the
+adjacent-terminal-duplication acceptance for `619562f5`.
+
+It does not close all batch notification debt: the summary checkpoint still
+contained 12 child trial results and three successful progress messages after
+the combined completion. Two unrelated tower results brought the pending
+count to 17, due 05:30:59. Follow-up is tracked in
+`batch-progress-notifications-20261006.md`. No checkpoint was edited or replayed.

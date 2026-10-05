@@ -8421,11 +8421,9 @@ async def _run_cave_public_entry_batch(
         last_result="",
         delay_sec=delay_sec,
     )
-    await send_audit_log(
+    console_log(
         f"🧩 洞府公共入口串行批次启动：batch={batch_id}｜动作={','.join(actions)}｜步骤 {total}｜间隔 {int(delay_sec)}s。",
         scope="global",
-        priority="normal",
-        limit=360,
     )
     if total <= 0:
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result="无可执行步骤")
@@ -8526,12 +8524,11 @@ async def _run_cave_public_entry_batch(
                 last_result=result_text,
             )
             if (index % 5 == 0) or (not ok) or index == total:
-                await send_audit_log(
-                    f"🧩 洞府公共入口串行进度：batch={batch_id}｜{index}/{total}｜最近：{result_text}",
-                    scope="global",
-                    priority="low" if ok else "normal",
-                    limit=420,
-                )
+                progress_message = f"🧩 洞府公共入口串行进度：batch={batch_id}｜{index}/{total}｜最近：{result_text}"
+                if ok:
+                    console_log(progress_message, scope="global")
+                else:
+                    await send_audit_log(progress_message, scope="global", priority="normal", limit=420)
             if not ok and _is_cave_public_upstream_failure(message):
                 retry_result = f"上游异常，完成 {index}/{total}，等待重试：{result_text}"
                 _set_cave_public_batch_state(
