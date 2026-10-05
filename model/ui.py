@@ -11321,7 +11321,7 @@ async def start_ui_server():
     )
     sockets = _ui_server.sockets or []
     bind_text = ", ".join(str(sock.getsockname()) for sock in sockets) or f"{UI_HOST}:{UI_PORT}"
-    await send_audit_log(f"🖥️ UI 已启动：{bind_text}", scope="global")
+    console_log(f"🖥️ UI 已启动：{bind_text}", scope="global")
     return _ui_server
 
 

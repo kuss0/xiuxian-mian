@@ -4295,21 +4295,13 @@ async def bootstrap():
         f"- {send_as_id}: {mono('@' + (get_send_as_profile(send_as_id).get('username') or '未获取到'))}"
         for send_as_id in identity_ids
     ]
+    console_log("🪪 启动身份列表:\n" + "\n".join(identity_lines), scope="global", limit=3000)
     recovery_text = "成功" if any_loaded else ("无待恢复任务" if loaded else "首次初始化")
     audit_lines = [
-        "🚀 自动化系统启动成功",
-        f"👤 账号: {state.get('my_user_id') or '未登录（等待 UI 登录）'}",
-        f"🎭 并发身份数: {len(identity_ids)}",
-        "📡 模式: 多身份 + SQLite 持久化",
-        f"💾 状态恢复: {recovery_text}",
-        "🪪 身份列表:",
-        *identity_lines,
+        "🚀 自动化系统已启动",
+        f"身份：{len(identity_ids)}｜恢复：{recovery_text}"
+        + ("｜未登录（等待 UI 登录）" if not state.get("my_user_id") else ""),
     ]
-    if any_loaded:
-        audit_lines.extend([
-            "♻️ 启动恢复：检测到本地状态，已按 SQLite 中的多身份状态恢复运行。",
-            "📌 本次为恢复模式启动：不会执行全量探测，只按各身份本地状态与时间继续调度。",
-        ])
     if startup_scan_result.get("closed_count", 0) > 0:
         audit_lines.append(
             f"⚠️ 启动扫描：发现超时任务并自动关闭 {startup_scan_result['closed_count']} 个模块，登录 UI 后可手动恢复。"
