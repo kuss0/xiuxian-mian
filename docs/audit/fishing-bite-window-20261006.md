@@ -106,3 +106,31 @@ This completes jfdffdddd's natural timing and voyage-handoff acceptance. WA's
 completion sample remain separately monitored. Local checkpoint-observation
 rows are not HTTP failures; their misleading capture-summary classification is
 tracked in `capture-observation-summary-20261006.md`.
+
+## WA Acceptance And Backup Interruption
+
+WA naturally resumed at 04:18:58 with chum, then completed rods at 04:20:59,
+04:23:08, 04:25:05, 04:28:58 and 04:32:39. Final 5/5: three green-scale
+crucian, one red-tail carp, one empty rod with waterweed. Five casts and five
+hooks were accepted. Hook offsets after opening were 1735/211/192/180/284ms;
+original expiry reserves were 2265/3789/3808/3820/3716ms, all same-session.
+
+This was not a five-uninterrupted-fights sample. The scheduled R2 consistency
+backup stopped services at 04:27:11 while rod four was fighting. Its pending
+fight submission was locally cancelled (`operation_invalidated`, status 0),
+and the existing native journal retained the session. After startup at
+04:28:51, one state read confirmed the expired session's empty-rod result and
+waterweed at 04:28:58. It was accounted once, not recast. Capture contains
+24 successful HTTP requests, one locally cancelled action and six local
+observation records. Both native journals ended accounted, last_error empty,
+and next fishing is October 7 00:00:11.
+
+Voyage return settled at 04:26:29. The next Moon Palace voyage started only
+after all five rods and the intervening companion chain, at 04:43:00; next
+return 10:43:04. Fishing daily report for all four configured identities was
+confirmed at 04:32:40: 20/20 rods, 279 UTF-16 units, six lines, no mentions,
+receipt `a933329d7a994182a4c66c8954e723dc`.
+
+The backup's short stop also lost a companion reply from the local log.
+See `backup-interruption-recovery-20261006.md`. Safe native recovery is
+accepted; avoiding interruption of active timed games remains a separate debt.
