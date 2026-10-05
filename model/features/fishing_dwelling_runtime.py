@@ -141,11 +141,19 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
         terminal_skip = (reason in {"fishing_rod_missing", "fishing_daily_limit_reached", "fishing_companion_missing"}
                          and not result.get("outcome_unknown") and not pending(operation.owner.identity)
                          and can_continue() and enabled() and cancelled is None)
+        expected_wait = (
+            reason == "fishing_companion_sailing" and result.get("ok") is False
+            and result.get("status") == "blocked" and not committed and not supplied
+            and not result.get("outcome_unknown") and not pending(operation.owner.identity)
+            and can_continue() and enabled() and cancelled is None
+        )
         message = ("洞府原生钓鱼：" + (fishing._format_count_map(catches) if catches else "空竿")) if committed else "洞府原生钓鱼未完成：" + reason
         if committed and rewards:
             message += "；额外 " + fishing._format_count_map(rewards)
         if supplied:
             message = "洞府钓鱼补给已确认：" + str(data.get("supply_action") or "补给") + "，未抛竿"
+        if expected_wait:
+            message = "洞府原生钓鱼：侍妾远航中，等待归航后钓鱼"
         if terminal_skip:
             message = {
                 "fishing_rod_missing": "洞府原生钓鱼：未持有鱼竿，今日跳过",
@@ -173,7 +181,10 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                             and type(return_at) in (int, float) and math.isfinite(return_at)
                             and return_at > now):
                         delay = max(delay, return_at - now + 60)
-                operation.owner.identity.update(fishing_last_result=message, fishing_last_error="" if committed or supplied or terminal_skip else reason)
+                operation.owner.identity.update(
+                    fishing_last_result=message,
+                    fishing_last_error="" if committed or supplied or terminal_skip or expected_wait else reason,
+                )
                 if update_schedule:
                     operation.owner.identity["next_fishing_time"] = (
                         fishing.fishing_behavior.next_fishing_reset_timestamp(now, fishing._fishing_reset_jitter_sec(identity_id))
@@ -187,10 +198,12 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                     persistence.mark_dirty()
                     message = "原生钓鱼状态保存失败，待核对"
                     terminal_skip = False
+                    expected_wait = False
         response = {"ok": committed or supplied or terminal_skip, "message": message, "extra": {
             "status": "settled" if committed else "skipped" if terminal_skip else result.get("status", "blocked"), "native": True,
             "outcome_unknown": bool(result.get("outcome_unknown")), "committed": committed,
             "supply_committed": supplied,
+            "expected_wait": expected_wait,
             "checkpoint_observations": result.get("checkpoint_observations", []),
             "terminal_skip": terminal_skip and update_schedule,
         }}

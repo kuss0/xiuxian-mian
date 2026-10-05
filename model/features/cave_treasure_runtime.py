@@ -4601,7 +4601,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
                 update_schedule=not (native_canary or native_recovery_only), recovery_only=native_recovery_only,
                 allow_public_auto=not (native_canary or native_recovery_only),
             )
-            return await report(response, priority="low" if response.get("ok") else "normal",
+            routine = response.get("ok") or (response.get("extra") or {}).get("expected_wait") is True
+            return await report(response, priority="low" if routine else "normal",
                                 daily=not native_recovery_only and bool(
                                     (response.get("extra") or {}).get("committed")
                                     or (response.get("extra") or {}).get("terminal_skip")))

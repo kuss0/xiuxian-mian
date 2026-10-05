@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -9,6 +9,7 @@ from model import state as state_module, ui
 import test_cave_background_lifecycle as background_tests
 import test_fishing_dwelling_runtime as runtime_tests
 from test_fishing_dwelling_runtime import configure, enable_voyage_handoff
+from model.features.miniapp_common import MiniAppFlowCancelled
 
 
 fishing_env = runtime_tests.fishing_env
@@ -27,6 +28,11 @@ def test_sailing_retry_does_not_miss_the_confirmed_return_window(fishing_env, mo
     monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
     result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
     assert not result["ok"] and not result["extra"]["terminal_skip"]
+    assert result["extra"]["expected_wait"] is True
+    assert "等待归航" in result["message"] and "未完成" not in result["message"]
+    assert h.audit.await_args.kwargs["priority"] == "low"
+    assert h.identity["fishing_last_error"] == ""
+    assert h.identity["fishing_daily_count"] == 0
     assert h.now < h.identity["next_fishing_time"] < returned_at + native.VOYAGE_HANDOFF_SEC
     h.identity.update(concubine_voyage_settled_at=returned_at, concubine_voyage_status="idle")
     assert native.voyage_launch_wait_reason(h.identity_id, returned_at)
@@ -80,16 +86,62 @@ def test_stale_return_clock_without_sailing_does_not_delay_fishing(fishing_env, 
     assert h.identity["next_fishing_time"] == h.now + native.SAILING_RECHECK_SEC
 
 
-def test_sailing_schedule_failure_preserves_prior_timer(fishing_env, monkeypatch):
+@pytest.mark.parametrize("raises", [False, True])
+def test_sailing_schedule_failure_preserves_prior_timer(fishing_env, monkeypatch, raises):
     h = fishing_env
     configure(h)
     before = h.identity["next_fishing_time"]
     monkeypatch.setattr(native, "run_native_fishing_production_flow", AsyncMock(return_value={
         "ok": False, "status": "blocked", "error": "fishing_companion_sailing"}))
-    monkeypatch.setattr(native.persistence, "save_state", lambda: False)
+    def save():
+        if raises:
+            raise OSError("fixture disk error")
+        return False
+    monkeypatch.setattr(native.persistence, "save_state", save)
     result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
     assert not result["ok"]
     assert h.identity["next_fishing_time"] == before
+    assert not result["extra"].get("expected_wait")
+    assert h.audit.await_args.kwargs["priority"] == "normal"
+    h.daily.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", ["unknown", "pending", "supply_pending", "disabled", "rescheduled", "cancelled", "other_error", "wrong_status"])
+def test_sailing_does_not_suppress_unresolved_or_invalidated_results(fishing_env, monkeypatch, change):
+    h = fishing_env
+    configure(h)
+
+    async def worker(*args, **kwargs):
+        result = {"ok": False, "status": "blocked", "error": "fishing_companion_sailing"}
+        if change == "unknown":
+            result["outcome_unknown"] = True
+        elif change in {"pending", "supply_pending"}:
+            key = native.STATE_KEY if change == "pending" else native.supply.STATE_KEY
+            h.identity[key] = runtime_tests.pending_receipt(h, key)
+        elif change == "disabled":
+            h.identity["fishing_enabled"] = False
+        elif change == "rescheduled":
+            h.identity["next_fishing_time"] = h.now + 9999
+        elif change == "other_error":
+            result["error"] = "fishing_too_early"
+        elif change == "wrong_status":
+            result["status"] = "send_unknown"
+        else:
+            raise MiniAppFlowCancelled(result)
+        return result
+
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+    if change == "cancelled":
+        with pytest.raises(MiniAppFlowCancelled) as caught:
+            asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
+        result = caught.value.result
+    else:
+        result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
+        assert h.audit.await_args.kwargs["priority"] == "normal"
+    assert not result["ok"] and not result["extra"].get("expected_wait")
+    assert not result["extra"].get("terminal_skip")
+    if change == "rescheduled":
+        assert h.identity["next_fishing_time"] == h.now + 9999
     h.daily.assert_not_awaited()
 
 
@@ -109,7 +161,10 @@ def test_real_background_path_keeps_native_retry_without_an_extra_thirty_minutes
     monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
     monkeypatch.setattr(native.fishing, "_SEND_LOCKS", {})
     monkeypatch.setattr(native.persistence, "save_state", lambda: True)
-    monkeypatch.setattr(cave, "send_audit_log", AsyncMock())
+    audit = AsyncMock()
+    console = Mock()
+    monkeypatch.setattr(cave, "send_audit_log", audit)
+    monkeypatch.setattr(ui, "console_log", console)
     monkeypatch.setattr(cave, "_fishing_miniapp_capture_store", lambda now: None)
     monkeypatch.setattr(native.fishing, "_fishing_miniapp_capture_store", lambda now: None)
     monkeypatch.setattr(cave, "_load_cave_public_identity_session", AsyncMock(return_value={
@@ -125,6 +180,8 @@ def test_real_background_path_keeps_native_retry_without_an_extra_thirty_minutes
     async def run():
         await (await background_tests.queue_background(h))
         worker.assert_awaited_once()
+        assert audit.await_args.kwargs["priority"] == "low"
+        assert "｜等待｜" in console.call_args.args[0]
         retry_at = h.identity["next_fishing_time"]
         assert retry_at == now + native.SAILING_RECHECK_SEC
         assert not ui._cave_public_background_retry_at.get(("fishing", h.identity_id))

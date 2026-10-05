@@ -9303,7 +9303,7 @@ async def _execute_cave_public_background_action(operation, delay_sec):
         ))
     if operation.owner.is_current():
         outcome = (
-            "等待" if extra.get("status") == "busy"
+            "等待" if extra.get("status") == "busy" or extra.get("expected_wait") is True
             else "已核销" if extra.get("status") == "daily_reset_reconciled" and not extra.get("outcome_unknown")
             else "成功" if ok else "失败"
         )
