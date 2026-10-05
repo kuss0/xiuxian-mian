@@ -1519,13 +1519,48 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(4, ui._cave_public_batch_state["completed"])
             self.assertEqual(4, ui._cave_public_batch_state["succeeded"])
             self.assertEqual(0, ui._cave_public_batch_state["failed"])
-            self.assertTrue(any(
-                "天机试炼：2/2 成功｜结算 6次｜收益:天机残痕+86" in str(call.args[0])
-                for call in audit_mock.await_args_list
-            ))
+            self.assertEqual(3, audit_mock.await_count)  # Start, progress, completion.
+            completion = audit_mock.await_args_list[-1]
+            self.assertIn("完成 4/4｜成功 4｜失败 0", completion.args[0])
+            self.assertIn("天机试炼：2/2 成功｜结算 6次｜收益:天机残痕+86", completion.args[0])
+            self.assertEqual({"scope": "global", "priority": "normal", "limit": 1200}, completion.kwargs)
         finally:
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)
+
+    async def test_cave_public_batch_completion_handles_no_outcomes_and_partial_failure(self):
+        for action in ("small_world", "trial"):
+            with self.subTest(action=action):
+                batch_snapshot = dict(ui._cave_public_batch_state)
+
+                async def run_entry(identity_id, _action, _url):
+                    if identity_id == 1002:
+                        return False, "本次未完成", {}
+                    return True, "完成", {"settled_count": 3, "gains": {"天机残痕": 43}}
+
+                try:
+                    with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                            patch.object(ui, "get_identity_display_name", return_value="测试角色"), \
+                            patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
+                            patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
+                        await ui._run_cave_public_entry_batch(
+                            "partial-manual-batch", "", [1001, 1002], [action], 0,
+                        )
+
+                    self.assertEqual(3, audit_mock.await_count)
+                    completion = audit_mock.await_args_list[-1]
+                    self.assertIn("完成 2/2｜成功 1｜失败 1", completion.args[0])
+                    self.assertEqual(1, ui._cave_public_batch_state["failed"])
+                    self.assertFalse(ui._cave_public_batch_state["running"])
+                    if action == "trial":
+                        self.assertIn("天机试炼：1/2 成功｜结算 3次｜收益:天机残痕+43", completion.args[0])
+                        self.assertEqual(1200, completion.kwargs["limit"])
+                    else:
+                        self.assertNotIn("\n", completion.args[0])
+                        self.assertEqual(260, completion.kwargs["limit"])
+                finally:
+                    ui._cave_public_batch_state.clear()
+                    ui._cave_public_batch_state.update(batch_snapshot)
 
     async def test_trial_daily_batch_marks_wave_done_only_after_full_execution(self):
         batch_snapshot = dict(ui._cave_public_batch_state)
@@ -1537,7 +1572,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
                     patch.object(ui, "get_identity_display_name", side_effect=lambda identity_id: f"角色{identity_id}"), \
                     patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
-                    patch.object(ui, "send_audit_log", new=AsyncMock()), \
+                    patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
                     patch.object(ui, "save_state", return_value=True) as save_mock:
                 await ui._run_cave_public_entry_batch(
                     "trial-wave2-complete",
@@ -1557,6 +1592,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("completed", config["trial_daily_wave2_last_status"])
             self.assertIn("完整执行 2/2", config["trial_daily_wave2_last_result"])
             save_mock.assert_called_once()
+            self.assertEqual(3, audit_mock.await_count)
+            completion = audit_mock.await_args_list[-1]
+            self.assertIn("完成 2/2｜成功 2｜失败 0", completion.args[0])
+            self.assertIn("天机试炼：2/2 成功｜结算 6次", completion.args[0])
         finally:
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)

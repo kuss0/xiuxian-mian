@@ -1,0 +1,66 @@
+# Batch Completion Notification
+
+Base: `17bc06d6`. Candidate accepted; production deployment pending a quiet
+window. Review passes below are separate maintainer passes, not independent
+external reviews.
+
+## Evidence And Scope
+
+At 2026-10-06 01:28 CST, one scheduled trial batch finished 12/12 successfully.
+The same completion branch sent two adjacent confirmed notifications:
+
+- Completion: `fb348a46759d4b14a96a9f9846376637`, 84 UTF-16 units, 2 lines.
+- Outcomes: `22fcb133bbf14613b1db0af865b13acf`, 64 units, 3 lines.
+
+These are not separate daily and batch reports. In
+`model/ui.py::_run_cave_public_entry_batch`, the completion call was immediately
+followed by a second outcomes call. Combine the existing header and outcome
+lines before calling the existing sender once. Keep the 1200-unit ceiling for
+material outcomes and the 260-unit ceiling when there are no outcome lines.
+No new formatter, sender, retry mechanism or state fields.
+
+No changes to start/progress notifications, shared transport, priority,
+batch scheduling/persistence, pause/exception paths, failed-step-only retries,
+unknown-operation holds, identity settings or Tianxing evidence gates.
+This closes the adjacent terminal-message duplication only, not all notification
+debt. Formatting remains bounded/folded by the shared notification path.
+
+## Acceptance And Review
+
+- Reproduced before fix: mixed success, partial manual trial and scheduled trial
+  each called audit four times instead of three (start, progress, completion).
+  The no-outcomes case already used one terminal notification.
+- Focused batch and summary tests: 149 passed, 2 subtests.
+- Full frozen suite: **15910 passed, 1438 subtests**, 454.27s.
+  JUnit: `/tmp/xiuxian-batch-notification-20261006.xml`.
+- Second review: 333 passed, 2 subtests, covering notification acceptance,
+  bounded HTML, trial lifecycle/checkpoints/unknown operations and UI ownership.
+  Ruff, compileall and `git diff --check` pass.
+- Re-read the full completion/early-return flow: persisted completion still
+  precedes delivery; manual partial failure keeps failed counts and known gains;
+  scheduled failure and unknown branches return before this completion message.
+  No automatic notification replay added. No blocker found for this narrow fix.
+
+## Live Observations During Validation
+
+- Main service, observer and watchdog active, `NRestarts=0`. Pending game queue
+  empty; the historical held summary is preserved for delivery review.
+- 01:45:16 ordinary digest confirmed, receipt
+  `394fab98f2a64519bbf88cfd505eafd7`, 1220 UTF-16 units, 23 lines, no mentions.
+  This validates the earlier summary work, not this undeployed batch patch.
+- WA's fifth protected wild result confirmed 01:43:12; subsequent prediction
+  reply 1282517 confirmed 01:43:17. Continue observing remaining runs; do not
+  restart during an active request or claim all daily actions completed.
+- mudamuda0 naturally continued from its saved fate interpret at 01:28, without
+  repeating draw/interpret. Deep settlement and restart confirmed at 01:42:54
+  and 01:44:45. Shutdown drain and durable fate-wait scheduling remain debts.
+
+## Release Gate
+
+Back up live and summary SQLite databases, preserve all identity/module
+switches and MiniApp configuration, fast-forward only this worktree, then use
+one controlled restart in a quiet window. Roll back code only if needed; do not
+restore old gameplay state or replay held notifications.
+
+Next scheduled trial window is 05:00 CST. Natural single-completion delivery
+must be recorded after release; do not run an extra batch for acceptance.

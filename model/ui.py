@@ -8691,20 +8691,18 @@ async def _run_cave_public_entry_batch(
         steps=steps,
         outcomes=outcomes,
     )
-    await send_audit_log(
-        f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。",
-        scope="global",
-        priority="normal",
-        limit=260,
+    completion_message = (
+        f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。"
     )
     outcome_lines = _format_cave_public_batch_outcomes(outcomes)
     if outcome_lines:
-        await send_audit_log(
-            "🧩 洞府公共入口成果汇总\n" + "\n".join(outcome_lines),
-            scope="global",
-            priority="normal",
-            limit=1200,
-        )
+        completion_message += "\n" + "\n".join(outcome_lines)
+    await send_audit_log(
+        completion_message,
+        scope="global",
+        priority="normal",
+        limit=1200 if outcome_lines else 260,
+    )
 
 
 async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=None):
