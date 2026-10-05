@@ -1,7 +1,7 @@
 # World Boss Timing Review
 
 Base: `1d5eb773`. Lab: `/root/xiuxian-boss-timing-20261005`.
-Status: candidate accepted; deployment checkpoint will be recorded below.
+Status: `850167fa` deployed and pushed; natural timing-quality acceptance remains open.
 Reviews below are separate maintainer passes, not independent external reviews.
 
 ## Natural Evidence
@@ -109,3 +109,35 @@ old gameplay database. The runtime quiz-bank changes must not be committed.
 - The old October 5 09:11 summary delivery remains unknown, not replayed or
   cleared. At 21:43 the notification queue has zero normal rows and one held
   batch. This is unrelated to Boss timing.
+
+## Production Checkpoint
+
+- Stop requested 21:54:10 CST; worker exited normally by 21:54:16. Main
+  service started 21:55:45, bootstrap completed 21:56:04; supervisor/worker
+  PIDs `2006238/2006241`, NRestarts 0. Observer/watchdog PIDs unchanged.
+  Observer's temporary stopped-service alarm corresponds to this controlled
+  maintenance, not a crash; it cleared after bootstrap.
+- Game backup `/root/xiuxian-before-boss-timing-20261005-2154.db` and summary
+  backup `/root/xiuxian-summary-before-boss-timing-20261005-2154.db` both pass
+  quick_check and have mode 0600. No DB was restored or rewound.
+- Fast-forwarded only this worktree and pushed `850167fa` to
+  `xiuxian-mian/main`. Runtime quiz-bank changes remain uncommitted.
+- All 24 identities and 57 enable columns match the snapshot. The entire
+  MiniApp configuration is equal, including only `301299112` eligible for
+  Boss, account limit 1 and unchanged tail-skip settings. Startup normally
+  staggered one already-due timer; no claim of identical timer timestamps.
+- At 21:57, game pending is empty; all three services are active. The held
+  notification list equals the snapshot exactly (one batch); two new normal
+  summary rows are waiting within their routine window. Health observer only
+  reports the historical unknown batch. Post-merge isolated tests:
+  **170 passed, 14 subtests**.
+- The daily read-only semantic report found 2557 MiniApp HTTP records with a
+  peak of 69/90 in a rolling minute and no saturation windows. The three other
+  captured rejections were overnight meditation_not_ready, external action
+  rate limiting, and fishing_too_early, not evidence of a current global outage.
+  At 21:52 WA's next wild action was still October 6 01:10:58, outside its
+  ten-minute preparation window. Both primary identities retain auto-refine=0.
+
+This closes the tested local timing defects and missing diagnostic fields, not
+the next natural Boss quality check, exact missed-window admission evidence,
+all notification work, or the remaining native fishing migration.
