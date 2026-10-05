@@ -87,3 +87,32 @@ so final whole-state save was correctly skipped. The per-action interpret
 receipt was persisted with no pending operation. Do not describe this as a
 fully clean shutdown; its subsequent natural resume remains under observation.
 See the matching fishing rollout report and backlog follow-up.
+
+## Natural Follow-Up
+
+At 01:14:54 the first post-release ordinary digest was confirmed by the Bot:
+receipt `2b74c35f23644ed381505475d88900fd`, hash
+`ae4dd924d69f68caa7e1d63b520dc1e4d56b060d20c234fd4427de849eb63906`,
+1786 UTF-16 units, 23 lines, no explicit mentions. At least 58 confirmed wild
+results had been observed in its pending batch, including WA's protected
+exploration. This establishes natural summary delivery, not a new synthetic
+test message or full notification-policy acceptance.
+
+After the confirmed digest emptied the bucket, the first new result at
+01:15:15 persisted a fresh deadline of 01:45:15, rather than the previous
+batch's 01:44:53. The original unknown batch is still held, count unchanged.
+The extreme long-idle case is covered offline; it has not naturally recurred.
+
+WA's 01:01:03 prediction (1282187) and 01:01:17 change (1282191) were confirmed
+at 01:01:04 / 01:01:20. Protected deep wild calls at 01:04:13 and 01:14:09
+each returned cultivation +45000, with the saved server quota 2/8, remaining
+6. Tianji reached 132. Fresh predictions after consumption (1282261 and
+1282372) were observed; there was no manual forced exploration for acceptance.
+The serial queue, not missing protection, delayed the second action.
+
+Endpoint rate limiting is still open: three external-fate rejections reported
+Retry-After 115, 141 and 1033 seconds. The latest shared deadline was 01:15:04
+and was respected. Daily capture peak remained 32/min; no global-90/min breach
+was established. The stopped interpret's owner later encountered this entry
+limit before reaching its quest state, so continuation acceptance is pending.
+Do not discard its saved interpret or retry the old action blindly.
