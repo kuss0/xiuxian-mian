@@ -75,3 +75,30 @@ runtime restart, database write or switch change was performed for this
 patch. The learned quiz bank remains the sole unrelated dirty file. Pending
 game queue is empty; the known historical fishing cancellation and held
 notification remain visible. Do not label this patch runtime-deployed yet.
+
+## Continued Read-Only Observation
+
+At 07:12 all 19 group-disabled channel identities have today's verified,
+successful MiniApp deep-retreat start snapshots with active sessions and
+future server end times. Four of those identities with YuanYing enabled
+also have confirmed native launch records bound to their own negative game
+player IDs. Group send-as freezing is not evidence that their MiniApps are
+idle. WA's longer retreat has its own future server deadline; no timer was
+shortened to make it look like a daily run.
+
+Native fishing evidence remains 20/20 rods across four actors. Thirteen
+selected identities have no companion and six have no rod, with zero report
+warnings. Fate-card snapshots are settled for all 24 identities. Today's
+capture report peaks at 39 requests in 60 seconds; the three earlier external
+entry 429s remain separate evidence of an endpoint-specific limit.
+
+The 07:18 WA timer ran `.抚摸法宝` once, command `1284014`, with official
+reply `1284015` from `hantianzun35_bot` at 07:18:33 confirming rapport +5
+and experience +14. Error cleared and the next timer is 09:18:38. This is
+not an equipment change or an extra maintenance-triggered command.
+
+At 07:27:33 the earlier 04:27 fishing cancellation naturally left the
+three-hour observer window. Journal hard/warn counts are zero; the held
+notification alert remains. The 07:27:45 one-shot check agrees. No warning
+was hidden by clearing stored evidence. These observations validate current
+runtime continuity, not the still-unloaded rift notification change.
