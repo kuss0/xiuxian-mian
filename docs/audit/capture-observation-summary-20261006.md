@@ -1,6 +1,6 @@
 # Capture Observation Summary
 
-Base: `ed72a322`. Status: validated candidate; no service restart.
+Base: `ed72a322`. Status: `a6eb55a2` promoted and pushed; no service restart.
 
 ## Defect And Boundary
 
@@ -41,3 +41,10 @@ The existing UI consumes the filtered endpoints; no layout or JS changes.
 Do not interrupt natural fishing for this display-only fix. A new CLI process
 can use it after promotion, while an already-imported web worker uses its old
 reader until a normally scheduled restart. Keep these activation states distinct.
+
+At 03:36, the production CLI returned 109 records: 15 local observations,
+93 successful requests and one historical hook error. Post-merge isolated
+summary tests: 15 passed. Main PID 2144248 and worker 2144259 are unchanged
+since 03:14; this reporting fix has not been reloaded into the web worker.
+Health/watchdog have no new issue; only the historical held notification
+requires delivery review. No capture, game state or account switch was changed.
