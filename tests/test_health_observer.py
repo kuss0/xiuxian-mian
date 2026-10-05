@@ -385,6 +385,54 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(health_observer.is_hard_journal_line(line))
         self.assertFalse(health_observer.is_warn_journal_line(line))
 
+    def test_journal_ignores_unmanaged_quiz_timeout_observation(self):
+        message = (
+            "🦴 <code>@SeanHandy997</code>｜外部题目超时｜未托管，仅学习观察｜题目："
+            "玄骨妄图炼化乾蓝冰焰，是想将其修成什么魔焰？"
+        )
+        for prefix in (
+            "",
+            "[2026-10-06 06:30:35] ",
+            "Oct 06 06:30:35 host python[2207227]: [2026-10-06 06:30:35] ",
+        ):
+            for question_suffix in ("", " ERROR FUSED 风暴 超时"):
+                with self.subTest(prefix=prefix, question_suffix=question_suffix):
+                    line = prefix + message + question_suffix
+                    self.assertFalse(health_observer.is_hard_journal_line(line))
+                    self.assertFalse(health_observer.is_warn_journal_line(line))
+
+    def test_journal_retains_errors_outside_unmanaged_quiz_observation(self):
+        observation = (
+            "🦴 <code>@someone</code>｜外部题目超时｜未托管，仅学习观察｜题目：样本"
+        )
+        for line, hard, warn in (
+            ("[wa] 🦴 题库外超时未作答｜题目：样本", False, True),
+            ("[wa] 🦴 题库外超时未作答｜题目：" + observation, False, True),
+            ("[wa] ⚠️ 慕兰回复超时，未托管", False, True),
+            ("🦴 <code>@someone</code>｜外部题目超时｜题目：样本", False, True),
+            ("ERROR 玄骨考校题库答案不一致，请人工处理", True, False),
+            ("ERROR writing quiz observation: " + observation, True, False),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(hard, health_observer.is_hard_journal_line(line))
+                self.assertEqual(warn, health_observer.is_warn_journal_line(line))
+
+    def test_read_journal_does_not_count_passive_quiz_as_runtime_failure(self):
+        lines = [
+            "Oct 06 06:30:35 host python[2207227]: [2026-10-06 06:30:35] "
+            "🦴 <code>@SeanHandy997</code>｜外部题目超时｜未托管，仅学习观察｜题目：ERROR 风暴",
+            "[2026-10-06 06:30:36] [wa] 回复超时",
+            "[2026-10-06 06:30:37] ERROR pending state write failed",
+        ]
+        with patch.object(health_observer, "run_command", return_value=(0, "\n".join(lines), "")):
+            result = health_observer.read_journal_matches("xiuxian.service", 600, 12)
+
+        self.assertEqual(3, result["total_lines"])
+        self.assertEqual(1, result["hard_count"])
+        self.assertEqual([lines[2]], result["hard"])
+        self.assertEqual(1, result["warn_count"])
+        self.assertEqual([lines[1]], result["warn"])
+
     def test_warn_journal_keeps_explicit_lock_and_block_signals(self):
         self.assertTrue(health_observer.is_warn_journal_line("全局安全锁已触发"))
         self.assertTrue(health_observer.is_warn_journal_line("状态机锁死，等待人工处理"))
