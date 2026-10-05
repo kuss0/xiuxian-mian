@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from model import runtime
+from model.audit_summary_health import PENDING_GRACE_SEC, read_summary_health
 from model.audit_summary import format_grouped_summary, routine_bucket_key
 from model.audit_summary_store import AuditSummaryStore, COMPACTED_KEY, HELD_TTL, MAX_HELD, MAX_ROWS, PENDING_TTL
 
@@ -49,6 +50,59 @@ def render(rows):
 
 def records(store):
     return sum(row["count"] for row in store.bucket.values())
+
+
+@run_async
+@pytest.mark.parametrize("delivery_ok", [True, False])
+async def test_idle_new_batch_gets_fresh_window_without_replaying_held(setup_store, delivery_ok):
+    make, now, _ = setup_store
+    store = make()
+    await enqueue(store)
+    now[0] += 1800
+    sender = AsyncMock(return_value=delivery_ok)
+    assert await store.flush(render, sender, 1800) is delivery_ok
+    held = list(store.held)
+    now[0] += 7200
+    await enqueue(store, text="new batch")
+    deadline = now[0] + 1800
+    assert store.next_at == deadline
+    assert store._disk()["next_at"] == deadline
+    health = read_summary_health(store.path, now[0], required=True)
+    assert "notification_summary_overdue" not in {item["code"] for item in health["alerts"]}
+    assert store.held == held
+    assert not await store.flush(render, sender, 1800)
+    sender.assert_awaited_once()
+    now[0] = deadline
+    sender.return_value = True
+    assert await store.flush(render, sender, 1800)
+    assert sender.await_count == 2
+    assert store.held == held
+    assert not store.bucket
+
+
+@run_async
+async def test_new_events_do_not_renew_existing_overdue_batch(setup_store):
+    make, now, _ = setup_store
+    store = make()
+    await enqueue(store)
+    deadline = store.next_at
+    now[0] = deadline + PENDING_GRACE_SEC
+    await enqueue(store, text="second record")
+    assert store.next_at == deadline
+    health = read_summary_health(store.path, now[0], required=True)
+    assert "notification_summary_overdue" in {item["code"] for item in health["alerts"]}
+    assert records(store) == 2
+
+
+@run_async
+async def test_first_event_does_not_shorten_restart_window(setup_store):
+    make, now, _ = setup_store
+    store = make()
+    assert await store.resume(3600)
+    deadline = store.next_at
+    now[0] += 100
+    assert await enqueue(store)
+    assert store.next_at == deadline
 
 
 @run_async

@@ -222,10 +222,13 @@ class AuditSummaryStore:
     async def enqueue(self, add_row, interval):
         async with self.lock:
             loaded = await self._load()
+            was_empty = not self.bucket
             add_row()
             self._bound()
-            if not self.next_at:
-                self.next_at = self.clock() + interval
+            # The runtime arms a fresh delay after an idle bucket, not after
+            # the previous batch. Never renew an existing backlog's deadline.
+            if not self.next_at or was_empty:
+                self.next_at = max(self.next_at, self.clock() + interval)
             return await self._save() if loaded else False
 
     async def flush(self, formatter, sender, interval):
