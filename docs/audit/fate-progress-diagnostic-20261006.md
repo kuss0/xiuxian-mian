@@ -70,3 +70,22 @@ At 02:31:21 the normal scheduler supplied the missing evidence:
 the chain with no draw/interpret/choose/settle. Numeric diagnostic acceptance is
 complete. The cause of the regression and any required semantic fix remain open;
 no claim that lowering the old snapshot or relaxing the guard would be correct.
+
+## Natural Completion
+
+At 03:44:11 Yinluo's normal Mulan support received the final edit on message
+1283090, directly replying to 1283089: cultivation +213, stones +421 and
+coagulation grass x8. At 03:45:34 the next normal fate read accepted progress
+30/30. Capture sequence was start -> settle -> start, all HTTP 200, attempt=1;
+there was exactly one settle and no new draw, interpret or choose.
+
+The same quest is now settled with gains cultivation +10 and fate traces +3.
+No reset of the saved 5, manual action or monotonicity-guard change was needed.
+The chronological association with Mulan income is observable; it does not
+prove why the earlier server reads regressed to zero.
+
+All 24 identities are settled for October 6. The one combined daily report
+was confirmed at 03:45:37: cultivation +1704, fate traces +72, 52 UTF-16 units,
+three lines, no explicit mentions. Receipt 1296537d1c8e473cb9551567058f9403.
+The runtime report-day marker is October 6. Today's blocked completion is
+resolved; the earlier progress discrepancy remains an observation issue.
