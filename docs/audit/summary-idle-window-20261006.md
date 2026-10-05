@@ -1,7 +1,7 @@
 # Summary Idle Window
 
 Base: `8f761183`. Lab: `/root/xiuxian-summary-idle-window-20261006`.
-Status: accepted candidate; production not changed yet.
+Status: `84fbcffc` deployed with `99a43a45` on 2026-10-06 and pushed.
 
 ## Evidence And Scope
 
@@ -63,3 +63,27 @@ an old game or summary DB or replay held notifications.
   notifications for those expected waits remain separate classification debt.
 - WA wild preparation is due around 01:00:58, execution at 01:10:58. No forced
   game request has been issued for these checks.
+
+## Rollout
+
+Main started at 00:44:52 and bootstrap finished 00:45:14; supervisor/worker
+2076326/2076338, zero automatic restarts. Observer/watchdog were not restarted.
+Post-merge isolated tests: 192 passed. At 00:45, all 24 identity rows and 59
+enable columns across identity/module/runtime tables match the backup, as does
+the complete MiniApp configuration. The unknown held batch is byte-for-byte
+equivalent after decoding, with no replay or deletion. Ordinary pending rows
+remain scheduled inside the restart's regular 30-minute window (01:14:53).
+
+Backups: `/root/xiuxian-before-summary-fishing-20261006.db` and
+`/root/xiuxian-summary-before-summary-fishing-20261006.db`, both mode 0600,
+quick_check ok. No DB restoration. Production quiz learning remains dirty.
+At 00:46 watchdog is ok; health warns on old held plus the recent rejected
+meditation result. The earlier 429 is no longer in the critical window,
+not proof that its endpoint restriction was removed.
+
+Stop at 00:43:32 was controlled but not fully drained: a 15.622s fate interpret
+request completed at 00:43:40. Background cleanup exceeded its wait twice,
+so final whole-state save was correctly skipped. The per-action interpret
+receipt was persisted with no pending operation. Do not describe this as a
+fully clean shutdown; its subsequent natural resume remains under observation.
+See the matching fishing rollout report and backlog follow-up.

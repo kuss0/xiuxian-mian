@@ -1,7 +1,7 @@
 # Fishing Bite Window
 
-Base: `84fbcffc` (summary deadline fix included). Status: accepted candidate;
-not deployed yet. Separate maintainer review passes, not external reviewers.
+Base: `84fbcffc` (summary deadline fix included). Status: `99a43a45` deployed
+and pushed. Separate maintainer review passes, not external reviewers.
 
 Live evidence: xueuode5 2026-10-06 00:13 CST, cast RTT 388ms followed by
 hook RTT 107ms and HTTP 409 `fishing_too_early`. The original rod was later
@@ -57,3 +57,23 @@ xuruode1 received `external_action_rate_limited` (429) and the shared entry
 deadline was persisted at 00:40:41. Observed global peak 32/min was below
 90/min, which does not rule out a separate endpoint restriction. WA Yuanying
 completed after the shared wait. Retain these as follow-up observations.
+
+## Production Checkpoint
+
+Both commits were fast-forwarded into production after the old worker exited.
+00:44:52 restart, 00:45:14 bootstrap, 192 post-merge isolated tests passed;
+push to `xiuxian-mian/main` completed. All 24 identities, 59 enable columns and
+full MiniApp configuration match the pre-stop snapshot. No fishing toggles,
+gifts or Boss participants changed. Same backups and held comparison as the
+[summary rollout](summary-idle-window-20261006.md).
+
+At 00:46, no active fishing journal or game pending; watchdog ok. Ordinary wild
+results are naturally enqueued for summary. WA preparation/execution stays at
+01:00:58 / 01:10:58. Hook timing after deployment is not yet naturally sampled
+because the two early fishing identities already exhausted today's quota.
+
+The old worker logged incomplete cleanup during stop, associated with the
+15.622-second fate interpret request for mudamuda0. Its successful result is
+saved as `interpret`, with no pending action; do not force replay. This remains
+an explicit shutdown-drain/continuation follow-up, not silently cleared by
+the unrelated timing patch.
