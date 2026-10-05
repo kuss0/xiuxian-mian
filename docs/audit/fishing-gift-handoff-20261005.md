@@ -2,7 +2,8 @@
 
 Base: `05c57417`. Lab: `/root/xiuxian-fishing-gift-handoff-20261005`.
 Initial audit and second review are separate maintainer passes, not independent
-external reviews. Status: accepted candidate, rollout checkpoint below.
+external reviews. Status: code `2ef8208c` deployed and pushed; no live gift target
+was enabled. Rollout checkpoint below.
 
 ## Reproduction
 
@@ -118,3 +119,32 @@ At 20:36 the main service, observer and watchdog are active; main NRestarts=0.
 The observer's only reason remains the October 5 09:11 held notification batch.
 It is retained, not replayed or erased. A natural wild-result summary after the
 prior patch is still pending observation.
+
+## Production Checkpoint
+
+- Main stopped at 21:01:45 CST and its worker exited normally by 21:01:52.
+  Started at 21:04:54; bootstrap completed at 21:05:12, PID `1982943`,
+  NRestarts 0. This was one controlled restart, not an automatic crash.
+  Observer/watchdog were not restarted. Their stopped-service/overdue-summary
+  warnings during maintenance cleared after bootstrap; the old held warning
+  remains.
+- Only this worktree was fast-forwarded; `2ef8208c` pushed to
+  `xiuxian-mian/main`. Production quiz-bank updates were preserved.
+- Game snapshot `/root/xiuxian-before-gift-handoff-20261005-2100.db` and summary
+  snapshot `/root/xiuxian-summary-before-gift-handoff-20261005-2100.db` both
+  passed quick_check. No database was restored or rewound.
+- All 24 identities, 57 enable columns (module plus runtime), fishing targets
+  and wild strategies match the snapshot. All new handoffs are empty. Startup
+  normally spread 3 already-due timers; no claim of identical timestamps.
+- The full held-summary list matches the snapshot. At 21:07, three summary
+  records are pending their normal window, one old batch remains held.
+- Post-merge isolated regression: **201 passed, 75 subtests**. At 21:09 all
+  three services are active, main NRestarts=0, watchdog ok, game pending empty.
+  No new exception is present in the post-start journal. WA's next wild action
+  remains October 6 01:10:58, outside the preparation window.
+
+Closed: the fishing queue's volatile-handoff loss and automatic retry after
+unknown send on this new owned path. Still open: native catch-to-queue wiring,
+fish-open migration, general manual batch durability/retries, and any real gift
+acceptance requiring an authorized target. The historical notification review
+and Boss quality follow-up are not closed by this deployment.
