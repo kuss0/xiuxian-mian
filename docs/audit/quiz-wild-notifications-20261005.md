@@ -84,3 +84,26 @@ main service. The unchanged summary schema can still load all pending/held
 records. Do not delete the summary database, replay old notifications or roll
 back gameplay state. Natural external-timeout and wild-result delivery samples
 after rollout remain separate from offline test acceptance.
+
+## Production Checkpoint
+
+- Code `8bf61ef6` merged fast-forward and pushed to `xiuxian-mian/main`.
+  Controlled stop began at 19:27:26 CST; old worker exited normally at
+  19:27:33. Started at 19:29:42, PID `1940703`, NRestarts 0. Downtime observer
+  alerts are explained by this explicit deployment, not an automatic crash.
+- Game snapshot `/root/xiuxian-before-quiz-wild-20261005-1927.db` and summary
+  snapshot `/root/xiuxian-summary-before-quiz-wild-20261005-1927.db` passed
+  quick_check. No database was rolled back.
+- 24 identities restored. All 52 module-enable columns and every identity's
+  wild strategy match the stopped-state snapshot. Startup normally staggered
+  one already-due timer; no claim of byte-identical runtime timestamps.
+- The entire historical held list matches the pre-deployment snapshot, still
+  one batch. Summary/metrics flags remain enabled; observer/watchdog were not
+  restarted. The warning for unknown delivery remains deliberately visible.
+- Post-merge isolated regression: **208 passed, 8 subtests**. At 19:31:53,
+  watchdog ok; observer's only reason is the existing held summary. The
+  earlier preflight showed no game pending and no active Boss. WA's next
+  wild action is October 6 01:10:58, outside preparation time.
+- No synthetic live quiz, notification or wild action was sent. Natural
+  post-release quiz timeout and wild summary samples remain to be observed.
+  The auto-updated quiz bank is the only uncommitted production file.
