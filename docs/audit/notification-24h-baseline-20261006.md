@@ -46,3 +46,24 @@ before final notification and failed-step retry replacing the old aggregate;
 otherwise a restart or failure can lose the only remaining reward report.
 The current child messages are intentionally retained until that handoff is
 durable and tested.
+
+## Independent Sender Review
+
+Read-only source and installed-schedule review at approximately 07:37 CST:
+
+| Entry | Trigger and scope | Receipt coverage and next boundary |
+| --- | --- | --- |
+| `model/runtime.py` log-group transport | Automatic audit, summaries and secondary channel | Covered by the measured receipt format; ordinary summary unknown handling differs from urgent/legacy defaults. |
+| `model/app_message_log.py::_send_replica_group_message` | Replica-group notifications, including interactive buttons/replies | Own bot/account path and sent-message log, not the runtime receipt stream. Bot timeout can fall through to account; assess separately under TG-06, not as evidence of a live duplicate here. |
+| `tools/safety_watchdog.py::send_log_via_bot` | Safety fuse/warning, independent of main runtime | Preserve immediate warnings. Same warning category is limited to once per 300 seconds in process memory; fuse marker protects repeated fuse actions. No measured-format receipts. The reviewed 24h service journal has no matching warning/fuse/send-result entries; this is not transport confirmation. |
+| `tools/miniapp_daily_report.py::send_log_group` | Explicit CLI `--send-log-group`; default prints only | Own Bot API request, not measured-format receipts. This session used read-only output only. |
+| `tools/storage_bag_report.py::send_log_group_chunks` | Explicit CLI `--send-log-group`; default prints only | Own sequential chunk sends, not measured-format receipts; manual reports remain outside automatic summary grouping. |
+
+The AST inventory's `tools/notification_report.py` candidate is its own
+`sendMessage` search string, not an additional sender. Literal candidates
+are not a complete inventory of Telegram SDK calls or external programs.
+The installed systemd timer list and references under `/etc/systemd/system`,
+`/etc/cron.d`, `/etc/crontab` and root's cron spool showed no scheduled use
+of the two manual report CLIs. This does not exclude ad hoc invocation or
+an external scheduler. No service, warning threshold, sender or fallback
+was changed by this review.
