@@ -431,12 +431,14 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(991201), \
                 patch.object(wild_training, "apply_tianxing_passive", return_value=True) as passive_mock, \
                 patch.object(wild_training, "mark_tianxing_route_result_unknown") as unknown_mock, \
-                patch.object(wild_training, "send_audit_log", new=AsyncMock()), \
+                patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
                 patch.object(wild_training, "save_state"):
             outcome = await wild_training._apply_miniapp_result(result, now)
         self.assertEqual("completed", outcome)
         passive_mock.assert_called_once()
         unknown_mock.assert_not_called()
+        audit_mock.assert_awaited_once()
+        self.assertEqual("low", audit_mock.await_args.kwargs["priority"])
         self.assertEqual(now + 43_200, state_module.state["next_wild_training_time"])
 
     async def test_legacy_reply_fields_do_not_block_due_miniapp_run(self):

@@ -7,7 +7,7 @@ from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE
 from ..message_log_recovery import iter_message_log_entries_between
 from ..persistence import mark_dirty, save_quiz_ai_config_state, save_quiz_learning_watchers_state, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
-from ..runtime import account_rpc_slot, mono, send_audit_log, send_game_command
+from ..runtime import account_rpc_slot, console_log, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_global_enabled,
@@ -976,6 +976,16 @@ async def handle_quiz_result_broadcast(text, now=None):
 
     _pop_quiz_learning_watcher(target_key, persist=True)
 
+    if result_type == "timeout" and identity_id is None:
+        console_log(
+            _format_quiz_brief_log(
+                f"外部题目超时｜未托管，仅学习观察｜题目：{question}",
+                target_tag=target_tag,
+            ),
+            scope="global", limit=520,
+        )
+        return True
+
     if in_bank:
         # ---- 题目在题库内 ----
         if result_type == "correct":
@@ -1009,24 +1019,14 @@ async def handle_quiz_result_broadcast(text, now=None):
                 **_get_quiz_log_kwargs(identity_id, limit=520),
             )
         elif result_type == "timeout":
-            if identity_id is None:
-                await send_audit_log(
-                    _format_quiz_brief_log(
-                        f"外部题库题目超时｜未托管，仅学习观察｜题库匹配 {bank_answer_detail}｜题目：{question}",
-                        identity_id=identity_id,
-                        target_tag=target_tag,
-                    ),
-                    **_get_quiz_log_kwargs(identity_id, limit=520),
-                )
-            else:
-                await send_audit_log(
-                    _format_quiz_brief_log(
-                        f"题库内超时未作答｜题库匹配 {bank_answer_detail}｜题目：{question}",
-                        identity_id=identity_id,
-                        target_tag=target_tag,
-                    ),
-                    **_get_quiz_log_kwargs(identity_id, limit=520),
-                )
+            await send_audit_log(
+                _format_quiz_brief_log(
+                    f"题库内超时未作答｜题库匹配 {bank_answer_detail}｜题目：{question}",
+                    identity_id=identity_id,
+                    target_tag=target_tag,
+                ),
+                **_get_quiz_log_kwargs(identity_id, limit=520),
+            )
     else:
         # ---- 题目不在题库 ----
         if result_type == "correct":
@@ -1116,13 +1116,8 @@ async def handle_quiz_result_broadcast(text, now=None):
                     **log_kwargs,
                 )
         elif result_type == "timeout":
-            timeout_header = (
-                "🦴 玄骨考校外部题目超时（未托管，仅学习观察）"
-                if identity_id is None
-                else "🦴 玄骨考校题库未收录，超时未作答"
-            )
             await send_audit_log(
-                f"{timeout_header}\n"
+                "🦴 玄骨考校题库未收录，超时未作答\n"
                 f"- 目标: {mono(target_tag)}\n"
                 f"- 题目: {question}\n"
                 f"- 选项: {_format_quiz_options(options)}",

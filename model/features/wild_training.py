@@ -623,7 +623,7 @@ async def _apply_miniapp_result(result, now, *, operation=None, notify=True):
         if notify and raw_text and looks_like_tianxing_route_result(raw_text):
             try:
                 await _notify_wild_training(
-                    f"🌌 天星探索结果｜野外历练：{state.get('wild_training_last_result')}", priority="high", limit=260,
+                    f"🌌 天星探索结果｜野外历练：{state.get('wild_training_last_result')}", priority="low", limit=260,
                 )
             except asyncio.CancelledError:
                 raise MiniAppFlowCancelled(result) from None
@@ -726,7 +726,7 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, due_at, *, operat
                     if outcome == "completed":
                         await _notify_wild_training(
                             f"🏞️ MiniApp 野外历练结果｜{summary}｜下次 {fmt_abs_ts(next_time)}",
-                            send_as_id=identity_id, priority="normal", limit=320,
+                            send_as_id=identity_id, priority="low", limit=320,
                         )
                     elif outcome == "failed":
                         await _notify_wild_training(

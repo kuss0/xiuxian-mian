@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from model import state as state_module
+from model import runtime
+from model.audit_summary_store import AuditSummaryStore
 from model.features import cave_treasure_miniapp as dwelling
 from model.features import cave_treasure_runtime as cave
 from model.features import tianxing
@@ -323,6 +325,70 @@ def test_notification_failure_does_not_turn_completion_into_gameplay_failure(wil
     assert wild_env.identity["wild_training_last_completed_at"] == NOW
     assert wild_env.identity["next_wild_training_time"] == pytest.approx(NOW + 43200, abs=0.1)
     assert not wild_env.identity["wild_training_last_error"]
+
+
+def test_completed_worker_result_uses_summary_priority(wild_env):
+    asyncio.run(run_worker())
+    wild_env.audit.assert_awaited_once()
+    assert wild_env.audit.await_args.kwargs["priority"] == "low"
+    assert wild_env.audit.await_args.kwargs["send_as_id"] == IDENTITY_ID
+
+
+def test_failed_worker_result_remains_individual_notification(wild_env, monkeypatch):
+    monkeypatch.setattr(wild, "run_cave_public_wild_training", AsyncMock(return_value={
+        "ok": False, "message": "fixture-unavailable", "extra": {"phase": "entry_missing"},
+    }))
+    asyncio.run(run_worker())
+    wild_env.audit.assert_awaited_once()
+    assert wild_env.audit.await_args.kwargs["priority"] == "normal"
+    assert "未完成" in wild_env.audit.await_args.args[0]
+
+
+def test_unconfirmed_tianxing_protection_still_blocks_and_alerts(wild_env, monkeypatch):
+    wild_env.identity["tianxing_enabled"] = True
+    monkeypatch.setattr(wild, "build_tianxing_route_preflight_plan", lambda *_a, **_kw: {"route_allowed": False})
+    monkeypatch.setattr(wild, "_send_tianxing_panel_calibration", AsyncMock())
+    with state_module.use_identity(IDENTITY_ID):
+        assert not asyncio.run(wild._guard_deep_wild_training_send(NOW))
+    wild_env.audit.assert_awaited_once()
+    assert wild_env.audit.await_args.kwargs["priority"] == "high"
+    wild_env.flow.assert_not_awaited()
+
+
+def test_completed_results_share_durable_summary_without_immediate_send(wild_env, monkeypatch, tmp_path):
+    clock = [NOW]
+    monkeypatch.setattr(wild, "WILD_TRAINING_MINIAPP_MIN_GAP_SEC", 0)
+    store = AuditSummaryStore(tmp_path / "summary.db", {}, [], clock=lambda: clock[0])
+    monkeypatch.setattr(runtime, "LOG_GROUP_STRUCTURED_SUMMARY", True)
+    monkeypatch.setattr(runtime, "_audit_summary_store", store)
+    monkeypatch.setattr(runtime, "_low_priority_audit_bucket", store.bucket)
+    monkeypatch.setattr(runtime, "_low_priority_audit_order", store.order)
+    monkeypatch.setattr(runtime, "_schedule_low_priority_audit_flush", lambda **_kwargs: None)
+    monkeypatch.setattr(runtime, "console_log", Mock())
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(runtime, "_send_log_group_message", sender)
+    monkeypatch.setattr(wild, "send_audit_log", runtime.send_audit_log)
+
+    async def run():
+        await run_worker()
+        await run_worker()
+        sender.assert_not_awaited()
+        assert runtime.get_low_priority_audit_pending_counts() == (2, 1)
+        restarted = AuditSummaryStore(store.path, {}, [], clock=lambda: clock[0])
+        await restarted.resume(1800)
+        assert sum(row["count"] for row in restarted.bucket.values()) == 2
+        monkeypatch.setattr(runtime, "_audit_summary_store", restarted)
+        monkeypatch.setattr(runtime, "_low_priority_audit_bucket", restarted.bucket)
+        monkeypatch.setattr(runtime, "_low_priority_audit_order", restarted.order)
+        clock[0] = restarted.next_at + 1
+        assert await runtime.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        assert "野外历练结果" in sender.await_args.args[0]
+        assert sender.await_args.kwargs["allow_unknown_fallback"] is False
+        assert not restarted.bucket
+        assert not restarted.held
+
+    asyncio.run(run())
 
 
 def test_worker_exception_does_not_overwrite_an_independent_new_schedule(wild_env, monkeypatch):

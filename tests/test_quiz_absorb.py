@@ -342,38 +342,59 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["quiz_phase"])
             send_mock.assert_not_awaited()
 
-    async def test_external_bank_timeout_logs_learning_only(self):
+    async def test_external_timeout_stays_local_for_known_and_unknown_questions(self):
         question = "韩立能把虚天鼎从乾蓝冰焰池中拉出的关键倚仗是什么？"
         options = {"A": "血玉蜘蛛", "B": "啼魂兽", "C": "风雷翅", "D": "玄骨魔幡"}
-        state_module.set_quiz_learning_watchers({
-            "outerdao": {
-                "target_tag": "@outerdao",
-                "identity_id": None,
-                "question": question,
-                "options": options,
-                "expire_at": 1_700_000_420.0,
-                "matched_answer": "A",
-            }
-        })
+        for answer in ("A", ""):
+            for title in ("玄骨考校·超时", "玄骨夺焰·题面失效"):
+                with self.subTest(answer=answer, title=title):
+                    state_module.set_quiz_learning_watchers({
+                        "outerdao": {
+                            "target_tag": "@outerdao", "identity_id": None,
+                            "question": question, "options": options,
+                            "expire_at": 1_700_000_420.0, "matched_answer": answer,
+                        }
+                    })
+                    with (
+                        patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit,
+                        patch.object(quiz, "console_log") as local,
+                        patch.object(quiz, "save_quiz_learning_watchers_state") as save,
+                        patch.object(quiz, "_match_quiz_answer", return_value=(answer, "fixture")),
+                    ):
+                        handled = await quiz.handle_quiz_result_broadcast(
+                            f"【{title}】\n@outerdao 未在时间内作答",
+                            now=1_700_000_050.0,
+                        )
+                    self.assertTrue(handled)
+                    self.assertEqual({}, state_module.get_quiz_learning_watchers())
+                    save.assert_called_once()
+                    audit.assert_not_awaited()
+                    self.assertIn("未托管，仅学习观察", local.call_args.args[0])
+                    self.assertEqual("global", local.call_args.kwargs["scope"])
 
-        audit_mock = AsyncMock()
-        with (
-            patch.object(quiz, "send_audit_log", new=audit_mock),
-            patch.object(quiz, "save_quiz_learning_watchers_state"),
-            patch.object(quiz, "_match_quiz_answer", return_value=("A", "exact_question")),
-        ):
-            handled = await quiz.handle_quiz_result_broadcast(
-                "【玄骨考校·超时】\n"
-                "@outerdao 面对玄骨上人的提问，竟迟迟无法作答，被视为不堪造就。",
-                now=1_700_000_050.0,
-            )
-
-        self.assertTrue(handled)
-        self.assertEqual({}, state_module.get_quiz_learning_watchers())
-        audit_text = audit_mock.await_args.args[0]
-        self.assertIn("外部题库题目超时", audit_text)
-        self.assertIn("未托管，仅学习观察", audit_text)
-        self.assertNotIn("题库内超时未作答", audit_text)
+    async def test_owned_timeout_still_notifies_for_known_and_unknown_questions(self):
+        identity_id = 10001
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="dao", enabled=True)
+        for answer in ("A", ""):
+            with self.subTest(answer=answer):
+                state_module.set_quiz_learning_watchers({
+                    "dao": {"target_tag": "@dao", "identity_id": identity_id,
+                            "question": "fixture", "options": {"A": "one"},
+                            "expire_at": 1_700_000_420.0, "matched_answer": answer},
+                })
+                with (
+                    patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit,
+                    patch.object(quiz, "save_quiz_learning_watchers_state"),
+                    patch.object(quiz, "save_state"),
+                    patch.object(quiz, "_match_quiz_answer", return_value=(answer, "fixture")),
+                ):
+                    self.assertTrue(await quiz.handle_quiz_result_broadcast(
+                        "【玄骨考校·超时】\n@dao 未在时间内作答", now=1_700_000_050.0,
+                    ))
+                audit.assert_awaited_once()
+                self.assertEqual(identity_id, audit.await_args.kwargs["send_as_id"])
+                self.assertIn("超时未作答", audit.await_args.args[0])
 
 
 class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
