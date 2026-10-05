@@ -284,6 +284,22 @@ class NativeFishingStore:
                                         fishing_chum_day=day,
                                         fishing_chum_counts=fishing.fishing_behavior.format_chum_usage_counts(resources["chum_usage"]))
                 if can_schedule:
+                    if (identity.get("fishing_enabled") and record["catches"]
+                            and fishing._parse_int(identity.get("fishing_transfer_target_id", 0)) > 0):
+                        try:
+                            queued = json.loads(identity.get("fishing_caught_fish_json") or "{}")
+                        except (ValueError, TypeError):
+                            raise ProtocolError("invalid_native_transfer_queue") from None
+                        protocol._mapping(queued, "native_transfer_queue")
+                        for name, count in queued.items():
+                            protocol._text(name, "native_transfer_name")
+                            protocol._number(count, "native_transfer_count", 1, 10**9, integer=True)
+                        for name, count in record["catches"].items():
+                            queued[name] = protocol._number(
+                                queued.get(name, 0) + count, "native_transfer_count", 1, 10**9, integer=True)
+                        identity["fishing_caught_fish_json"] = json.dumps(queued, ensure_ascii=False, sort_keys=True)
+                        if float(identity.get("fishing_transfer_due_at", 0) or 0) <= 0:
+                            identity["fishing_transfer_due_at"] = now + fishing.fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC
                     identity.update(fishing_phase="idle", fishing_last_error="",
                                     fishing_last_result="洞府钓鱼：" + (fishing._format_count_map(record["catches"]) if record["catches"] else "空竿"),
                                     next_fishing_time=(fishing.fishing_behavior.next_fishing_reset_timestamp(

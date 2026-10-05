@@ -365,12 +365,15 @@ def test_native_limit_and_schema_default_are_consistent(fishing_db):
     assert persistence._serialize_db_value(native.STATE_KEY, {"oversize": "x" * MAX_BYTES}) == '{"invalid":true}'
 
 
-def settled_store(h):
+def settled_store(h, *, caught=True, bonus=()):
     store = native.NativeFishingStore(h.identity_id, -100991060001)
     ledger = store.journal()
     query, _ = ledger.start(context=context(), site_id="west-shore", model_id="ngw", bait_id="bait",
                             now=h.now, projection_basis=store.basis())
     data = response(settled=True)
+    data["session"]["result"].update(caught=caught, bonusLoot=list(bonus))
+    if not caught:
+        data["session"]["result"]["fish"] = None
     data["context"] = context()["context"]
     data["context"].update(serverNow=h.now * 1000, quota={"used": 1, "remaining": 4, "limit": 5})
     ledger.accept(query, data)
@@ -723,6 +726,7 @@ def test_new_cast_requires_accounting_and_captures_new_basis(fishing_db):
 
 def test_cancelled_worker_drains_and_keeps_settlement_without_rescheduling(fishing_db):
     h = fishing_db
+    h.identity["fishing_transfer_target_id"] = h.other_id
     entered, release, done = threading.Event(), threading.Event(), threading.Event()
     calls = []
 
@@ -758,6 +762,8 @@ def test_cancelled_worker_drains_and_keeps_settlement_without_rescheduling(fishi
         assert caught.value.result["committed"]
         assert h.identity[native.STATE_KEY]["phase"] == "accounted"
         assert h.identity["next_fishing_time"] == original_timer
+        assert h.identity["fishing_caught_fish_json"] == ""
+        assert h.identity["fishing_transfer_due_at"] == 0
         assert calls == ["context", "cast"]
 
     try:
