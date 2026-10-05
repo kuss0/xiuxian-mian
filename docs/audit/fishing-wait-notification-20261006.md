@@ -1,6 +1,6 @@
 # Fishing Voyage Wait Notification
 
-Base: `4f9b7bb3`. Candidate accepted, not yet deployed.
+Base: `4f9b7bb3`. `aaf91d44` deployed and pushed together with the fate diagnostic.
 
 ## Evidence
 
@@ -53,3 +53,12 @@ A separate 02:06:46 fate-card anomaly for xianxia9527 is under investigation:
 shapes/digests, not the rejected numeric progress. Keep the guard; obtain safe
 numeric diagnostics before changing its monotonicity assumption. Do not treat
 this unrelated incident as fixed by a notification patch.
+
+## Release
+
+02:31:05 bootstrap completed after combined release. Post-merge 200 passed;
+24 identities, 59 enable fields, full MiniApp configuration and all wild/rift/
+fishing/duel timers unchanged. Held notifications preserved. See the companion
+[diagnostic release](fate-progress-diagnostic-20261006.md) for snapshots and
+health evidence. Natural wait-message sampling is still pending; the existing
+03:18/04:18 fishing schedules and historical error text were not rewritten.
