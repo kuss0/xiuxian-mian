@@ -1,10 +1,68 @@
 import json
 
+import pytest
+
 from model.miniapp_capture_summary import (
     format_miniapp_capture_summary,
     get_miniapp_capture_summary,
     summarize_miniapp_capture_records,
 )
+
+
+def local_fishing_observation():
+    return {
+        "adapter_key": "fishing", "step_key": "native_checkpoint_observation",
+        "created_at": 1783354168.0, "source": "unit",
+        "observations": [{"action": "hook", "checkpoint_present": False}],
+    }
+
+
+def test_local_observations_are_not_http_errors_or_recent_requests():
+    request = {
+        "step_key": "hook", "method": "POST", "url_path": "/fishing/hook",
+        "ok": True, "status_code": 200, "created_at": 1783354167.0,
+    }
+    observation = local_fishing_observation()
+    summary = summarize_miniapp_capture_records("fishing", [request, observation])
+
+    assert summary["total_records"] == summary["scanned_records"] == 2
+    assert summary["ok_records"] == summary["observation_records"] == 1
+    assert summary["error_records"] == 0
+    assert summary["endpoint_count"] == 1
+    assert summary["endpoints"][0]["count"] == 1
+    assert summary["endpoints"][0]["latest_error_at"] == 0
+    assert [row["step_key"] for row in summary["recent"]] == ["hook"]
+    rendered = format_miniapp_capture_summary(summary)
+    assert "observations: 1" in rendered
+    assert "native_checkpoint_observation" not in rendered
+    assert observation == local_fishing_observation()
+
+
+@pytest.mark.parametrize("changes", [
+    {"ok": False, "error": "failed"}, {"method": "POST"},
+    {"url_path": "/fishing/hook"}, {"request": {}}, {"response": {}},
+    {"status_code": 429}, {"step_key": "unknown_observation"},
+    {"adapter_key": "trial"}, {"observations": None},
+])
+def test_observation_filter_does_not_hide_request_or_unknown_errors(changes):
+    row = dict(local_fishing_observation(), **changes)
+    summary = summarize_miniapp_capture_records("fishing", [row])
+
+    assert summary["observation_records"] == 0
+    assert summary["error_records"] == summary["endpoint_count"] == 1
+    assert summary["endpoints"][0]["latest_error_at"] == row["created_at"]
+    assert summary["recent"][0]["ok"] is False
+
+
+def test_observation_only_capture_retains_scanned_counts(tmp_path):
+    path = tmp_path / "fishing-2026-07-07.jsonl"
+    path.write_text(json.dumps(local_fishing_observation()) + "\n", encoding="utf-8")
+    summary = get_miniapp_capture_summary("fishing", day="2026-07-07", capture_dir=tmp_path)
+
+    assert summary["total_records"] == summary["scanned_records"] == summary["observation_records"] == 1
+    assert summary["error_records"] == summary["ok_records"] == summary["endpoint_count"] == 0
+    assert summary["recent"] == []
+    assert "no request samples" in format_miniapp_capture_summary(summary)
 
 
 def test_miniapp_capture_summary_groups_endpoint_and_keeps_redaction(tmp_path):

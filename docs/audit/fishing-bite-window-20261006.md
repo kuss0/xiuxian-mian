@@ -77,3 +77,32 @@ The old worker logged incomplete cleanup during stop, associated with the
 saved as `interpret`, with no pending action; do not force replay. This remains
 an explicit shutdown-drain/continuation follow-up, not silently cleared by
 the unrelated timing patch.
+
+## Natural Fishing Acceptance
+
+At 03:19 jfdffdddd completed a supply action without casting or consuming its
+rod quota. Five scheduled native rods settled at 03:21:13, 03:23:24, 03:25:10,
+03:27:23 and 03:30:45. Rewards: one red-tail carp, two silver-whisker carp and
+one green-scale crucian; one rod was a game-confirmed empty result. No manual
+probe or extra rod was used. All five cast/hook pairs were HTTP 200; four
+needed fight settlement, also HTTP 200. There was no early-hook rejection or
+unknown settlement.
+
+The sanitized server-time evidence places hooks 701, 509, 193, 195 and 184ms
+after bite opening, leaving 3299, 3491, 3807, 3805 and 3816ms before original
+expiry. Each hook is for the same session as its cast. These are real samples,
+not a guarantee under arbitrary future latency.
+
+Voyage return was settled through the public command center at 03:21:23.
+The first fish was allowed by the game after the sailing clock expired but
+before the separate voyage-reward settlement. Fishing's handoff guard held
+the next voyage while rods remained. Only after 5/5 were accounted did the
+normal scheduler launch Moon Palace voyage at 03:30:48. Runtime and supply
+journals are accounted, fishing_last_error is empty, next fishing is October 7
+00:00:04, next voyage return is October 6 09:30:52.
+
+This completes jfdffdddd's natural timing and voyage-handoff acceptance. WA's
+04:18 fishing window, notification waiting classification and the next batch
+completion sample remain separately monitored. Local checkpoint-observation
+rows are not HTTP failures; their misleading capture-summary classification is
+tracked in `capture-observation-summary-20261006.md`.

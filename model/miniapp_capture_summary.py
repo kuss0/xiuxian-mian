@@ -152,10 +152,23 @@ def _summary_text(value, *, limit=220):
     return sanitize_webapp_secret_text(value, limit=limit)
 
 
+def _is_local_observation(row):
+    # These records have no request/result envelope; missing ok is not failure.
+    return (
+        isinstance(row, dict)
+        and row.get("adapter_key") == "fishing"
+        and row.get("step_key") == "native_checkpoint_observation"
+        and row.keys() == {"adapter_key", "step_key", "created_at", "source", "observations"}
+        and isinstance(row.get("observations"), list)
+    )
+
+
 def summarize_miniapp_capture_records(game_key, records, *, day="", path="", total_lines=None, scanned_lines=None):
     normalized = normalize_miniapp_game_key(game_key)
+    request_records = [row for row in records or [] if not _is_local_observation(row)]
+    observation_count = len(records or []) - len(request_records)
     groups = {}
-    for row in records or []:
+    for row in request_records:
         if not isinstance(row, dict):
             continue
         method = str(row.get("method") or "POST").upper()
@@ -260,7 +273,7 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
     endpoint_items.sort(key=lambda item: (item["url_path"], item["step_key"]))
 
     recent = []
-    for row in sorted((row for row in (records or []) if isinstance(row, dict)), key=lambda r: float(r.get("created_at") or 0))[-8:]:
+    for row in sorted((row for row in request_records if isinstance(row, dict)), key=lambda r: float(r.get("created_at") or 0))[-8:]:
         response = row.get("response") if isinstance(row.get("response"), dict) else {}
         recent.append({
             "created_at": float(row.get("created_at") or 0),
@@ -277,7 +290,7 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "error": _summary_text(row.get("error"), limit=220),
         })
 
-    ok_total = sum(1 for row in records or [] if isinstance(row, dict) and row.get("ok"))
+    ok_total = sum(1 for row in request_records if isinstance(row, dict) and row.get("ok"))
     return {
         "game_key": normalized,
         "day": _safe_day_text(day) or "",
@@ -285,7 +298,8 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
         "total_records": int(total_lines if total_lines is not None else len(records or [])),
         "scanned_records": int(scanned_lines if scanned_lines is not None else len(records or [])),
         "ok_records": ok_total,
-        "error_records": max(0, len(records or []) - ok_total),
+        "error_records": max(0, len(request_records) - ok_total),
+        "observation_records": observation_count,
         "endpoint_count": len(endpoint_items),
         "endpoints": endpoint_items,
         "recent": recent,
@@ -318,6 +332,8 @@ def format_miniapp_capture_summary(summary):
         f"MiniApp capture: {summary.get('game_key') or '-'} {summary.get('day') or '-'}",
         f"records: {summary.get('scanned_records', 0)}/{summary.get('total_records', 0)} | endpoints: {summary.get('endpoint_count', 0)} | ok/error: {summary.get('ok_records', 0)}/{summary.get('error_records', 0)}",
     ]
+    if summary.get("observation_records"):
+        lines.append(f"local observations: {summary['observation_records']} (not requests)")
     for item in summary.get("endpoints") or []:
         lines.append(
             f"- {item.get('method')} {item.get('url_path')} [{item.get('step_key')}] "
@@ -338,7 +354,7 @@ def format_miniapp_capture_summary(summary):
                 f"max={item.get('retry_after_max_sec')}s"
             )
     if not summary.get("endpoints"):
-        lines.append("- no capture samples")
+        lines.append("- no request samples" if summary.get("observation_records") else "- no capture samples")
     return "\n".join(lines)
 
 
