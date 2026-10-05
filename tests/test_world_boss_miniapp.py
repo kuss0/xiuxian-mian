@@ -988,7 +988,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
         self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 140 for item in plan))
-        self.assertTrue(all(1200 <= item["holdMs"] <= 1235 for item in plan))
+        self.assertTrue(all(1100 <= item["holdMs"] <= 1150 for item in plan))
         self.assertTrue(all(item["hitMs"] == 560 for item in plan))
         self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
         self.assertTrue(all(item["stance"] == "强攻" for item in plan))
@@ -1005,8 +1005,8 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(13),
         )
 
-        self.assertTrue(1200 <= plan[0]["holdMs"] <= 1235)
-        self.assertTrue(1200 <= plan[1]["holdMs"] <= 1235)
+        self.assertTrue(1100 <= plan[0]["holdMs"] <= 1150)
+        self.assertTrue(1100 <= plan[1]["holdMs"] <= 1150)
         self.assertTrue(all(520 <= item["holdMs"] <= 1250 for item in plan))
 
     def test_start_refresh_waits_real_windows_then_hits_and_finishes_once(self):

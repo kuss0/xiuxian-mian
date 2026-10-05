@@ -66,10 +66,9 @@ WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
 WORLD_BOSS_PERFECT_HOLD_MIN_MS = 520
 WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
-# The live page's charge curve tops out around 1.215s while perfect remains
-# valid through 1.25s. Stay near that cap with a small hard-limit margin.
-WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1200
-WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1235
+# Server-measured hold includes arrival jitter; keep 100ms below the ceiling.
+WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1100
+WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1150
 # Aim near the early edge of the server's perfect band. Normal requests still
 # land inside perfect, while a one-off server/network stall gets roughly
 # another 100ms before crossing the wider accepted-hit window.
@@ -915,6 +914,13 @@ def reveal_world_boss_windows(
             "expected_window_count": expected_count,
             "done": bool(done),
         })
+        if added:
+            _append_business_capture(capture_sink, source=capture_source, step="window_reveal", summary={
+                "window_index": len(challenge["windows"]),
+                "center_ms": _window_center_ms(window),
+                "hit_ms": _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS),
+                "perfect_ms": _int_value(window.get("perfectMs"), 150),
+            })
         if not done and not added:
             reveal_wait_sec = _world_boss_window_reveal_wait_sec(data)
             sleeper(min(
@@ -1164,9 +1170,8 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
                 raise ValueError("invalid hold range")
             hold_ms = int(rng.randint(hold_low, hold_high))
         else:
-            # Damage continues to scale inside the accepted perfect band.
-            # Use a randomized upper-middle hold rather than the ring width
-            # (usually ~620ms), while keeping a margin below the hard maximum.
+            # Leave room for asymmetric hit latency below the 1250ms ceiling.
+            # A near-ceiling local hold was already overlong with 90ms of jitter.
             hold_ms = int(rng.randint(
                 WORLD_BOSS_OPTIMAL_HOLD_MIN_MS,
                 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS,
@@ -1250,6 +1255,23 @@ def _adaptive_world_boss_release_lead_ms(action, recent_rtt_ms, *, final_window=
         min(WORLD_BOSS_RELEASE_LEAD_MAX_MS, perfect_ceiling_ms),
     )
     return max(min_lead_ms, min(max_lead_ms, latency_lead_ms))
+
+
+def _world_boss_charge_release_target_ms(action, *, started_ms, received_ms):
+    # Ticket issuance occurs somewhere inside the HTTP round trip. Never
+    # subtract that entire trip as if it were confirmed server-side charging.
+    # Extend towards a minimum real hold only within the window and local cap.
+    planned_ms = _int_value(action.get("elapsedMs"))
+    latest_ms = (
+        _int_value(action.get("centerMs"))
+        + min(_int_value(action.get("perfectMs")), _int_value(action.get("hitMs")))
+        - max(WORLD_BOSS_PERFECT_LEAD_MARGIN_MS, _int_value(action.get("releaseLeadMs")) // 2)
+    )
+    desired_ms = max(planned_ms, min(
+        received_ms + WORLD_BOSS_PERFECT_HOLD_MIN_MS,
+        started_ms + WORLD_BOSS_PERFECT_HOLD_MAX_MS,
+    ))
+    return max(received_ms, min(desired_ms, latest_ms, started_ms + WORLD_BOSS_PERFECT_HOLD_MAX_MS))
 
 
 def _nested_mappings(data):
@@ -1622,6 +1644,7 @@ def _world_boss_finish_business_summary(data, *, hit_summary=None):
         "target_window_count": max(0, _int_value(hit_summary.get("target_window_count"), 0)),
         "window_skip_count": max(0, _int_value(hit_summary.get("window_skip_count"), 0)),
         "rejected_window_count": max(0, _int_value(hit_summary.get("rejected_window_count"), 0)),
+        "skipped_window_count": max(0, _int_value(hit_summary.get("skipped_window_count"), 0)),
     })
     authoritative_counts = [
         _int_value(summary.get(key), 0)
@@ -2405,10 +2428,25 @@ def run_world_boss_joined_battle_lab_flow(
         ),
         "window_skip_count": effective_window_skip,
         "rejected_window_count": 0,
+        "skipped_window_count": 0,
         "action_limit": None,
         "actions_remaining": None,
         "actions_used": None,
     }
+    skipped_window_ids = set()
+
+    def record_skipped_window(action, index, elapsed_ms, reason):
+        if action["windowId"] in skipped_window_ids:
+            return
+        skipped_window_ids.add(action["windowId"])
+        server_hit_summary["skipped_window_count"] += 1
+        _append_business_capture(capture_sink, source=capture_source, step="window_skipped", summary={
+            "window_index": index + 1,
+            "center_ms": action["centerMs"],
+            "current_elapsed_ms": elapsed_ms,
+            "available_charge_ms": int(action["elapsedMs"]) - elapsed_ms,
+            "reason": reason,
+        })
 
     def reconcile_closed_event():
         return reconcile_world_boss_closed_battle_lab(
@@ -2558,6 +2596,7 @@ def run_world_boss_joined_battle_lab_flow(
             break
         available_charge_ms = int(action["elapsedMs"]) - current_elapsed_ms
         if available_charge_ms < WORLD_BOSS_PERFECT_HOLD_MIN_MS:
+            record_skipped_window(action, action_index, current_elapsed_ms, "insufficient_charge_time")
             events.append({
                 "step": "skip_expired_window",
                 "ok": True,
@@ -2573,9 +2612,16 @@ def run_world_boss_joined_battle_lab_flow(
         wait_before_charge_ms = max(0, charge_start_ms - current_elapsed_ms)
         if wait_before_charge_ms:
             sleeper(wait_before_charge_ms / 1000.0)
-            process_missed_windows(max(0, int((float(clock()) - timeline_origin) * 1000)))
+            current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+            process_missed_windows(current_elapsed_ms)
             if dead:
                 break
+            if int(action["elapsedMs"]) - current_elapsed_ms < WORLD_BOSS_PERFECT_HOLD_MIN_MS:
+                record_skipped_window(action, action_index, current_elapsed_ms, "expired_before_charge")
+                if dynamic_window_protocol and not append_next_dynamic_action():
+                    break
+                action_index += 1
+                continue
         charge_ticket = ""
         charge_request_started_elapsed_ms = None
         if requires_charge_ticket:
@@ -2633,22 +2679,26 @@ def run_world_boss_joined_battle_lab_flow(
                 "has_charge_ticket": True,
                 "charge_start_elapsed_ms": charge_request_started_elapsed_ms,
             })
+        planned_hold_ms = hold_ms
+        charge_request_rtt_ms = 0
         if requires_charge_ticket:
-            # The HTTP round trip is part of the real press interval.  Keep
-            # the remaining local hold bounded instead of blindly adding the
-            # request latency on top of the configured 0.52-1.25s interval.
-            charge_request_rtt_ms = max(
-                0,
-                int(round((float(clock()) - (timeline_origin + charge_request_started_elapsed_ms / 1000.0)) * 1000)),
+            received_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+            charge_start_ms = charge_request_started_elapsed_ms
+            charge_request_rtt_ms = max(0, received_ms - charge_start_ms)
+            release_target_ms = _world_boss_charge_release_target_ms(
+                action, started_ms=charge_start_ms, received_ms=received_ms,
             )
-            remaining_hold_ms = max(0, hold_ms - charge_request_rtt_ms)
+            remaining_hold_ms = max(0, release_target_ms - received_ms)
         else:
             remaining_hold_ms = hold_ms
         if remaining_hold_ms:
             sleeper(remaining_hold_ms / 1000.0)
         release_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+        if requires_charge_ticket:
+            hold_ms = max(0, release_elapsed_ms - charge_start_ms)
         process_missed_windows(release_elapsed_ms)
         if dead or action["windowId"] in processed_window_ids:
+            record_skipped_window(action, action_index, release_elapsed_ms, "expired_before_release")
             if not dead and dynamic_window_protocol and not append_next_dynamic_action():
                 break
             action_index += 1
@@ -2665,6 +2715,9 @@ def run_world_boss_joined_battle_lab_flow(
             "windowId": action["windowId"],
             "wait_before_charge_ms": wait_before_charge_ms,
             "hold_ms": hold_ms,
+            "planned_hold_ms": planned_hold_ms,
+            "charge_start_ms": charge_start_ms,
+            "charge_round_trip_ms": charge_request_rtt_ms,
             "remaining_hold_ms": remaining_hold_ms,
             "release_elapsed_ms": release_elapsed_ms,
             "release_lead_ms": release_lead_ms,
@@ -2780,6 +2833,13 @@ def run_world_boss_joined_battle_lab_flow(
             summary={
                 **hit_business,
                 "window_index": server_hit_summary["attempted_hit_count"],
+                "planned_window_index": action_index + 1,
+                "center_ms": action["centerMs"],
+                "release_elapsed_ms": release_elapsed_ms,
+                "local_hold_ms": hold_ms,
+                "planned_hold_ms": planned_hold_ms,
+                "charge_round_trip_ms": charge_request_rtt_ms,
+                "hit_round_trip_ms": round(hit_round_trip_ms, 1),
                 "consumed": consumed,
             },
         )
