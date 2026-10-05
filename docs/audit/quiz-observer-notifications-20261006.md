@@ -1,7 +1,7 @@
 # Passive Quiz Observation Health Classification
 
 Base: `7540a33f`. Lab: `/root/xiuxian-quiz-observer-20261006`.
-Status: candidate validated; observer-only rollout pending.
+Status: `7984b520` deployed and pushed; observer-only restart at 06:50:10.
 
 ## Evidence And Scope
 
@@ -61,3 +61,27 @@ with `1283803` at 06:39:51. The timeline rebuilt from `blocked_replan` to
 01:51 MiniApp result explicitly retaining it for 23 hours 57 minutes; no
 additional change command was sent. The 06:49:44 rift execution still needs
 its own natural reply and settlement check.
+
+## Production Checkpoint
+
+Post-merge isolated regression: 203 passed, 24 subtests. Only the observer
+restarted (new PID 2241531). Main supervisor 2207210, worker 2207227 and
+watchdog 2178662 stayed running; NRestarts remains zero. The learned quiz
+bank remains the only unrelated dirty production file.
+
+06:50:10 and 06:52:11 snapshots retain the known cancelled fishing operation
+and held delivery, without new journal errors. The historical quiz sample
+was already outside the ten-minute window before deployment; the actual-log
+replay above is its acceptance evidence, not those clean journal counts.
+
+WA's natural rift command `1283915` was sent once at 06:49:45. Official bot
+`hantianzun23_bot` (`8980154525`) returned `1283916`, initially at 06:49:47,
+edited at 06:49:55 and finally at 06:49:58. Prediction hit, Tianji +1,
+contribution +30, space fragment x1, fourth-grade demon core x5 and
+nine-heavens thunder wood x1 were recorded. Pending and error cleared;
+Tianji is 139, prediction consumption is recorded at the final edit time.
+No game command was sent by this maintenance session.
+
+The same reward has a confirmed urgent notification (`ca26034db9d04d60a92dc76e8a17c50e`)
+and a separate ordinary summary row. That newly observed duplicate is a
+separate notification cleanup item, not part of this observer patch.
