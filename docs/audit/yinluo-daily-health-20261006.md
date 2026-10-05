@@ -1,6 +1,6 @@
 # Yinluo Daily Health
 
-Base: `3fc77bdb`. Candidate only; main runtime is unchanged.
+Base: `3fc77bdb`. Promoted and pushed as `65786d59`; main runtime is unchanged.
 
 ## Scope
 
@@ -52,3 +52,16 @@ After validation, merge only observer/tests/docs, preserve runtime quiz data,
 and restart only `xiuxian-health-observer.service`. Do not restart the game
 worker, run gameplay probes or alter switches. Observe the persistent monitor
 and read-only snapshots before marking this diagnostic debt complete.
+
+At 04:13:04 only the observer was restarted (PID 2172349). Main supervisor
+2144248, worker 2144259 and watchdog 1620264 remained unchanged. Post-merge
+tests: 190 passed, 4 subtests. The 04:13 and 04:15 persistent snapshots contain
+the new Yinluo daily evidence and report completed today; the only warning is
+the historical delivery-unknown notification batch. Watchdog is OK, pending
+queue empty, and Tianxing preparation remains held until its normal window.
+Production quiz learning remains the only uncommitted file. No game actions
+were forced, notification batches replayed, or account/module flags changed.
+
+This diagnostic coverage item is closed by historical failure replay and
+natural current-state acceptance. Cultivation calibration and broader Yinluo
+diagnostics remain separate debts, not implied complete by this acceptance.
