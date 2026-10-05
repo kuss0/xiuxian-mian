@@ -200,6 +200,38 @@ def test_checkpoint_confirmations_do_not_compress_next_send_interval(reply_delay
     assert calls.count("checkpoint") >= 2
 
 
+@pytest.mark.parametrize("cast_up,cast_down,hook_up", [(.330, .058, .050), (.950, .020, .030),
+                                                    (.050, .338, .050), (.194, .194, .050)])
+def test_fast_hook_after_asymmetric_cast_does_not_precede_server_bite(cast_up, cast_down, hook_up):
+    window = {}
+    captures = []
+
+    def transport(action, request, clock):
+        if action == "cast":
+            clock.sleep(cast_up)
+            stamp = round(10000 + clock.now * 1000)
+            window.update(biteAt=stamp + 29000, expiresAt=stamp + 33000)
+            data = response()
+            data["session"].update(serverNow=stamp, **window)
+            clock.sleep(cast_down)
+            return data
+        if action == "hook":
+            clock.sleep(hook_up)
+            assert window["biteAt"] <= 10000 + clock.now * 1000 < window["expiresAt"]
+            return fighting()
+        return {"context": context(), "checkpoint": fighting(), "fight": response(settled=True)}[action]
+
+    result, calls = run(Store(), transport=transport, capture_sink=captures, upload_checkpoints=False)
+    assert result["ok"], result
+    assert calls == ["context", "cast", "hook", "fight"]
+    observed = result["checkpoint_observations"]
+    cast = next(row for row in observed if row["action"] == "cast")
+    assert cast["bite_at_ms"] == window["biteAt"]
+    assert cast["expires_at_ms"] == window["expiresAt"]
+    assert cast["same_session"] is False  # The cast response establishes ownership.
+    assert captures[-1]["observations"] == observed
+
+
 def test_slow_asymmetric_transport_can_still_hook_inside_four_second_window():
     store = Store()
     window = {}

@@ -293,8 +293,14 @@ def next_session_action(session, clock, monotonic_now):
     now_ms = clock.now_ms(monotonic_now)
     if now_ms >= session["expiresAt"]:
         return "state", 0
-    if now_ms < session["biteAt"]:
-        return "wait", (session["biteAt"] - now_ms) / 1000
+    # A midpoint estimate may run ahead of the server after an asymmetric
+    # cast. Cushion the opening edge without using up the hook's RTT budget.
+    available_ms = session["expiresAt"] - session["biteAt"] - clock.round_trip_ms
+    if available_ms <= 0:
+        return "state", 0
+    hook_at = session["biteAt"] + min(clock.round_trip_ms / 2, available_ms / 2)
+    if now_ms < hook_at:
+        return "wait", (hook_at - now_ms) / 1000
     if now_ms + clock.round_trip_ms >= session["expiresAt"]:
         return "state", 0
     return "hook", 0

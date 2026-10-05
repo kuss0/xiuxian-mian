@@ -133,7 +133,7 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                 journal.cancel_undispatched(query)
             raise _RequestFailed(result)
         data = result.data
-        if action in {"hook", "checkpoint", "state"} and isinstance(data, dict):
+        if action in {"cast", "hook", "checkpoint", "state"} and isinstance(data, dict):
             remote = data.get("session")
             if isinstance(remote, dict):
                 fight = remote.get("fight") if isinstance(remote.get("fight"), dict) else {}
@@ -144,6 +144,8 @@ def run_native_fishing_flow(*, journal, token, init_data, site_id, model_id, bai
                                "checkpoint_present": "checkpoint" in fight}
                 for key, value in (("checkpoint_ms", checkpoint.get("durationMs")),
                                    ("server_now_ms", remote.get("serverNow")),
+                                   ("bite_at_ms", remote.get("biteAt")),
+                                   ("expires_at_ms", remote.get("expiresAt")),
                                    ("fight_started_ms", fight.get("startedAt"))):
                     if type(value) is int and 0 <= value < 10**15:
                         observation[key] = value

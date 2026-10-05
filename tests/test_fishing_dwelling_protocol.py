@@ -164,7 +164,7 @@ def test_slow_reply_does_not_add_the_browser_cap_lag_to_four_second_bite_window(
     session = {"phase": "waiting", "serverNow": 10000, "biteAt": 25000, "expiresAt": 29000}
     clock = p.ServerClock.capture(10000, 0, 3.262)
     action, delay = p.next_session_action(session, clock, 3.262)
-    assert action == "wait" and delay == pytest.approx(13.369)
+    assert action == "wait" and delay == pytest.approx(13.738)
     assert p.next_session_action(session, clock, 3.262 + delay) == ("hook", 0)
     assert p.next_session_action(session, clock, 3.262 + delay + 1) == ("state", 0)
 
@@ -173,6 +173,18 @@ def test_latency_equal_to_bite_window_cannot_authorize_hook():
     session = {"phase": "bite", "serverNow": 10000, "biteAt": 12000, "expiresAt": 16000}
     clock = p.ServerClock.capture(10000, 0, 4)
     assert p.next_session_action(session, clock, 4) == ("state", 0)
+
+
+@pytest.mark.parametrize("rtt", [100, 388, 970, 2000, 3262, 3900])
+def test_opening_cushion_preserves_expiry_budget(rtt):
+    session = {"phase": "waiting", "serverNow": 10000, "biteAt": 25000, "expiresAt": 29000}
+    clock = p.ServerClock.capture(10000, 0, rtt / 1000)
+    action, delay = p.next_session_action(session, clock, rtt / 1000)
+    assert action == "wait"
+    at = rtt / 1000 + delay
+    assert p.next_session_action(session, clock, at + 1e-9) == ("hook", 0)
+    assert 25000 < clock.now_ms(at) < 29000 - rtt
+    assert p.next_session_action(session, clock, at + 4) == ("state", 0)
 
 
 @pytest.mark.parametrize("changes", [
