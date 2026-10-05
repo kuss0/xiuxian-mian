@@ -44,9 +44,15 @@ automatic remote-history recovery mechanism.
 
 ## Remaining Work
 
-- Backup currently calls systemctl stop without a game-operation drain gate.
-  Define bounded admission-stop/drain coordination before changing it. Do not
-  abandon consistent snapshots, disable backups or wait indefinitely for idle.
+- Backup calls systemctl stop. The supervisor already sends SIGUSR1 and drains
+  persisted Telegram/legacy pending windows; it is not a wholly absent drain.
+  `_wait_for_pending_drain()` accepts the first empty DB sample after a fixed
+  flush grace, without a worker acknowledgement of in-flight dispatch state.
+  `_active_pending_windows()` does not include native fishing sessions. This
+  leaves the stop/late-persist race and timed-game continuation uncoordinated.
+  Define bounded admission-stop acknowledgement and in-flight ownership before
+  changing it. Merely extending a fixed sleep cannot prove the queue is drained.
+  Do not abandon consistent snapshots, disable backups or wait indefinitely.
 - Define bounded missing-reply history collection using existing live clients,
   strict root/account/chat/bot binding and original timestamps. Keep it outside
   the send queue. Never turn a missing result into permission to resend.
