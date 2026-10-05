@@ -1,7 +1,6 @@
 # Batch Completion Notification
 
-Base: `17bc06d6`. Candidate accepted; production deployment pending a quiet
-window. Review passes below are separate maintainer passes, not independent
+Base: `17bc06d6`. `619562f5` deployed and pushed. Review passes below are separate maintainer passes, not independent
 external reviews.
 
 ## Evidence And Scope
@@ -64,3 +63,30 @@ restore old gameplay state or replay held notifications.
 
 Next scheduled trial window is 05:00 CST. Natural single-completion delivery
 must be recorded after release; do not run an extra batch for acceptance.
+
+## Production Checkpoint
+
+WA completed all eight natural wild actions by 01:51:15: seven gains of 45000
+cultivation and one change-fate escape, total +315000. Next wild action is
+2026-10-07 01:13:49; rift remains 2026-10-06 06:49:44 with future preparation.
+No pending game commands or unresolved native fishing rods before stop.
+
+Old worker exited cleanly 01:52:57, without the previous incomplete-cleanup
+message. Fast-forwarded this worktree, reran isolated tests (220 passed,
+2 subtests), started service 01:54:42, bootstrap complete 01:55:01, then pushed
+to `xiuxian-mian/main`. One successful quiet stop does not close the broader
+shutdown-drain design debt.
+
+Snapshots (0600, quick_check=ok):
+
+- `/root/xiuxian-stopped-before-batch-notification-20261006.db`
+- `/root/xiuxian-summary-stopped-before-batch-notification-20261006.db`
+
+Compared all 24 identities, 59 enable columns across identity/module/runtime
+tables, wild strategy and complete MiniApp configuration: unchanged. The held
+summary is byte-for-byte equivalent after JSON decoding. Main, observer and
+watchdog remain active with NRestarts=0; watchdog ok. Observer's remaining
+warning is the existing delivery-review batch, not a new overdue queue.
+
+Natural batch notification still awaits the 05:00 window. No extra trial,
+fishing cast, Boss activation or notification test was sent for validation.
