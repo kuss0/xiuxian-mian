@@ -1,6 +1,6 @@
 # Yinluo Daily Supply Priority
 
-Base: `e9e012b7`. Status: validated candidate; not deployed.
+Base: `e9e012b7`. Status: `f57e2b05` deployed and naturally verified.
 
 ## Evidence
 
@@ -62,3 +62,29 @@ Watch the normal scheduler for one daily sacrifice, a strictly owned official
 reply, updated daily/CD state and no repeated send. Continue natural fishing
 acceptance around 03:18 (jfdffdddd) and 04:18 (WA). The fate 5-to-0 discrepancy,
 historical unknown notification delivery and shutdown-drain work stay open.
+
+## Production Acceptance
+
+Normal stop completed at 03:12:06 with no incomplete-cleanup warning. Backups
+(0600, quick_check=ok):
+
+- `/root/xiuxian-stopped-before-yinluo-daily-20261006.db`
+- `/root/xiuxian-summary-stopped-before-yinluo-daily-20261006.db`
+
+Fast-forwarded into main; post-merge isolated tests: 137 passed, 11 subtests.
+Before restart, identity, module, timer, runtime and meta tables matched the
+stopped snapshot. Main start 03:14:14, bootstrap 03:14:33; pushed to
+`xiuxian-mian/main`. Watchdog and observer stayed running. Their 03:12/03:13
+inactive observations were this planned stop, not automatic restart failures.
+
+At 03:14:36 the ordinary scheduler sent `.每日献祭` once, message 1282822 in
+chat -1002083016447. Official bot 7965897083 replied directly at 03:14:38,
+message 1282823: sha +500. Operation is complete, sha 440 -> 940, daily day
+2026-10-06, next daily time 2026-10-07 00:01. Cultivation accounting remains
+unmodified and uncalibrated. At 03:16:38 soothe was safely blocked again and
+waits until 04:16:38; the now-completed daily action no longer bypasses that
+wait. No repeat sacrifice or resource-consuming fallback was sent.
+
+All module controls and full MiniApp configuration still match the snapshot.
+The historical held notification is unchanged. Health has only that existing
+delivery-review warning; watchdog is ok. Quiz learning remains unstaged.
