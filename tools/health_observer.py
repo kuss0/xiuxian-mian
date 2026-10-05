@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -147,6 +148,11 @@ MINIAPP_CRITICAL_ERROR_MARKERS = (
     "proof_missing",
 )
 MODULE_HEALTH_SPECS = [
+    {
+        "key": "yinluo",
+        "label": "阴罗献祭",
+        "enabled": "yinluo_enabled",
+    },
     {
         "key": "tianxing",
         "label": "天星",
@@ -1657,6 +1663,83 @@ def summarize_json_state(field: str, payload: dict[str, object], now: float, det
     return warn, error
 
 
+def yinluo_daily_health(value_for, now: float, *, scheduling_blocked: bool = False) -> dict[str, object]:
+    """Diagnose the observed soothe/daily starvation, never authorize work."""
+    observed = parse_json_dict(value_for("yinluo_observation"))
+    config = parse_json_dict(observed.get("auto_config"))
+    action = str(observed.get("auto_last_action") or "")
+    error = str(observed.get("auto_last_error") or "")
+    result = {"reason": "disabled", "action": action, "error": short_value(error, 120)}
+    if not boolish(value_for("yinluo_enabled")) or not boolish(config.get("daily_sacrifice")):
+        return result
+    result["reason"] = "evidence_missing"
+    day = local_day_key(now)
+    last_day = str(observed.get("last_daily_sacrifice_day") or "")
+    result["last_daily_day"] = last_day
+    if last_day == day:
+        result["reason"] = "completed"
+        return result
+    if last_day and (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_day) or last_day > day):
+        return result
+    try:
+        due = float(observed.get("next_daily_sacrifice_time", 0) or 0)
+        seen = float(observed.get("last_observed_at", 0) or 0)
+    except (ValueError, TypeError, OverflowError):
+        return result
+    if not all(math.isfinite(value) and value >= 0 for value in (due, seen)):
+        return result
+    result["next_daily_at"] = due
+    if due > now:
+        result["reason"] = "cooldown"
+        return result
+    if scheduling_blocked:
+        result["reason"] = "scheduling_blocked"
+        return result
+    for key in ("deep_retreat", "yuanying"):
+        phase = str(value_for(f"{key}_phase") or "")
+        next_time = positive_epoch(value_for(f"next_{key}_time"))
+        if boolish(value_for(f"{key}_enabled")) and (
+            phase in PHASEFUL_ATTENTION_PHASES
+            or (phase == "running" and 0 < next_time <= now + 60)
+        ):
+            result["reason"] = "scheduling_blocked"
+            return result
+    accounting = parse_json_dict(value_for("yinluo_accounting"))
+    book = accounting.get("book")
+    operations = accounting.get("operations")
+    if not isinstance(book, dict) or not isinstance(operations, list):
+        return result
+    if accounting.get("hold") or book.get("gap") or action in {"resource_hold", "resource_capacity", "legacy_pending"}:
+        result["reason"] = "resource_hold"
+        return result
+    if any(not isinstance(op, dict) or not isinstance(op.get("phase"), str) or op["phase"] not in {
+        "prepared", "sent", "unknown", "complete", "unsent", "read_expired",
+    } for op in operations):
+        return result
+    if (any(op["phase"] in {"prepared", "sent", "unknown"} for op in operations)
+            or any(observed.get(key) for key in ("auto_collect_pending", "auto_refine_pending", "auto_soothe_pending"))
+            or observed.get("last_result") == "pending"
+            or action in {"pending", "resource_pending"}):
+        result["reason"] = "pending"
+        return result
+    if (not 0 < seen <= now or now - seen > 24 * 3600
+            or observed.get("auto_calibrate_reason") or observed.get("last_result") == "not_member"):
+        return result
+    if not any(observed.get(key) for key in ("banner_owner", "banner_name", "banner_rank", "soul_total", "sha_max")):
+        return result
+    # Today's grace period must not inherit an overdue timestamp from last month.
+    today_due = datetime.fromtimestamp(now).replace(hour=0, minute=1, second=0, microsecond=0).timestamp()
+    result["overdue_sec"] = max(0, int(now - max(due, today_due)))
+    result["reason"] = "due"
+    if (result["overdue_sec"] > NEXT_LAG_ERROR_SEC and action == "soothe"
+            and boolish(config.get("soothe", True))
+            and observed.get("exhausted_slot_numbers")
+            and (error == "修为账本待校准，不发送安抚幡灵。"
+                 or re.fullmatch(r"当前修为 \d+，不足以安抚幡灵 \d+ 点。", error))):
+        result["reason"] = "soothe_starves_daily"
+    return result
+
+
 def build_module_summary(
     conn: sqlite3.Connection,
     now: float,
@@ -1664,6 +1747,7 @@ def build_module_summary(
     limit: int = 120,
     global_paused: bool = False,
     suppressed_next_modules=(),
+    command_blocked_ids=(),
 ) -> list[dict[str, object]]:
     suppressed_next_module_keys = {
         str(module_key or "").strip()
@@ -1720,6 +1804,18 @@ def build_module_summary(
             active = False
             warn = False
             error = False
+
+            if module_key == "yinluo":
+                daily = yinluo_daily_health(
+                    value_for, now,
+                    scheduling_blocked=global_paused or identity_id in command_blocked_ids,
+                )
+                evidence["yinluo_daily"] = daily
+                add_module_detail(details, "每日献祭", daily["reason"])
+                add_module_detail(details, "自动动作", daily["action"])
+                add_module_detail(details, "等待原因", daily["error"])
+                warn = daily["reason"] == "soothe_starves_daily"
+                active = daily["reason"] in {"pending", "resource_hold", "scheduling_blocked", "evidence_missing"}
 
             for field in spec.get("json_fields", ()):
                 json_payload = parse_json_dict(value_for(str(field)))
@@ -2156,6 +2252,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 limit=1000,
                 global_paused=scheduling_suppressed,
                 suppressed_next_modules=cave_blocked_modules,
+                command_blocked_ids=channel_frozen_ids if channel_status == "closed" else (),
             )
             module_pending_total, module_pending_samples = summarize_module_pending(full_module_summary)
             module_summary = full_module_summary[:120]
