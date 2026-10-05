@@ -1,7 +1,7 @@
 # Native Fish Gift Queue
 
 Base: `8cb28eb4`. Lab: `/root/xiuxian-native-fish-gift-queue-20261005`.
-Status: candidate accepted; deployment checkpoint pending.
+Status: `7efb8cac` deployed and pushed; no production gift target was enabled.
 Initial audit and second review are separate maintainer passes, not independent
 external reviews.
 
@@ -75,3 +75,36 @@ No blind endpoint calls or hidden resource consumption are introduced here.
 Public-only gift transport and general manual storage batch durability/retry
 semantics remain separate work. A real gift receipt still needs an authorized
 configured target; isolated testing is not production delivery evidence.
+
+## Production Checkpoint
+
+- A live warming action completed before deployment. Its important drop
+  notification was confirmed at 22:37:35 (79 UTF-16 units, three lines, one
+  mention). The earlier normal digest was confirmed at 22:25:57 (330 units,
+  six lines, no mention); the old unknown batch was not retried.
+- Stop requested 22:41:40 CST, old worker exited normally by 22:41:46.
+  Main started 22:43:54; bootstrap completed 22:44:15. Supervisor/worker
+  `2026664/2026665`, NRestarts 0. Observer/watchdog PIDs unchanged. Temporary
+  stopped-service warnings cleared; these were controlled maintenance stops.
+- Backups `/root/xiuxian-before-native-fish-gift-queue-20261005.db` and
+  `/root/xiuxian-summary-before-native-fish-gift-queue-20261005.db` pass
+  quick_check and have mode 0600. No database was restored.
+- Fast-forwarded only this worktree; pushed `7efb8cac` to `xiuxian-mian/main`.
+  Post-merge isolated regression: **130 passed**. Production quiz-bank learning
+  remains uncommitted; Boss timing `850167fa` remains present.
+- At 22:45, all 24 identities and 57 enable columns match the snapshot.
+  Complete MiniApp configuration, gift targets, pending fish and gift handoffs
+  are unchanged. Targets remain zero. The full held summary list is equal
+  (one batch); two normal summary rows wait inside their regular window.
+  Gameplay pending is empty, watchdog is ok, observer only reports the old
+  unknown notification batch. Startup staggered one already-due timer.
+- At 22:26 the read-only native fishing report still showed four identities
+  each with five accounted rods, thirteen without companions, six without
+  rods, zero warning identities. No additional cast, gift or target activation
+  was performed for acceptance.
+
+Closed: native confirmed catches now reach the existing durable gift handoff
+when configured and authorized. Still open: native fish-open, public-only gift
+transport, general manual batch durability and real gifting acceptance without
+an authorized target. This is not a claim that all fishing or notification debt
+is cleared.
