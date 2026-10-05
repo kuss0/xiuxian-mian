@@ -1,7 +1,8 @@
 # Compact Startup Notifications
 
 Base: `c95ea62f`. Worktree: `/root/xiuxian-startup-notification-20261006`.
-Status: accepted for disk-only promotion; loaded worker changes on next start.
+Status: `ba2ff926` fast-forwarded to production disk and pushed; the loaded
+worker changes on next start. No service restart was performed for this patch.
 
 ## Evidence And Scope
 
@@ -84,3 +85,18 @@ was seen. Notification telemetry since October 5 00:00 has 255 confirmed
 attempts and the one previously-held unknown attempt, not a new daily-report
 incident. Existing summary rows will still contain the old startup wording
 at the next flush; disk-only promotion cannot retroactively change them.
+
+## Disk Promotion Checkpoint
+
+Post-merge isolated regression: 68 passed. Supervisor 2207210, worker 2207227,
+observer 2178717 and watchdog 2178662 are unchanged and active, NRestarts=0.
+The worker still has `f7958deb` loaded; `ba2ff926` is the next-start code.
+Production's only dirty file remains runtime quiz learning data. No gameplay
+or summary database was modified as part of this disk-only promotion.
+
+At 06:06:07 the already-queued old notices and natural results were delivered
+in an ordinary digest: confirmed receipt `604c83183c6b4b148e5b80ac13aba7dd`,
+405 UTF-16 units, seven lines, no mentions. This verifies continued delivery,
+not the new startup copy. The next real worker startup remains its natural
+acceptance gate; no restart or synthetic notification is justified solely
+to manufacture that sample.
