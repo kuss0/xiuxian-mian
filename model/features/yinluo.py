@@ -2139,6 +2139,9 @@ async def run_yinluo_scheduler(now):
         observed["auto_calibrate_reason"] = "炼化槽预计到期，先查幡确认精华已成。"
         state["yinluo_observation"] = observed
         plan = build_yinluo_manual_plan("banner", now=now)
+    elif _has_banner_hint(observed) and _daily_sacrifice_due(observed, now):
+        # An unaffordable soothe must not starve the due daily sha supply.
+        plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
     elif _auto_action_enabled(observed, "soothe") and list(observed.get("exhausted_slot_numbers") or []):
         plan = build_yinluo_manual_plan("soothe", now=now)
     elif not _has_banner_hint(observed):
@@ -2148,10 +2151,7 @@ async def run_yinluo_scheduler(now):
         if _auto_action_enabled(observed, "refine"):
             auto_refine_arg, _auto_refine_reason = _build_auto_refine_arg(observed, now=now)
         auto_convert_amount, _auto_convert_reason = _build_auto_convert_arg(observed, now=now)
-        daily_sacrifice_due = _daily_sacrifice_due(observed, now)
-        if daily_sacrifice_due:
-            plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
-        elif auto_refine_arg:
+        if auto_refine_arg:
             plan = build_yinluo_manual_plan("refine", auto_refine_arg, now=now)
         elif auto_convert_amount:
             plan = build_yinluo_manual_plan("convert", auto_convert_amount, now=now)

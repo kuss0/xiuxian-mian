@@ -1087,6 +1087,110 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".囚禁魂魄 4 凶兽戾魄", send_mock.await_args.args[0])
         self.assert_in_flight(".囚禁魂魄 4 凶兽戾魄")
 
+    def _daily_and_soothe_observation(self, now):
+        return {
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡",
+            "sha_current": 440,
+            "sha_max": 350000,
+            "exhausted_slot_numbers": [1],
+            "auto_next_time": now + 3600,
+            "auto_config": {"daily_sacrifice": True, "soothe": True},
+        }
+
+    async def test_due_daily_sacrifice_precedes_soothe_without_spending_cultivation(self):
+        now = 1_780_000_000.0
+        for balance in (None, 11, 50000):
+            with self.subTest(balance=balance), state_module.use_identity(self.identity_id):
+                state_module.state["yinluo_accounting"] = {}
+                state_module.state["yinluo_observation"] = {}
+                state_module.state["xiuwei_accounting"] = {}
+                seed_resources(self.identity_id, now, sha=440, cultivation=balance)
+                if balance is None:
+                    state_module.state["xiuwei_accounting"] = {}
+                cultivation_before = copy.deepcopy(state_module.state["xiuwei_accounting"])
+                send_mock, observed = await self._run_with_observation(
+                    self._daily_and_soothe_observation(now), now=now,
+                )
+
+                send_mock.assert_awaited_once()
+                self.assertEqual(".每日献祭", send_mock.await_args.args[0])
+                self.assert_in_flight(".每日献祭")
+                self.assertEqual([1], observed["exhausted_slot_numbers"])
+                self.assertEqual("", observed["last_daily_sacrifice_day"])
+                self.assertEqual(0, observed["next_daily_sacrifice_time"])
+                self.assertEqual(cultivation_before, state_module.state["xiuwei_accounting"])
+
+                # A retained receipt is pending evidence, not permission to send again.
+                send_again, _ = await self._run_with_observation(observed, now=now + 30)
+                send_again.assert_not_called()
+
+    async def test_daily_priority_keeps_toggle_day_and_cooldown_gates(self):
+        now = 1_780_000_000.0
+        for gate in ("disabled", "done", "cooldown"):
+            with self.subTest(gate=gate), state_module.use_identity(self.identity_id):
+                state_module.state["yinluo_accounting"] = {}
+                state_module.state["yinluo_observation"] = {}
+                observation = self._daily_and_soothe_observation(now)
+                if gate == "disabled":
+                    observation["auto_config"]["daily_sacrifice"] = False
+                elif gate == "done":
+                    observation["last_daily_sacrifice_day"] = yinluo.get_day_key(now)
+                else:
+                    observation["next_daily_sacrifice_time"] = now + 7200
+
+                send_mock, observed = await self._run_with_observation(observation, now=now)
+                send_mock.assert_not_called()
+                self.assertEqual(now + 3600, observed["auto_next_time"])
+
+                observed["auto_next_time"] = now - 1
+                send_mock, _ = await self._run_with_observation(observed, now=now)
+                send_mock.assert_awaited_once()
+                self.assertEqual(".安抚幡灵 1", send_mock.await_args.args[0])
+
+    async def test_daily_priority_keeps_calibration_and_legacy_pending_first(self):
+        now = 1_780_000_000.0
+        for gate in ("stale", "calibrate", "pending", "banner_missing", "collect"):
+            with self.subTest(gate=gate), state_module.use_identity(self.identity_id):
+                state_module.state["yinluo_accounting"] = {}
+                state_module.state["yinluo_observation"] = {}
+                observation = self._daily_and_soothe_observation(now)
+                if gate == "stale":
+                    observation["last_observed_at"] = now - yinluo.YINLUO_OBSERVATION_STALE_SEC - 1
+                elif gate == "calibrate":
+                    observation["auto_calibrate_reason"] = "需要原生幡面板"
+                elif gate == "banner_missing":
+                    observation = {
+                        "last_observed_at": now - 60,
+                        "auto_config": {"daily_sacrifice": True},
+                    }
+                elif gate == "collect":
+                    observation.update(ready_slots=1, ready_slot_numbers=[2])
+                    observation["auto_config"]["collect"] = True
+                else:
+                    observation["auto_soothe_pending"] = {"slot": 1, "sent_at": now - 30}
+
+                send_mock, observed = await self._run_with_observation(observation, now=now)
+                if gate == "pending":
+                    send_mock.assert_not_called()
+                    self.assertEqual("legacy_pending", observed["auto_last_action"])
+                else:
+                    send_mock.assert_awaited_once()
+                    command = ".收取精华 2" if gate == "collect" else ".我的阴罗幡"
+                    self.assertEqual(command, send_mock.await_args.args[0])
+
+    async def test_daily_priority_preserves_phaseful_guard(self):
+        now = 1_780_000_000.0
+        with patch.object(yinluo, "get_phaseful_summary_risk_reason", return_value="等待结算"):
+            send_mock, observed = await self._run_with_observation(
+                self._daily_and_soothe_observation(now), now=now,
+            )
+        send_mock.assert_not_called()
+        self.assertEqual("daily_sacrifice", observed["auto_last_action"])
+        self.assertIn("等待结算", observed["auto_last_error"])
+        self.assertEqual("", observed["last_daily_sacrifice_day"])
+
     async def test_scheduler_auto_soothes_lowest_exhausted_slot(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
