@@ -118,3 +118,19 @@ receipt is timestamped 05:00:04, a different event. This validates the external
 timeout suppression naturally, without sending a test question or changing
 question-bank learning. Managed-identity and conflict notifications remain
 separate paths; this sample does not certify all of them.
+
+## Held Delivery Read-only Follow-up
+
+At October 6 06:10, a one-shot memory-only Telegram client verified the
+authorized account, then read at most 100 messages in the configured log
+group before held_at+180 seconds. It compared the exact Telegram-rendered
+plaintext of the held payload, without filtering by bot sender. No exact
+match was found. The newest fetched message was October 5 08:41:07, older
+than the held event at 09:11:34; none was within its preceding three minutes.
+
+This negative result is not definitive non-delivery: deletion, visibility and
+history limitations remain possible. The held entry and its payload hash are
+unchanged. No message was sent, no live session database was written, and no
+notification checkpoint or game state was modified. Stop repeated probing;
+operator reconciliation still requires positive evidence or explicit policy,
+not absence treated as permission to resend.
