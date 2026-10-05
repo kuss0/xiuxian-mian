@@ -1519,9 +1519,11 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
-    async def test_pending_transfer_due_enqueues_storage_bag_gift_batch(self):
+    async def test_pending_transfer_due_persists_before_dispatch(self):
         identity_id = self._prepare_identity()
         target_id = self._prepare_identity(10002)
+        state_module.set_identity_account(identity_id, 1)
+        state_module.set_identity_account(target_id, 2)
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
@@ -1530,19 +1532,20 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_caught_fish_json"] = '{"银须灵鲢": 2}'
             state_module.state["next_fishing_time"] = now - 1
             with (
-                patch.object(fishing_runtime, "start_storage_bag_gift_batch", new=AsyncMock(return_value=(True, "已加入", {}))) as gift_mock,
+                patch.object(fishing_runtime.fishing_gift, "dispatch", new=AsyncMock()) as gift_mock,
+                patch.object(fishing_runtime.fishing_gift.persistence, "save_state", return_value=True),
                 patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(fishing_runtime, "save_state"),
                 patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
-            gift_mock.assert_awaited_once()
-            task = gift_mock.await_args.args[0][0]
-            self.assertEqual(identity_id, task["source_identity_id"])
-            self.assertEqual(target_id, task["target_identity_id"])
+            gift_mock.assert_not_awaited()
+            task = state_module.state["fishing_gift_handoff"]
+            self.assertEqual("queued", task["phase"])
+            self.assertEqual(identity_id, task["identity_id"])
+            self.assertEqual(target_id, task["target_id"])
             self.assertEqual([{"item_name": "银须灵鲢", "quantity": 2, "method": "gift"}], task["items"])
-            self.assertEqual(target_id, gift_mock.await_args.kwargs["target_identity_id"])
             self.assertEqual("", state_module.state["fishing_caught_fish_json"])
             self.assertEqual(0, state_module.state["fishing_transfer_due_at"])
             send_mock.assert_not_awaited()
@@ -1558,7 +1561,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_caught_fish_json"] = '{"银须灵鲢": 2}'
             state_module.state["next_fishing_time"] = now + 3600
             with (
-                patch.object(fishing_runtime, "start_storage_bag_gift_batch", new=AsyncMock()) as gift_mock,
+                patch.object(fishing_runtime.fishing_gift, "dispatch", new=AsyncMock()) as gift_mock,
                 patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
@@ -1571,7 +1574,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_reply_to_msg_id"] = 22027
             state_module.state["fishing_reply_due_at"] = now + 30
             with (
-                patch.object(fishing_runtime, "start_storage_bag_gift_batch", new=AsyncMock()) as gift_mock,
+                patch.object(fishing_runtime.fishing_gift, "dispatch", new=AsyncMock()) as gift_mock,
                 patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
             ):
                 await fishing_runtime.run_fishing_scheduler(now)

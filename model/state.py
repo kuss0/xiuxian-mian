@@ -119,6 +119,8 @@ IDENTITY_JSON_COLUMNS.add("fishing_native_operation")
 IDENTITY_RUNTIME_COLUMNS.append("fishing_native_operation")
 IDENTITY_JSON_COLUMNS.add("fishing_native_supply")
 IDENTITY_RUNTIME_COLUMNS.append("fishing_native_supply")
+IDENTITY_JSON_COLUMNS.add("fishing_gift_handoff")
+IDENTITY_RUNTIME_COLUMNS.append("fishing_gift_handoff")
 IDENTITY_JSON_COLUMNS.add("trial_operation")
 IDENTITY_RUNTIME_COLUMNS.append("trial_operation")
 IDENTITY_JSON_COLUMNS.add("trial_operation_archive")
@@ -796,6 +798,7 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_result_pending": {},
     "fishing_operation": {},
     "fishing_native_operation": {},
+    "fishing_gift_handoff": {},
     "fishing_native_supply": {},
     "trial_operation": {},
     "trial_operation_archive": [],

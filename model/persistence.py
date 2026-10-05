@@ -846,6 +846,7 @@ _SCHEMA_COLUMNS = {
         ("fishing_result_pending", "TEXT NOT NULL DEFAULT '{}'"),
         ("fishing_operation", "TEXT NOT NULL DEFAULT '{}'"),
         ("fishing_native_operation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("fishing_gift_handoff", "TEXT NOT NULL DEFAULT '{}'"),
         ("fishing_native_supply", "TEXT NOT NULL DEFAULT '{}'"),
         ("trial_operation", "TEXT NOT NULL DEFAULT '{}'"),
         ("trial_operation_archive", "TEXT NOT NULL DEFAULT '[]'"),
@@ -1747,6 +1748,7 @@ def init_db():
             fishing_result_pending TEXT NOT NULL DEFAULT '{}',
             fishing_operation TEXT NOT NULL DEFAULT '{}',
             fishing_native_operation TEXT NOT NULL DEFAULT '{}',
+            fishing_gift_handoff TEXT NOT NULL DEFAULT '{}',
             fishing_native_supply TEXT NOT NULL DEFAULT '{}',
             trial_operation TEXT NOT NULL DEFAULT '{}',
             trial_operation_archive TEXT NOT NULL DEFAULT '[]',
@@ -2033,10 +2035,10 @@ def _serialize_db_value(key, value):
             return encoded
         except (TypeError, ValueError, OverflowError, RecursionError):
             return '{"invalid":true}'
-    if key in {"fishing_result_pending", "fishing_operation", "fishing_native_operation", "fishing_native_supply", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
+    if key in {"fishing_gift_handoff", "fishing_result_pending", "fishing_operation", "fishing_native_operation", "fishing_native_supply", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
         try:
             limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "fishing_native_operation": FISHING_NATIVE_OPERATION_MAX_BYTES,
-                     "fishing_native_supply": FISHING_NATIVE_SUPPLY_MAX_BYTES,
+                     "fishing_native_supply": FISHING_NATIVE_SUPPLY_MAX_BYTES, "fishing_gift_handoff": 16384,
                      "trial_operation": TRIAL_OPERATION_MAX_BYTES,
                      "treasure_result": TREASURE_RESULT_MAX_BYTES, "treasure_operation": TREASURE_OPERATION_MAX_BYTES,
                      "tree_operation": TREE_OPERATION_MAX_BYTES}.get(key)
@@ -2097,10 +2099,10 @@ def _deserialize_db_value(key, value):
             return parsed
         except (TypeError, ValueError, RecursionError):
             return {"invalid": True}
-    if key in {"fishing_result_pending", "fishing_operation", "fishing_native_operation", "fishing_native_supply", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
+    if key in {"fishing_gift_handoff", "fishing_result_pending", "fishing_operation", "fishing_native_operation", "fishing_native_supply", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
         try:
             limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "fishing_native_operation": FISHING_NATIVE_OPERATION_MAX_BYTES,
-                     "fishing_native_supply": FISHING_NATIVE_SUPPLY_MAX_BYTES,
+                     "fishing_native_supply": FISHING_NATIVE_SUPPLY_MAX_BYTES, "fishing_gift_handoff": 16384,
                      "trial_operation": TRIAL_OPERATION_MAX_BYTES,
                      "treasure_result": TREASURE_RESULT_MAX_BYTES, "treasure_operation": TREASURE_OPERATION_MAX_BYTES,
                      "tree_operation": TREE_OPERATION_MAX_BYTES}.get(key)

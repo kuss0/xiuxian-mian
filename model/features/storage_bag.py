@@ -12,10 +12,11 @@ from ..config import MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
-from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
+from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, is_game_send_definitely_unsent, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
 from . import workflow_log
+from . import fishing_gift
 
 CMD_STORAGE_BAG = ".储物袋"
 CMD_STORAGE_BAG_LISTING = ".上架"
@@ -157,6 +158,7 @@ _storage_bag_transfer_batch_state = {
 }
 
 _storage_bag_recent_listing_sends = {}
+_storage_bag_fishing_handoff = None
 
 
 def _get_identity_client(identity_id=None):
@@ -589,6 +591,8 @@ def get_storage_bag_transfer_snapshot():
 
 
 def _clear_storage_bag_transfer_state():
+    global _storage_bag_fishing_handoff
+    _storage_bag_fishing_handoff = None
     _storage_bag_transfer_state.update({
         "running": False,
         "operation": "transfer",
@@ -734,6 +738,13 @@ async def _maybe_advance_storage_bag_transfer_batch(success, message, *, op_id="
 
 
 def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
+    global _storage_bag_fishing_handoff
+    if _storage_bag_fishing_handoff is not None:
+        try:
+            _storage_bag_fishing_handoff.finish(success, message)
+        except fishing_gift.HandoffError as exc:
+            success, message = False, f"赠鱼持久记录待核查：{exc}"
+        _storage_bag_fishing_handoff = None
     completed_op_id = str(_storage_bag_transfer_state.get("op_id") or "")
     _storage_bag_transfer_state["running"] = False
     _storage_bag_transfer_state["step"] = "done" if success else "failed"
@@ -851,8 +862,30 @@ async def _send_storage_bag_transfer_command(
     if reply_to > 0:
         kwargs["reply_to"] = reply_to
     _storage_bag_transfer_state["reply_due_at"] = 0
-    msg = await send_game_command(command, **kwargs)
+    handoff = _storage_bag_fishing_handoff
+    if handoff is not None:
+        target_chat_id = int(_storage_bag_transfer_state.get("gift_locator_chat_id") or 0) if family == "storage_bag_gift" else get_game_group_id()
+        try:
+            handoff.before_send(command, family, reply_to, target_chat_id)
+        except fishing_gift.HandoffError as exc:
+            _finalize_storage_bag_transfer(False, str(exc))
+            return None
+        kwargs.update(target_chat_id=target_chat_id, operation_check=handoff.allowed)
+    try:
+        msg = await send_game_command(command, **kwargs)
+    except BaseException:
+        if handoff is not None:
+            _finalize_storage_bag_transfer(False, "赠鱼发送中断，结果未知")
+        raise
     now = time.time()
+    if handoff is not None:
+        known_unsent = bool(not msg and is_game_send_definitely_unsent(identity_id, command))
+        try:
+            msg_id = int(getattr(msg, "id", 0) or 0)
+            handoff.sent(msg_id, target_chat_id, known_unsent=known_unsent)
+        except fishing_gift.HandoffError as exc:
+            _finalize_storage_bag_transfer(False, str(exc))
+            return None
     if not msg:
         block_code, block_reason = _storage_transfer_send_block(identity_id, command)
         if block_code in STORAGE_TRANSFER_SEND_BLOCK_DEFER_CODES or block_code.startswith("flood_wait"):
@@ -1623,7 +1656,9 @@ async def start_storage_bag_transfer_task(
     aggregate_buyers=None,
     batch_child=False,
     operation="transfer",
+    gift_handoff=None,
 ):
+    global _storage_bag_fishing_handoff
     if _storage_bag_transfer_state.get("running"):
         return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
     if _storage_bag_transfer_batch_state.get("running") and not batch_child:
@@ -1711,6 +1746,7 @@ async def start_storage_bag_transfer_task(
             return False, f"相同上架命令刚发送，约 {int(wait_sec) + 1} 秒后再试", get_storage_bag_transfer_snapshot()
     now = time.time()
     _clear_storage_bag_transfer_state()
+    _storage_bag_fishing_handoff = gift_handoff
     _storage_bag_transfer_state.update({
         "running": True,
         "operation": operation,
@@ -1793,6 +1829,7 @@ async def start_storage_bag_gift_task(
     items,
     *,
     batch_child=False,
+    gift_handoff=None,
 ):
     return await start_storage_bag_transfer_task(
         source_identity_id,
@@ -1801,6 +1838,7 @@ async def start_storage_bag_gift_task(
         "",
         batch_child=batch_child,
         operation="gift",
+        gift_handoff=gift_handoff,
     )
 
 
@@ -2305,7 +2343,16 @@ async def _handle_storage_bag_gift_reply(raw_text, *, reply_msg_id=0, family="st
             await send_audit_log(f"❌ 储物袋赠送结果不匹配：{gift_item}", limit=260)
             return True
         source_costs = {"灵石": int(result.get("tax") or 0)} if int(result.get("tax") or 0) > 0 else None
-        gift_synced = _storage_transfer_apply_item_move(moved_item, moved_quantity, extra_source_costs=source_costs)
+        if _storage_bag_fishing_handoff is not None:
+            try:
+                _storage_bag_fishing_handoff.confirm(moved_item, moved_quantity, int(result.get("tax") or 0), reply_msg_id)
+            except fishing_gift.HandoffError as exc:
+                _finalize_storage_bag_transfer(False, str(exc))
+                await send_audit_log(f"⚠️ 赠鱼回执未核销，已保留记录待核查：{exc}", priority="high", limit=240)
+                return True
+            gift_synced = True
+        else:
+            gift_synced = _storage_transfer_apply_item_move(moved_item, moved_quantity, extra_source_costs=source_costs)
         if gift_synced:
             _storage_transfer_log(f"已同步本地储物袋数据：赠送 {moved_item} x{moved_quantity}")
         _record_storage_transfer_event(
@@ -2426,6 +2473,14 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
             family=reply_family or "storage_bag_buy",
         )
     if step == "waiting_gift_reply":
+        if _storage_bag_fishing_handoff is not None:
+            try:
+                record = _storage_bag_fishing_handoff.read()
+                chat_id = int((reply_context or {}).get("chat_id") or getattr(reply_to, "chat_id", 0) or 0)
+                if not chat_id or chat_id != record["chat_id"]:
+                    return False
+            except fishing_gift.HandoffError:
+                return False
         if not _is_storage_bag_reply_to_transfer(reply_to, msg_id_key="gift_msg_id", command_prefix=CMD_STORAGE_BAG_GIFT, reply_to_msg_id=reply_to_msg_id):
             _record_storage_transfer_event(
                 "忽略赠送回执",
@@ -2516,17 +2571,33 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
     command_msg_id = int(_storage_bag_transfer_state.get(msg_id_key) or 0)
     if command_msg_id <= 0:
         return False
+    chat_id = get_sent_message_chat_id(
+        command_msg_id, default=get_game_group_id(), send_as_id=int(config.get("identity_id") or 0))
+    handoff = _storage_bag_fishing_handoff
+    if handoff is not None:
+        try:
+            record = handoff.read()
+            if record["phase"] != "waiting" or record["msg_id"] != command_msg_id:
+                return False
+            chat_id = record["chat_id"]
+        except fishing_gift.HandoffError:
+            return False
+
+    def matches(entry):
+        if handoff is not None:
+            from ..state import get_game_bot_ids
+            if (entry.get("event_type") not in {"message", "edit"}
+                    or entry.get("sender_id") not in get_game_bot_ids() or not entry.get("sender_is_bot")):
+                return False
+        return _is_storage_transfer_reply_log_entry(entry)
+
     replies = find_message_log_replies(
         command_msg_id,
         now,
         lookback_sec=max(15 * 60, STORAGE_TRANSFER_REPLY_TIMEOUT_SEC * 10),
         lookahead_sec=30,
-        chat_id=get_sent_message_chat_id(
-            command_msg_id,
-            default=get_game_group_id(),
-            send_as_id=int(config.get("identity_id") or 0),
-        ),
-        predicate=_is_storage_transfer_reply_log_entry,
+        chat_id=chat_id,
+        predicate=matches,
     )
     if not replies:
         return False
@@ -2542,6 +2613,7 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
             reply_context={
                 "family": family,
                 "reply_to_msg_id": command_msg_id,
+                "chat_id": int(entry.get("chat_id") or 0),
                 "matched_via": "message_log_recovery",
             },
         )
@@ -2552,6 +2624,12 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
 
 
 async def _retry_storage_bag_transfer_waiting_step(step):
+    if _storage_bag_fishing_handoff is not None:
+        try:
+            if _storage_bag_fishing_handoff.read()["phase"] != "active":
+                return False
+        except fishing_gift.HandoffError:
+            return False
     config = _storage_transfer_retry_config_for_step(step)
     if not config:
         return False

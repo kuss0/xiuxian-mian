@@ -55,7 +55,8 @@ from .fishing_miniapp import (
     run_fishing_miniapp_production_flow,
 )
 from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture
-from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
+from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas
+from . import fishing_gift
 from . import fishing_operations
 
 
@@ -1630,6 +1631,24 @@ async def _run_pending_fishing_transfer(now):
     snapshot = _state_snapshot()
     if not snapshot.get("fishing_enabled"):
         return False
+    if _fishing_has_unresolved_result():
+        return False
+    record = state.get(fishing_gift.STATE_KEY, {})
+    if record != {}:
+        owner = MiniAppIdentityOwner.capture(get_current_identity_id())
+        try:
+            fishing_gift.validate(record)
+            if record["phase"] != "done":
+                return await fishing_gift.dispatch(fishing_gift.FishingGiftHandoff(get_current_identity_id(), record["target_id"]))
+        except fishing_gift.HandoffError as exc:
+            if owner is None or not owner.is_current():
+                return True
+            message = f"鱼获赠送记录待核查，不自动补发：{exc}"
+            if state.get("fishing_last_error") != message:
+                state["fishing_last_error"] = message
+                mark_dirty()
+                await send_audit_log(f"⚠️ {message}", scope="identity", priority="high", limit=240)
+            return True
     transfer_items = fishing_behavior.pending_fishing_transfer_items(snapshot)
     if not transfer_items:
         return False
@@ -1671,41 +1690,23 @@ async def _run_pending_fishing_transfer(now):
         return False
 
     try:
-        ok, message, _transfer = await start_storage_bag_gift_batch(
-            [{
-                "source_identity_id": source_id,
-                "target_identity_id": target_id,
-                "items": gift_items,
-            }],
-            target_identity_id=target_id,
-            stop_on_error=True,
-        )
+        handoff = fishing_gift.FishingGiftHandoff(source_id, target_id)
+        handoff.prepare(gift_items, now)
     except Exception as exc:
-        ok = False
-        message = str(exc)
-
-    target_label = get_identity_display_name(target_id)
-    if ok:
-        state["fishing_caught_fish_json"] = ""
-        state["fishing_transfer_due_at"] = 0
-        state["fishing_last_result"] = f"鱼获赠送已入队：{item_text} -> {target_label}"
-        state["fishing_last_error"] = ""
+        state["fishing_transfer_due_at"] = float(now + FISHING_TRANSFER_RETRY_DELAY_SEC)
+        state["fishing_last_error"] = f"鱼获赠送持久交接失败：{exc}"
         save_state()
         await send_audit_log(
-            f"🎣 灵溪垂钓鱼获已加入储物袋赠送队列：{item_text} -> {target_label}",
-            scope="identity",
-            limit=240,
+            f"⚠️ 鱼获赠送未发送，保留队列：{exc}", scope="identity", limit=240,
         )
         return True
-
-    state["fishing_transfer_due_at"] = float(now + FISHING_TRANSFER_RETRY_DELAY_SEC)
-    state["fishing_last_error"] = f"鱼获赠送入队失败：{message or '未知错误'}"
-    save_state()
+    target_label = get_identity_display_name(target_id)
+    state["fishing_last_result"] = f"鱼获赠送已持久入队：{item_text} -> {target_label}"
+    mark_dirty()
     await send_audit_log(
-        f"⚠️ 灵溪垂钓鱼获赠送入队失败，5分钟后重试：{message or '未知错误'}",
-        scope="identity",
-        limit=240,
+        f"🎣 鱼获已持久入队：{item_text} -> {target_label}", scope="identity", priority="low", limit=240,
     )
+    # Dispatch on the next tick, after ownership has reached durable storage.
     return True
 
 
