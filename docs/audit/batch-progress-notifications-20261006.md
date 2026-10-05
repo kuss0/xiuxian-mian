@@ -1,7 +1,7 @@
 # Batch Progress Notification Follow-up
 
 Base: `1def52f6`. Worktree: `/root/xiuxian-batch-progress-20261006`.
-Status: candidate accepted for a quiet-window rollout; not yet deployed.
+Status: `f7958deb` deployed and pushed to `xiuxian-mian/main`.
 
 ## Evidence
 
@@ -57,3 +57,29 @@ all 24 stored trial checkpoints complete. No game pending or active Boss;
 WA rift preparation is due around 06:39:44. Back up the game and summary
 databases, fast-forward this worktree only and preserve current switches.
 Rollback is code-only; do not restore old game state or replay held delivery.
+
+## Production Checkpoint
+
+The explicit stop began at 05:34:14; worker exited successfully at 05:34:21.
+After fast-forward and post-merge isolated regression (211 passed, two
+subtests), main started 05:35:57 and bootstrapped at 05:36:15. Supervisor
+2207210 / worker 2207227 are active, NRestarts=0. Observer/watchdog were not
+restarted. Their brief stop warnings correspond to this controlled rollout.
+
+SQLite snapshots, both quick_check=ok and mode 0600:
+
+- `/root/xiuxian-before-batch-progress-20261006.db`
+- `/root/xiuxian-summary-before-batch-progress-20261006.db`
+
+Compared 24 identities and 62 control/strategy columns, including automatic
+reacquisition and wild strategy, plus full MiniApp configuration, identity
+account mapping and global pause controls: no differences. The historical
+held list is identical. Startup staggered one already-due timer as designed;
+runtime timestamps are not asserted identical. Only the auto-learned quiz
+bank remains dirty, preserved uncommitted.
+
+05:37:23 watchdog is healthy; observer still reports the known cancelled
+backup-era fight and one held delivery. Game pending is empty and WA rift
+preparation remains around 06:39:44. No new game batch or notification test
+was forced. Natural absence of start/progress TG notices awaits the next
+scheduled batch; the 05:00 wave validates the earlier completion merge only.
