@@ -20,6 +20,7 @@ ROOT = 5901
 RESULT = 5902
 ITEM = "\u6cd5\u5219\u788e\u7247"
 SUCCESS = "\u3010\u63a2\u5bfb\u6210\u529f\u3011\n\u83b7\u5f97\u4e86\u3010\u6cd5\u5219\u788e\u7247\u3011x2"
+TIANXING_SUCCESS = SUCCESS + "\n\u3010\u63a8\u547d\u547d\u4e2d\u3011\u5929\u673a\u503c +1"
 FAILURE = "\u3010\u906d\u9047\u98ce\u66b4\u3011\n\u4fee\u4e3a\u5012\u9000\u4e86 300 \u70b9\uff01"
 START = explore_rift.EXPLORE_RIFT_PENDING_KEYWORD
 FATAL = explore_rift.EXPLORE_RIFT_FATAL_TITLE
@@ -320,15 +321,60 @@ def test_new_account_cannot_reinterpret_completed_result_without_account_context
     assert state_module._meta_state == expected
 
 
-def test_terminal_state_is_retained_when_tianxing_audit_loses_the_identity(env, monkeypatch):
+def test_terminal_state_is_retained_when_result_audit_loses_the_identity(env):
     async def removed(*args, **kwargs):
+        assert item_count() == 2
+        assert env.identity["explore_rift_last_result_key"]
         state_module.remove_identity(IDENTITY)
         state_module.set_identity_account(IDENTITY + 1, ACCOUNT)
 
-    monkeypatch.setattr(explore_rift, "_send_tianxing_explore_rift_result_audit", removed)
-    assert asyncio.run(delivery())
-    env.audit.assert_not_awaited()
+    env.audit.side_effect = removed
+    assert asyncio.run(delivery(TIANXING_SUCCESS))
+    env.audit.assert_awaited_once()
     assert not state_module.get_identity_state(IDENTITY + 1)["explore_rift_last_result_key"]
+
+
+@pytest.mark.parametrize("outcome", [True, False, None])
+@pytest.mark.parametrize("reload", [False, True])
+def test_tianxing_result_notifies_once_without_ordinary_fallback(env, monkeypatch, outcome, reload):
+    if reload:
+        monkeypatch.setattr(explore_rift, "save_state", persistence.save_state)
+        monkeypatch.setattr(storage_bag, "save_state", persistence.save_state)
+    env.audit.return_value = outcome
+
+    assert asyncio.run(delivery(TIANXING_SUCCESS))
+    env.audit.assert_awaited_once()
+    assert env.audit.await_args.kwargs["priority"] == "high"
+    assert item_count() == 2
+    assert env.identity["explore_rift_reply_to_msg_id"] == 0
+    next_time = env.identity["next_explore_rift_time"]
+    if reload:
+        assert persistence.load_state()
+    assert asyncio.run(delivery(TIANXING_SUCCESS))
+    env.audit.assert_awaited_once()
+    assert item_count() == 2
+    assert state_module.get_identity_state(IDENTITY)["next_explore_rift_time"] == next_time
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+def test_result_notification_error_preserves_committed_result_without_replay(env, monkeypatch, error):
+    monkeypatch.setattr(explore_rift, "save_state", persistence.save_state)
+    monkeypatch.setattr(storage_bag, "save_state", persistence.save_state)
+    env.audit.side_effect = error()
+    with pytest.raises(error):
+        asyncio.run(delivery(TIANXING_SUCCESS))
+    assert item_count() == 2
+    assert persistence.load_state()
+    assert asyncio.run(delivery(TIANXING_SUCCESS))
+    env.audit.assert_awaited_once()
+    assert item_count() == 2
+
+
+@pytest.mark.parametrize("text", [SUCCESS, FAILURE, CD, FATAL, ESCAPE])
+def test_other_rift_results_keep_the_original_single_notification(env, text):
+    assert asyncio.run(delivery(text))
+    env.audit.assert_awaited_once()
+    assert "priority" not in env.audit.await_args.kwargs
 
 
 @pytest.mark.parametrize("field,value", [("stage", []), ("event_type", []), ("items", []), ("event_at", True)])

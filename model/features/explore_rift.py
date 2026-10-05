@@ -722,18 +722,6 @@ def parse_explore_rift_result_summary(text):
     return (" ｜ ".join(parts) if parts else "探寻裂缝成功"), item_deltas
 
 
-async def _send_tianxing_explore_rift_result_audit(raw_text, result_summary):
-    if not looks_like_tianxing_route_result(raw_text):
-        return False
-    await send_audit_log(
-        f"🌌 天星探索结果｜探寻裂缝：{result_summary or '未知结果'}",
-        scope="identity",
-        priority="high",
-        limit=260,
-    )
-    return True
-
-
 def _apply_tianxing_explore_rift_result(raw_text, now, *, reply_context=None):
     if looks_like_tianxing_route_result(raw_text):
         apply_tianxing_passive(raw_text, now=now, family="explore_rift", reply_context=reply_context)
@@ -2341,10 +2329,14 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         raise
     if save_state() is False:
         return False
-    if result_summary:
-        await _send_tianxing_explore_rift_result_audit(raw_text, result_summary)
     if audit_text and owner_is_current():
-        await send_audit_log(audit_text, scope="identity", limit=audit_limit)
+        if result_summary and looks_like_tianxing_route_result(raw_text):
+            await send_audit_log(
+                f"🌌 天星探索结果｜探寻裂缝：{result_summary}",
+                scope="identity", priority="high", limit=260,
+            )
+        else:
+            await send_audit_log(audit_text, scope="identity", limit=audit_limit)
     return True
 
 

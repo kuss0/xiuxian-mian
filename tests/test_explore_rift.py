@@ -828,7 +828,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("日志补偿" in str(call.args[0]) for call in audit_mock.await_args_list))
         self.assertTrue(any("已从消息日志恢复" in str(call.args[0]) for call in console_mock.call_args_list))
 
-    async def test_tianxing_explore_result_reports_high_priority_before_normal_audit(self):
+    async def test_tianxing_explore_result_reports_high_priority_once(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         state_module.set_storage_bag_records({})
@@ -854,14 +854,12 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertTrue(handled)
-        self.assertEqual(2, audit_mock.await_count)
+        self.assertEqual(1, audit_mock.await_count)
         first_args, first_kwargs = audit_mock.await_args_list[0]
-        second_args, second_kwargs = audit_mock.await_args_list[1]
         self.assertIn("🌌 天星探索结果｜探寻裂缝", first_args[0])
         self.assertEqual("high", first_kwargs["priority"])
         self.assertEqual("identity", first_kwargs["scope"])
-        self.assertIn("🕳 探寻裂缝结果", second_args[0])
-        self.assertNotIn("priority", second_kwargs)
+        self.assertIn("法则碎片·木x2", first_args[0])
 
     async def test_late_pending_edit_after_terminal_result_does_not_regress_result(self):
         identity_id = self._prepare_identity()
