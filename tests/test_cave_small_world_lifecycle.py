@@ -346,6 +346,95 @@ def test_notification_error_does_not_discard_confirmed_harvest(world_env):
     assert h.identity["small_world_next_public_harvest_at"] == NOW + 8 * 3600
 
 
+@pytest.mark.parametrize("harvest_only", [False, True])
+def test_confirmed_harvest_uses_summary_without_another_game_action(world_env, harvest_only):
+    h = world_env
+    result = asyncio.run(cave.run_cave_public_small_world_sync(
+        IDENTITY_ID, ENTRY_URL, now=NOW, harvest_only=harvest_only,
+    ))
+    assert result["ok"] and result["extra"]["action_confirmed"]
+    h.audit.assert_awaited_once()
+    assert h.audit.await_args.kwargs["priority"] == "low"
+    assert h.audit.await_args.kwargs["send_as_id"] == IDENTITY_ID
+    assert h.identity["small_world_last_public_harvest_at"] == NOW
+    assert h.identity["small_world_next_public_harvest_at"] == NOW + 28800
+    again = asyncio.run(cave.run_cave_public_small_world_sync(
+        IDENTITY_ID, ENTRY_URL, now=NOW + 30, harvest_only=harvest_only,
+    ))
+    assert again["extra"]["skipped"]
+    h.audit.assert_awaited_once()
+    h.flow.assert_awaited_once()
+
+
+@pytest.mark.parametrize("case", [
+    "unconfirmed", "failed", "snapshot_missing", "error", "retry_after",
+    "manifest", "miracle_sermon", "miracle_relief", "refine_shenshi",
+])
+def test_only_complete_successful_harvest_changes_notification_priority(world_env, case):
+    h = world_env
+    result = flow_result()
+    if case == "unconfirmed":
+        result["data"]["action_confirmed"] = False
+    elif case == "failed":
+        result["ok"] = False
+    elif case == "snapshot_missing":
+        result["data"]["snapshot_current"] = False
+    elif case == "error":
+        result["error"] = "fixture-partial-result"
+    elif case == "retry_after":
+        result["events"] = [{"status_code": 429, "retry_after_sec": 50000}]
+    else:
+        result["data"]["action"] = case
+    h.flow.return_value = result
+    asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
+    h.audit.assert_awaited_once()
+    assert h.audit.await_args.kwargs["priority"] == "normal"
+
+
+def test_resource_shortage_still_has_high_priority(world_env):
+    h = world_env
+    h.flow.return_value = flow_result("manifest", ok=False)
+    h.flow.return_value["data"]["plan"]["blocked"] = "resource"
+    asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
+    h.audit.assert_awaited_once()
+    assert h.audit.await_args.kwargs["priority"] == "high"
+
+
+def test_harvest_enters_durable_summary_and_keeps_material_text(world_env, monkeypatch, tmp_path):
+    from model import runtime
+    from model.audit_summary_store import AuditSummaryStore
+
+    h = world_env
+    h.flow.return_value["data"]["action_result"]["message"] = "fixture harvest +800"
+    clock = [NOW]
+    store = AuditSummaryStore(tmp_path / "summary.db", {}, [], clock=lambda: clock[0])
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(runtime, "LOG_GROUP_STRUCTURED_SUMMARY", True)
+    monkeypatch.setattr(runtime, "_audit_summary_store", store)
+    monkeypatch.setattr(runtime, "_low_priority_audit_bucket", store.bucket)
+    monkeypatch.setattr(runtime, "_low_priority_audit_order", store.order)
+    monkeypatch.setattr(runtime, "_schedule_low_priority_audit_flush", Mock())
+    monkeypatch.setattr(runtime, "console_log", Mock())
+    monkeypatch.setattr(runtime, "_send_log_group_message", sender)
+    monkeypatch.setattr(cave, "send_audit_log", runtime.send_audit_log)
+
+    async def run():
+        response = await cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW)
+        assert response["ok"]
+        sender.assert_not_awaited()
+        assert len(store.bucket) == 1
+        assert store.path.exists()
+        clock[0] += 1800
+        await runtime.flush_low_priority_audit_summary()
+
+    asyncio.run(run())
+    sender.assert_awaited_once()
+    assert "fixture harvest +800" in sender.await_args.args[0]
+    assert "tg://user?id=" not in sender.await_args.args[0]
+    assert not store.bucket and not store.held
+    h.flow.assert_awaited_once()
+
+
 def test_cancelled_action_retains_confirmed_harvest_and_carries_result(world_env):
     h = world_env
     h.flow.side_effect = MiniAppFlowCancelled(flow_result())

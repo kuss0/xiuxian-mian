@@ -1,7 +1,9 @@
 # Completed Trial Outcome Retention
 
 Base: `2ed3aa2d`. Worktree: `/root/xiuxian-trial-outcome-retention-20261006`.
-Candidate only; production worker remains on `f7958deb`.
+Merged to disk and pushed as `a302c172`; production worker remains on
+`f7958deb`. Post-merge isolated verification: 170 passed / two subtests.
+No restart, gameplay action or state rewrite was performed for this change.
 
 ## Scope
 

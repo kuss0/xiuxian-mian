@@ -3503,10 +3503,14 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 "snapshot": snapshot,
             }, result),
         }
+        priority = "high" if resource_blocked else ("normal" if action or not result.get("ok") else "low")
+        if (action == "collect" and confirmed and result.get("ok") is True
+                and snapshot_current and not result.get("error") and retry_after_sec <= 0):
+            priority = "low"
         try:
             await send_audit_log(
                 f"🌏 {message}", scope="identity", send_as_id=identity_id,
-                priority="high" if resource_blocked else ("normal" if action or not result.get("ok") else "low"),
+                priority=priority,
                 limit=300,
             )
         except asyncio.CancelledError:
