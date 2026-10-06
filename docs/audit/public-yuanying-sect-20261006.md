@@ -1,7 +1,8 @@
 # Public YuanYing Sect Strategy
 
 Base: `671a1494`. Lab: `/root/xiuxian-public-yuanying-sect-20261006`.
-Candidate only: not merged or loaded into production.
+Code accepted and staged; see the final merge checkpoint. Not loaded in the
+running production worker.
 
 ## Evidence
 
@@ -99,3 +100,18 @@ does not certify this un-loaded YuanYing candidate or a complete Boss audit.
 No held notification was replayed, no MiniApp/game request was forced, and no
 automatic incense refining was enabled. Natural sect-retreat MiniApp entry,
 post-maintenance loading and subsequent state observation remain unaccepted.
+
+## Staged Merge
+
+`054681d5` was fast-forwarded into `main` and pushed to `xiuxian-mian/main`.
+Production-directory isolated regression: 315 passed and 5 subtests. Main
+supervisor remains 2207210, NRestarts 0; worker still loads `f7958deb`.
+Only unrelated quiz learning data is dirty. No restart or automatic sect
+retreat was performed, so runtime loading and natural HTTP acceptance stay open.
+
+Further Boss capture review found two `/begin` requests: the first explicitly
+rejected with HTTP 403 / turnstile_failed at 13:41:13.814, the second HTTP 200
+at 13:41:18.070. This was one successful entry after rejection, not a claim of
+zero verification errors. Window 11's read took 619ms and left only 90ms for
+planned charging, explaining the safe skip. These independent timing samples
+must not trigger speculative global retuning or another live attempt.
