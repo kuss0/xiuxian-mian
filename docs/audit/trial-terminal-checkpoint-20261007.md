@@ -1,7 +1,10 @@
 # Trial Terminal Checkpoints
 
 Base: `ac92f563`. Lab: `/root/xiuxian-trial-terminal-checkpoint-20261007`.
-Candidate only; no production source, state, switches or services changed.
+Merged and pushed as `514c3a97`; production-directory isolated recheck passed
+117 tests. At October 7 05:35 CST the worker still runs code through
+`c3bd8e64`, so this failure-path change is staged, not loaded. No state,
+switches or services were changed for deployment.
 
 ## Scope
 
@@ -55,6 +58,8 @@ separate work. Successful child notices are not removed.
   made production requests. Runtime loading and natural storage-failure behavior
   are not accepted by these offline tests; do not inject a live save failure.
 
-Ready for scoped merge. Keep production's current worker running through the
+Scoped merge complete. Keep production's current worker running through the
 ongoing trial, voyage/fishing and duel windows; do not restart solely for this
-failure-path change. Record the merge and subsequent load separately.
+failure-path change. Record subsequent loading separately. The successful
+05:00-05:14 natural trial wave ran on the previous worker generation and does
+not validate this new terminal-save failure handling.

@@ -1,7 +1,9 @@
 import runpy
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,8 +16,122 @@ def probe(monkeypatch):
 
 
 def test_probe_has_only_scoped_reads(probe):
-    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", "fishing_context", "fishing_state"}
+    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", "fishing_context", "fishing_state", "inventory"}
     assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽"}
+    assert not {".装备", ".卸下法宝", ".斗法"}.intersection(probe["COMMAND_READS"])
+
+
+def inventory_payload(active):
+    return {"account": {"playerId": 7, "bagTreasure": {
+        "items": [], "materials": [], "treasures": [{"name": "bound", "quantity": 6}], "active": active,
+    }}}
+
+
+@pytest.mark.parametrize("active", [[], [{"name": "equipped", "token": "secret", "quantity": 1}]])
+def test_inventory_keeps_active_not_bound_inventory(probe, active):
+    assert probe["inventory_loadout_report"](inventory_payload(active), 7) == {
+        "player_id": 7, "active": [{"name": row["name"]} for row in active],
+        "active_count": len(active), "complete": True,
+    }
+
+
+@pytest.mark.parametrize("field", ["items", "materials", "treasures", "active"])
+def test_inventory_missing_list_cannot_prove_unequipped(probe, field):
+    payload = inventory_payload([])
+    del payload["account"]["bagTreasure"][field]
+    with pytest.raises(ValueError, match="inventory_incomplete"):
+        probe["inventory_loadout_report"](payload, 7)
+
+
+@pytest.mark.parametrize("player", [None, "7", True, 8])
+def test_inventory_rejects_wrong_player(probe, player):
+    payload = inventory_payload([])
+    payload["account"]["playerId"] = player
+    with pytest.raises(ValueError, match="inventory_player_mismatch"):
+        probe["inventory_loadout_report"](payload, 7)
+
+
+@pytest.mark.parametrize("active", [[None], [{}], [{"name": ""}], [{"name": []}],
+                                   [{"name": "x" * 161}], [{"name": "x"}] * 101])
+def test_inventory_rejects_malformed_active(probe, active):
+    with pytest.raises(ValueError, match="inventory_active_invalid"):
+        probe["inventory_loadout_report"](inventory_payload(active), 7)
+
+
+@pytest.mark.parametrize("failure", ["", "player", "http"])
+def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, failure):
+    namespace = probe["probe"].__globals__
+    session_dir = tmp_path / "data/session"
+    session_dir.mkdir(parents=True)
+    with sqlite3.connect(session_dir / "account_7.session") as db:
+        db.execute("CREATE TABLE sessions (dc_id, server_address, port, auth_key)")
+        db.execute("INSERT INTO sessions VALUES (2, '127.0.0.1', 443, ?)", (b"x" * 256,))
+    entry = "https://t.me/fanrenxiuxian_bot?startapp=df_FIXTURE999"
+    monkeypatch.setitem(namespace, "load_owner", lambda *_: (7, {}, {"cave_public_entry_urls": [entry]}))
+    monkeypatch.setitem(namespace, "load_dotenv", lambda *_: {"API_ID": "1", "API_HASH": "fixture"})
+    monkeypatch.setattr(namespace["time"], "sleep", lambda *_: None)
+    lifecycle = []
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["receive_updates"] is False
+            assert kwargs["request_retries"] == kwargs["connection_retries"] == 0
+
+        async def connect(self):
+            lifecycle.append("connect")
+
+        async def disconnect(self):
+            lifecycle.append("disconnect")
+
+        async def get_me(self):
+            return SimpleNamespace(id=7)
+
+        async def get_input_entity(self, _):
+            return 7
+
+        async def __call__(self, _):
+            return SimpleNamespace(url="https://asc.aiopenai.app/#tgWebAppData=fixture")
+
+    calls = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, *, json, timeout, allow_redirects):
+            endpoint = url.removeprefix(probe["BASE"])
+            calls.append((endpoint, json))
+            assert timeout == (8, 25) and allow_redirects is False and self.trust_env is False
+            data = inventory_payload([]) if endpoint == "section" else {"account": {"playerId": 7}}
+            data.update(ok=True, identity={"choices": [{"playerId": 7}]})
+            if endpoint == "section" and failure == "player":
+                data["account"]["playerId"] = 8
+
+            def raise_for_status():
+                if endpoint == "section" and failure == "http":
+                    raise namespace["requests"].HTTPError("fixture")
+
+            return SimpleNamespace(status_code=400 if failure == "http" and endpoint == "section" else 200,
+                                   raise_for_status=raise_for_status, json=lambda: data)
+
+    monkeypatch.setitem(namespace, "TelegramClient", Client)
+    monkeypatch.setattr(namespace["requests"], "Session", Session)
+    args = SimpleNamespace(project_root=tmp_path, identity=7, read="inventory")
+    report = {"steps": []}
+    if failure:
+        with pytest.raises((ValueError, namespace["requests"].HTTPError)):
+            asyncio.run(probe["probe"](args, report))
+        assert "inventory" not in report
+    else:
+        asyncio.run(probe["probe"](args, report))
+        assert report["status"] == "read_returned" and report["inventory"]["active_count"] == 0
+    assert lifecycle == ["connect", "disconnect"]
+    assert [endpoint for endpoint, _ in calls] == ["start", "start", "details", "section"]
+    assert calls[-1][1] == {"token": "df_FIXTURE999", "initData": "fixture", "playerId": 7, "section": "inventory"}
+    assert all("command" not in payload and "action" not in payload for _, payload in calls)
 
 
 @pytest.mark.parametrize("url", [

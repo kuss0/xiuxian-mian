@@ -19,7 +19,7 @@ from telethon.sessions import MemorySession
 
 
 COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽")
-READS = (*COMMAND_READS, "fishing_context", "fishing_state")
+READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory")
 BASE = "https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/"
 
 
@@ -43,6 +43,26 @@ def load_owner(root, identity):
         if not db.execute("SELECT 1 FROM identities WHERE send_as_id=?", (identity,)).fetchone():
             raise ValueError("identity_missing")
     return owner, meta["accounts"][str(owner)], meta["miniapp_auto_config"]
+
+
+def inventory_loadout_report(data, player):
+    account = data.get("account")
+    if (not isinstance(account, dict) or type(account.get("playerId")) is not int
+            or account["playerId"] != player):
+        raise ValueError("inventory_player_mismatch")
+    bag = account.get("bagTreasure")
+    if not isinstance(bag, dict) or not all(
+        isinstance(bag.get(key), list) for key in ("items", "materials", "treasures", "active")
+    ):
+        raise ValueError("inventory_incomplete")
+    active = bag["active"]
+    if len(active) > 100 or any(
+        not isinstance(row, dict) or not isinstance(row.get("name"), str)
+        or not row["name"].strip() or len(row["name"]) > 160 for row in active
+    ):
+        raise ValueError("inventory_active_invalid")
+    return {"player_id": player, "active": [{"name": row["name"]} for row in active],
+            "active_count": len(active), "complete": True}
 
 
 def fishing_context_report(context):
@@ -179,6 +199,8 @@ async def probe(args, report):
                 payload["siteId"] = "west-shore"
             elif endpoint == "fishing/state" and args.read == "fishing_state":
                 payload.update(fishing_state_scope(root, args.identity, owner, player))
+            elif endpoint == "section" and args.read == "inventory":
+                payload["section"] = "inventory"
             elif endpoint not in {"start", "details"}:
                 raise ValueError("endpoint_not_read_only")
             time.sleep(2)
@@ -195,7 +217,7 @@ async def probe(args, report):
             step["keys"] = sorted(data)
             if data.get("ok") is not True:
                 raise ValueError("server_rejected_read")
-            if endpoint in {"start", "details", "command-center"} and player is not None:
+            if endpoint in {"start", "details", "command-center", "section"} and player is not None:
                 selected = (data.get("account") or {}).get("playerId")
                 step["player_id"] = selected
                 if type(selected) is not int or selected != player:
@@ -219,9 +241,12 @@ async def probe(args, report):
                 args.read in (row.get("commands") or []) or args.read.startswith("fishing_") and row.get("key") == "fishing"
             )
         ]
-        endpoint = {"fishing_context": "fishing/context", "fishing_state": "fishing/state"}.get(args.read, "command-center")
+        endpoint = {"fishing_context": "fishing/context", "fishing_state": "fishing/state",
+                    "inventory": "section"}.get(args.read, "command-center")
         result = request(endpoint, player)
-        if args.read in ("fishing_context", "fishing_state"):
+        if args.read == "inventory":
+            report["inventory"] = inventory_loadout_report(result, player)
+        elif args.read in ("fishing_context", "fishing_state"):
             context = result.get("context") or {}
             report["context_keys"] = sorted(context)
             report["context"] = fishing_context_report(context)

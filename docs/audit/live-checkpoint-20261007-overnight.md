@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 04:44 CST. Runtime code through
+Observations through October 7, 2026, 05:35 CST. Runtime code through
 `c3bd8e64` loaded during the scheduled backup recovery at 04:31. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -366,3 +366,86 @@ Ordinary queue has three rows, next delivery 05:01:28. Current follower
 **52586** remains until about 04:47. Renew before expiry, observe the summary,
 WA voyage/fishing window and 05:12 duel decision. Harvest/prayer/stargazer and
 other as-yet untriggered staged changes remain naturally unaccepted.
+
+## Follow-Up Through 05:35
+
+Production disk/pushed HEAD is `514c3a97`. This terminal-checkpoint fix passed
+16712 tests / 1484 subtests, secondary review 366 tests and production-directory
+isolated recheck 117 tests. It is **not loaded**; worker 2835306 still runs
+through `c3bd8e64`. No manual restart, state correction or switch change was
+performed. Runtime quiz learning is the only unrelated dirty file.
+
+Follower **78668** is active, bounded until about **07:50**; earlier followers
+52586 / 35263 expired normally. The four service/worker PIDs remain unchanged,
+NRestarts=0. Watchdog is healthy. Observer still reports only the same two
+historical held notification batches, with no replay and no retired records.
+
+### Natural Trial And Notifications
+
+Wave2 `cave_public_1791320413_12` ran 05:00:13-05:14:20: 12/12 successful,
+36 settlements, remnants +516. October 6 was the previous wave2 completion,
+so this was the new day's batch, not replay of wave1. Its final notice is
+`e64deb2704a14736bd60751220d56322`, confirmed, 119 UTF-16 / three lines / no
+explicit mention. This does not validate unloaded terminal-save failure code.
+
+The 05:01:32 ordinary summary `d65b47d530124a1b9cd4212ed8d4d09b` confirmed:
+265 UTF-16 / six lines / no mention. At 05:06:11 external @jaaaaxxx1's quiz
+timeout stayed local; the summary queue had zero matching rows. No standalone
+delivery for it was observed. The 05:32:17 summary
+`f637b4521ce84769b06b1b608af2b64e` confirmed: 1301 UTF-16 / 22 lines / no
+mention. At 05:34 ordinary queued rows are zero; the two held batches persist.
+
+### Natural Duel And Equipment Check
+
+Lpprceqei sent `.斗法 @ccahen` at 05:12:12 as 1290017, official final
+1290019 at 05:12:29; second command at 05:27:21 as 1290048, official final
+1290050 observed 05:27:42. All anchors are in -1002083016447. Both battles
+were won by ccahen and each explicitly reported 6.7万 cultivation transferred.
+The ledger contains exactly two anchored deltas of -67000, leaving effective
+cultivation 5957710 from baseline 6091710. Do not invent exact 67200 from the
+separate bonus prose. Batch count 7/10 includes five carried-in completions;
+this is not seven battles today. Pending reply is zero and last error empty.
+Next attack is 05:43:23; passive target CD was advanced from the real result.
+
+The prepared-equipment flag was already set, with no new unequip. Battle
+narrative was treated as inconclusive. A read-only command-center `.法宝` probe
+failed HTTP 400 and stopped; the subsequent existing inventory-section read
+at **05:30:20** returned matching player 7538826434 and complete **active=[]**.
+No equipped treasure is present at that observation time. No flag clearing,
+manual duel or equipment command followed. See the
+[tool scope and exact evidence](duel-loadout-readonly-20261007.md).
+
+### WA Fishing And Voyage
+
+WA returned naturally at 05:13:24. Its catches were greenfish at 05:18:24 and
+05:20:30, silverfish at 05:22:24, redtail carp at 05:24:22, and silverfish at
+05:27:47. Supply purchases/chum did not count as casts. State confirms 5/5:
+赤尾火鲤 x1, 银须灵鲢 x2, 青鳞小鲫 x2. The full daily fishing notice covered
+four eligible identities and 20/20 casts, confirmed as
+`c1a74b79282342cc87751c92676f7745`, 270 UTF-16 / six lines / no mention.
+
+WA restarted 月殿寻痕 at 05:27:51; state is sailing, return **11:27:55**, with
+no voyage error. Baji remains sailing, return **10:09:48**. Both have fishing
+5/5; authoritative `identity_timers` next fishing values are October 8
+00:00:11 (WA) / 00:00:04 (Baji). Legacy runtime-table timer columns are stale
+and are not the scheduling source. Both duel switches and incense refinement
+remain off; voyages and harvesting remain on.
+
+At 05:30:07 channel identity zhengyuan0213 naturally finished the tower:
+21 floors, cultivation +7280, tower seals +56. This provides another public
+MiniApp result, not blanket acceptance for every identity and module.
+
+### Remaining Watches
+
+Fate remains 23/24 settled. mudamuda0's same-task progress 4->0 repeated at
+05:14:54; prior 4 is preserved, no draw/choose/settle. Do not infer loss or
+completion without new authoritative task evidence. Captures at 05:06 contain
+1974 HTTP records, one earlier recovered 429, rolling-minute peak 44; the
+eight explicit diagnostic reads above are additional, not in those files.
+
+Next watches: Lpprceqei 05:43:23; WA Tianxing preparation around 06:56 before
+rift 07:06:07; harvests Baji 08:22:25 and WA 08:39:46. Deep retreat does not
+block Tianxing. Trial durable child-to-parent reward handoff, backup admission,
+Boss timing, held notices and Gate 4 remain separate debts, not closed by this
+healthy checkpoint. New notification/prayer/harvest changes still require their
+own natural samples; no jobs were retriggered to manufacture acceptance.
