@@ -127,3 +127,15 @@ The supplied 20:23-21:30 journal contains two confirmed runtime receipts
 and no tool-source receipt. It does not establish instrumented coverage for
 other independent senders. At 21:34 the services and PIDs remain unchanged;
 trial-start candidate full regression and second cross-module review passed.
+
+Trial-start runtime candidate `a0527b65` is now merged and pushed, with 191
+production-directory isolated tests / 2 subtests passing. The worker remains
+unchanged; it is not natural acceptance. Its SQLite test-only follow-up also
+passed final full regression (16589 / 1461).
+
+At 21:47 the database shows Lpprceqei's next duel check advanced to 22:11:34,
+still held on no-baseline, completed 5/10 and no pending duel. Earlier reads
+briefly retained the expired 21:41:33 schedule; this alone does not prove the
+scheduler stopped, nor establish when the worker reached that guard. No new
+duel or corrective game query was sent. At 21:48 watchdog is healthy; observer
+still only reports the two retained notification batches.

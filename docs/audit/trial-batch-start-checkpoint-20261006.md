@@ -53,7 +53,7 @@ does not resolve the earlier unknown notification batches or modify Attempt.
 ## Verification
 
 Before the fix, 8 new boundary tests failed and the manual-batch control passed.
-Current focused regression: 177 passed / 2 subtests. Tests cover strict save
+Initial focused regression: 177 passed / 2 subtests. Tests cover strict save
 results and exceptions, a resumed prefix, configuration-read failure, unrelated
 configuration edits, replacement claims, startup cancellation, task-creation
 failure, real asyncio worker completion with mocked game actions, and exclusion
@@ -61,7 +61,7 @@ of the scheduler's stale second write. The resumed-worker fixture uses the
 existing outcome builder so it tests a real aggregate shape, not an incomplete
 ad hoc dictionary.
 
-Final full regression: 16586 passed / 1461 subtests in 462.32 seconds;
+Initial frozen full regression: 16586 passed / 1461 subtests in 462.32 seconds;
 JUnit `/tmp/xiuxian-trial-batch-start-checkpoint-20261006.xml`.
 Second cross-module review: 411 passed / 194 subtests, including scheduler
 ownership, persistence flags, MiniApp admission and child checkpoint/receipt
@@ -69,3 +69,20 @@ contracts. Ruff, compileall and diff checks pass. Runs use
 `XIUXIAN_ALLOW_LIVE_TEST_DB=0`; these new tests
 mock game actions and persistence. This is not a claim of a suite-wide network
 sandbox or of natural production acceptance.
+
+## SQLite Follow-up
+
+The runtime fix `a0527b65` is merged and pushed; production-directory isolated
+regression passed 191 tests / 2 subtests. No service was restarted.
+
+Three additional tests exercise the existing `_save_meta_state` codec using
+temporary SQLite files: a committed prefix is readable on another connection
+before spawning work; a rolled-back write leaves the previous durable prefix
+and launches nothing; startup cancellation commits a retryable prefix which
+can be reloaded without replaying completed identities. These do not simulate
+an unacknowledged post-commit exception or certify all crash-recovery paths.
+
+Final focused regression: 180 passed / 2 subtests. Final full regression:
+16589 passed / 1461 subtests in 447.65 seconds, JUnit
+`/tmp/xiuxian-trial-batch-start-checkpoint-final-20261006.xml`. Ruff and diff
+checks pass. This follow-up changes tests and evidence only, not runtime.

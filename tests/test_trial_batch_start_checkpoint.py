@@ -1,11 +1,13 @@
 import asyncio
+import json
+import sqlite3
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from model import state, ui
+from model import persistence, state, ui
 
 
 CONTEXT = {"wave_key": "wave1", "day_key": "2026-10-06"}
@@ -205,3 +207,104 @@ def test_resumed_admission_preserves_prefix_until_actual_worker_finishes(admissi
     assert admission.action.await_args.args[0] == 1002
     assert admission.saved[-1][PREFIX + "status"] == "completed"
     assert admission.saved[-1][PREFIX + "outcomes"]["trial"]["gains"] == {"trace": 10}
+
+
+@pytest.mark.parametrize("commit_start", [False, True])
+def test_start_checkpoint_uses_real_sqlite_commit_before_spawn(admission, tmp_path, commit_start):
+    db_path = tmp_path / "admission.db"
+    before = ui.normalize_miniapp_auto_config()
+    before.update({
+        PREFIX + "status": "retry_pending", PREFIX + "batch_id": "sqlite-resume",
+        PREFIX + "progress_day": CONTEXT["day_key"], PREFIX + "cursor": 1,
+        PREFIX + "completed": 1, PREFIX + "succeeded": 1,
+        PREFIX + "steps": [{"identity_id": 1001, "action": "trial"},
+                           {"identity_id": 1002, "action": "trial"}],
+    })
+    state.set_miniapp_auto_config(before)
+    observed = []
+
+    def read():
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as reader:
+            return json.loads(reader.execute("SELECT value FROM meta WHERE key='miniapp_auto_config'").fetchone()[0])
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        persistence._save_meta_state(conn, keys=["miniapp_auto_config"])
+        conn.commit()
+
+        def save():
+            persistence._save_meta_state(conn, keys=["miniapp_auto_config"])
+            if commit_start:
+                conn.commit()
+            else:
+                conn.rollback()
+            return commit_start
+
+        def spawn(coro):
+            observed.append(read())
+            coro.close()
+
+        admission.persist.side_effect = save
+        admission.launch.side_effect = spawn
+        ok, _, _ = asyncio.run(ui.ui_start_cave_public_entry_batch(PAYLOAD, trial_daily_context=CONTEXT))
+        assert ok is commit_start
+        stored = read()
+        assert stored[PREFIX + "status"] == ("running" if commit_start else "retry_pending")
+        assert stored[PREFIX + "cursor"] == 1
+        assert stored[PREFIX + "batch_id"] == "sqlite-resume"
+        if commit_start:
+            assert observed == [stored]
+        else:
+            admission.launch.assert_not_called()
+            assert ui.normalize_miniapp_auto_config() == before
+        admission.action.assert_not_awaited()
+
+
+def test_unstarted_cancel_prefix_survives_sqlite_reload(admission, tmp_path):
+    db_path = tmp_path / "cancel-start.db"
+    config = ui.normalize_miniapp_auto_config()
+    config.update({
+        PREFIX + "status": "retry_pending", PREFIX + "batch_id": "sqlite-cancel",
+        PREFIX + "progress_day": CONTEXT["day_key"], PREFIX + "cursor": 1,
+        PREFIX + "completed": 1, PREFIX + "succeeded": 1,
+        PREFIX + "steps": [{"identity_id": 1001, "action": "trial"},
+                           {"identity_id": 1002, "action": "trial"}],
+    })
+    state.set_miniapp_auto_config(config)
+    tasks = []
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+
+        def save():
+            persistence._save_meta_state(conn, keys=["miniapp_auto_config"])
+            conn.commit()
+            return True
+
+        def spawn(coro):
+            task = asyncio.create_task(coro)
+            task.cancel()
+            tasks.append(task)
+            return task
+
+        admission.persist.side_effect = save
+        admission.launch.side_effect = spawn
+
+        async def run():
+            ok, _, _ = await ui.ui_start_cave_public_entry_batch(PAYLOAD, trial_daily_context=CONTEXT)
+            assert ok
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[0]
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as reader:
+        stored = json.loads(reader.execute("SELECT value FROM meta WHERE key='miniapp_auto_config'").fetchone()[0])
+    state.set_miniapp_auto_config(stored)
+    resumed = ui._trial_daily_batch_resume_state(CONTEXT)
+    assert resumed["cursor"] == resumed["succeeded"] == 1
+    assert resumed["steps"] == [(1001, "trial"), (1002, "trial")]
+    assert not ui._cave_public_batch_state["running"]
+    admission.action.assert_not_awaited()
+    admission.notify.assert_not_awaited()
