@@ -163,3 +163,59 @@ def test_live_warning_notifies_once_without_disabling_service():
     assert all(call.kwargs == {"flush": True} for call in output.call_args_list)
     fuse.assert_not_called()
     disable.assert_not_called()
+
+
+def test_telegram_folds_only_details_and_keeps_action_and_mentions_visible():
+    details = ["Only a warning; not paused.", "count: 8 < 9", "source: <tag>&value", "sample: .steady"]
+    original = list(details)
+    message = watchdog.format_warning_message("send burst: 8+ sends in 120s", env={"ADMIN_ID": "123"},
+                                              details=details, fold_details=True)
+    visible, folded = message.split('<blockquote expandable>', 1)
+    body, footer = folded.split('</blockquote>', 1)
+    assert "[SAFETY WATCHDOG WARNING]" in visible
+    assert "reason: send burst: 8+ sends in 120s" in visible
+    assert "action: warn" in visible and details[0] in visible
+    assert "count: 8 &lt; 9" in body and "source: &lt;tag&gt;&amp;value" in body
+    assert "<tag>" not in message
+    assert 'tg://user?id=123' in footer and 'tg://user?id=123' not in body
+    assert details == original
+
+
+@pytest.mark.parametrize("details", [None, [], ["one detail"]])
+def test_short_warnings_do_not_gain_empty_or_unhelpful_folds(details):
+    plain = watchdog.format_warning_message("reason", env={}, details=details)
+    assert watchdog.format_warning_message("reason", env={}, details=details, fold_details=True) == plain
+    assert "blockquote" not in plain
+
+
+def test_live_warning_retains_plain_journal_and_only_folds_telegram_payload():
+    cfg = config()
+    cfg.dry_run = False
+    details = ["Not paused.", "count: 8", "source: heart", "sample: .steady"]
+    with patch("builtins.print") as output, \
+         patch.object(watchdog, "send_log_via_bot", return_value="ok") as notify, \
+         patch.object(watchdog, "perform_fuse") as fuse, \
+         patch.object(watchdog, "disable_global_switch") as disable:
+        watchdog.perform_warning(cfg, {"ADMIN_ID": "123"}, "send burst: 8+ sends in 120s", details=details)
+    journal = output.call_args_list[0].args[0]
+    notify.assert_called_once()
+    assert "blockquote" not in journal
+    assert all(line in journal for line in details)
+    assert '<blockquote expandable>' in notify.call_args.args[1]
+    assert "action: warn" in journal
+    fuse.assert_not_called()
+    disable.assert_not_called()
+
+
+def test_folded_telegram_warning_keeps_all_bounded_sampling_evidence():
+    cfg, now = config(), 10000
+    events = [event(now - n, n, sender_id="<" * 200, source_module="<&>\n" * 200,
+                    text=".<&> secret-token", message_id="<" * 200) for n in range(100)]
+    details = watchdog.send_burst_details(events, now, cfg, "send burst: 8+ sends in 120s")
+    message = watchdog.format_warning_message("send burst: 8+ sends in 120s", env={}, details=details,
+                                              fold_details=True)
+    assert "secret-token" not in message
+    assert message.count('<blockquote expandable>') == message.count('</blockquote>') == 1
+    assert "<" not in message.replace('<blockquote expandable>', '').replace('</blockquote>', '')
+    assert len(message) < 4096
+    assert all(watchdog.html.escape(line) in message for line in details)

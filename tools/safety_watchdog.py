@@ -1691,7 +1691,10 @@ def format_fuse_message(reason: str, action: str, actions: list[str], *, env: di
     return message
 
 
-def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = False, details: list[str] | None = None) -> str:
+def format_warning_message(
+    reason: str, *, env: dict[str, str], dry_run: bool = False,
+    details: list[str] | None = None, fold_details: bool = False,
+) -> str:
     lines = [
         "[SAFETY WATCHDOG WARNING]",
         f"reason: {reason}",
@@ -1700,8 +1703,16 @@ def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = 
     if dry_run:
         lines[0] = "[SAFETY WATCHDOG WOULD WARN]"
         lines[-1] = "action: warn dry-run"
-    lines.extend(details or [])
+    details = list(details or [])
+    folded = []
+    if fold_details and len(details) > 1:
+        lines.append(details[0])
+        folded = details[1:]
+    else:
+        lines.extend(details)
     message = "\n".join(html.escape(line) for line in lines)
+    if folded:
+        message += '\n<blockquote expandable>' + "\n".join(html.escape(line) for line in folded) + '</blockquote>'
     mentions = format_admin_mentions_html(env)
     if mentions and not dry_run:
         message += f"\n关注：{mentions}"
@@ -1785,7 +1796,8 @@ def perform_warning(cfg: WatchdogConfig, env: dict[str, str], reason: str, *, de
     message = format_warning_message(reason, env=env, dry_run=cfg.dry_run, details=details)
     print(message, flush=True)
     if not cfg.dry_run:
-        print(send_log_via_bot(env, message), flush=True)
+        telegram_message = format_warning_message(reason, env=env, details=details, fold_details=True)
+        print(send_log_via_bot(env, telegram_message), flush=True)
 
 
 def current_log_file(project_root: Path) -> Path:
