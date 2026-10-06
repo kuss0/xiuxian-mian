@@ -8350,6 +8350,9 @@ def _trial_daily_retry_hold(context, now=None):
     context = _normalize_trial_daily_batch_context(context)
     if not context:
         return {}
+    hold = _cave_public_batch_state.get("checkpoint_hold") or {}
+    if all(hold.get(key) == context[key] for key in ("wave_key", "day_key")):
+        return {"recovery_hold": True, "retry_at": 0, "retry_after_sec": 0}
     config = normalize_miniapp_auto_config()
     prefix = f"trial_daily_{context['wave_key']}_last_"
     if config.get(f"{prefix}status") != "retry_pending":
@@ -8455,6 +8458,57 @@ async def _run_cave_public_entry_batch(
             and run_state.get("started_at") == run_started_at
         )
 
+    async def checkpoint(context, **payload):
+        if not context:
+            return True
+        if not owns_batch():
+            return False
+        before = {}
+        saved = False
+        try:
+            before = normalize_miniapp_auto_config()
+            saved = _persist_trial_daily_batch_state(context, **payload, require_save_ack=True)
+        except Exception:
+            pass
+        if not owns_batch():
+            return False
+        if saved is True:
+            return True
+        message = "试炼批次进度存盘未确认，保留已确认结果，暂停本批自动续跑，等待核查。"
+        prefix = f"trial_daily_{context['wave_key']}_last_"
+        pending = {
+            f"{prefix}status": "retry_pending", f"{prefix}result": message,
+            f"{prefix}retry_at": 0, f"{prefix}retry_reason": "batch_checkpoint_save_outcome_unknown",
+            f"{prefix}run_day": before.get(f"{prefix}run_day", ""),
+            f"{prefix}cursor": next_cursor, f"{prefix}completed": completed,
+            f"{prefix}succeeded": succeeded, f"{prefix}failed": failed,
+            f"{prefix}steps": [{"identity_id": identity, "action": action} for identity, action in steps],
+            f"{prefix}failed_steps": [{"identity_id": identity, "action": action}
+                                       for identity, action in failed_steps],
+            f"{prefix}outcomes": deepcopy(outcomes),
+        }
+        run_state["checkpoint_hold"] = {**context, "batch_id": batch_id, "snapshot": deepcopy(pending)}
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
+        try:
+            config = normalize_miniapp_auto_config()
+            if (config.get(f"{prefix}batch_id") == batch_id
+                    and config.get(f"{prefix}progress_day") == context["day_key"]):
+                # Retain the full observed prefix, not the compacted retry or completed projection.
+                config.update(pending)
+                if config.get("trial_daily_last_batch_id") == batch_id:
+                    config.update(trial_daily_last_status="retry_pending", trial_daily_last_result=message,
+                                  trial_daily_last_run_day=before.get("trial_daily_last_run_day", ""))
+                set_miniapp_auto_config(config)
+        except Exception:
+            # Admission also checks the memory hold if configuration storage is unavailable.
+            pass
+        console_log(message, scope="global")
+        try:
+            await send_audit_log(message, scope="global", priority="normal", limit=260)
+        except Exception:
+            console_log("试炼存盘异常通知未确认；本批保持暂停。", scope="global")
+        return False
+
     _set_cave_public_batch_state(
         running=True,
         batch_id=batch_id,
@@ -8475,17 +8529,18 @@ async def _run_cave_public_entry_batch(
     if trial_daily_context and not _trial_failed_prefix_valid(steps, resume_cursor, failed, failed_steps):
         message = "试炼失败步骤证据缺失，保留当前批次待核查，不自动重跑。"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
-        _persist_trial_daily_batch_state(
+        if not await checkpoint(
             trial_daily_context, batch_id=batch_id, status="retry_pending", result=message,
             cursor=resume_cursor, completed_count=completed, succeeded=succeeded, failed=failed,
             steps=steps, failed_steps=failed_steps, outcomes=outcomes,
             retry_at=0, retry_reason="failed_prefix_missing",
-        )
+        ):
+            return
         await send_audit_log(message, scope="global", priority="normal", limit=220)
         return
     if total <= 0:
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result="无可执行步骤")
-        _persist_trial_daily_batch_state(
+        if not await checkpoint(
             trial_daily_context,
             batch_id=batch_id,
             status="completed",
@@ -8496,7 +8551,8 @@ async def _run_cave_public_entry_batch(
             succeeded=0,
             failed=0,
             steps=steps,
-        )
+        ):
+            return
         await send_audit_log("🧩 洞府公共入口串行批次结束：无可执行步骤。", scope="global", priority="low", limit=220)
         return
 
@@ -8506,6 +8562,8 @@ async def _run_cave_public_entry_batch(
         repeated_fail_count = 0
         trial_recovery_hold_reasons = []
         for index, (identity_id, action) in enumerate(steps[resume_cursor:], start=resume_cursor + 1):
+            if not owns_batch():
+                return
             next_cursor = index - 1
             display = get_identity_display_name(identity_id)
             current = f"{index}/{total} {display} {action}"
@@ -8525,9 +8583,13 @@ async def _run_cave_public_entry_batch(
                         priority="low",
                         limit=280,
                     )
+            if not owns_batch():
+                return
             step_inflight = True
             ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
             step_inflight = False
+            if not owns_batch():
+                return
             shared_pause = isinstance(extra, dict) and extra.get("shared_rate_limit")
             if not ok and (_is_cave_public_batch_pause(message) or shared_pause):
                 pause_reason = "共享入口限流" if shared_pause else "全局暂停"
@@ -8541,7 +8603,7 @@ async def _run_cave_public_entry_batch(
                     current="",
                     last_result=retry_result,
                 )
-                _persist_trial_daily_batch_state(
+                if not await checkpoint(
                     trial_daily_context,
                     batch_id=batch_id,
                     status="retry_pending",
@@ -8555,7 +8617,8 @@ async def _run_cave_public_entry_batch(
                     outcomes=outcomes,
                     retry_at=0,
                     retry_reason=next(iter(trial_recovery_hold_reasons), ""),
-                )
+                ):
+                    return
                 await send_audit_log(
                     f"⏸️ 洞府公共入口批次遇到{pause_reason}，已完成 {completed}/{total}；"
                     "当前步骤未计失败，恢复后从该步骤继续。",
@@ -8590,6 +8653,8 @@ async def _run_cave_public_entry_batch(
                     console_log(progress_message, scope="global")
                 else:
                     await send_audit_log(progress_message, scope="global", priority="normal", limit=420)
+            if not owns_batch():
+                return
             if not ok and _is_cave_public_upstream_failure(message):
                 retry_result = f"上游异常，完成 {index}/{total}，等待重试：{result_text}"
                 _set_cave_public_batch_state(
@@ -8598,7 +8663,7 @@ async def _run_cave_public_entry_batch(
                     current="",
                     last_result=f"上游熔断：{result_text}",
                 )
-                _persist_trial_daily_batch_state(
+                if not await checkpoint(
                     trial_daily_context,
                     batch_id=batch_id,
                     status="retry_pending",
@@ -8612,7 +8677,8 @@ async def _run_cave_public_entry_batch(
                     outcomes=outcomes,
                     retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
                     retry_reason=next(iter(trial_recovery_hold_reasons), ""),
-                )
+                ):
+                    return
                 await send_audit_log(
                     f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止；"
                     "冷却后由首个身份探测，恢复则继续重跑本批。",
@@ -8642,7 +8708,7 @@ async def _run_cave_public_entry_batch(
                     current="",
                     last_result=f"入口熔断：{result_text}",
                 )
-                _persist_trial_daily_batch_state(
+                if not await checkpoint(
                     trial_daily_context,
                     batch_id=batch_id,
                     status="retry_pending",
@@ -8656,7 +8722,8 @@ async def _run_cave_public_entry_batch(
                     outcomes=outcomes,
                     retry_at=retry_at,
                     retry_reason=next(iter(trial_recovery_hold_reasons), ""),
-                )
+                ):
+                    return
                 await send_audit_log(
                     f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
                     f"串行批次已在 {index}/{total} 中止，入口冷却至 {fmt_abs_ts(retry_at)}。",
@@ -8704,9 +8771,11 @@ async def _run_cave_public_entry_batch(
                         pass
         raise
     except Exception as exc:
+        if not owns_batch():
+            return
         message = f"批次异常：{type(exc).__name__}: {exc}"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
-        _persist_trial_daily_batch_state(
+        if not await checkpoint(
             trial_daily_context,
             batch_id=batch_id,
             status="retry_pending",
@@ -8720,7 +8789,8 @@ async def _run_cave_public_entry_batch(
             outcomes=outcomes,
             retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
             retry_reason=next(iter(trial_recovery_hold_reasons), ""),
-        )
+        ):
+            return
         await send_audit_log(
             f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
             scope="global",
@@ -8744,7 +8814,7 @@ async def _run_cave_public_entry_batch(
                 f"{len(failed_steps)} 个"
             )
         _set_cave_public_batch_state(last_result=retry_result)
-        _persist_trial_daily_batch_state(
+        if not await checkpoint(
             trial_daily_context,
             batch_id=batch_id,
             status="retry_pending",
@@ -8758,7 +8828,8 @@ async def _run_cave_public_entry_batch(
             outcomes={},
             retry_at=retry_at,
             retry_reason=recovery_hold_reason,
-        )
+        ):
+            return
         if recovery_hold_reason:
             await send_audit_log(
                 f"🧊 洞府天机试炼未知结果已冻结：{completion_result}；"
@@ -8776,7 +8847,7 @@ async def _run_cave_public_entry_batch(
                 limit=320,
             )
         return
-    _persist_trial_daily_batch_state(
+    if not await checkpoint(
         trial_daily_context,
         batch_id=batch_id,
         status="completed",
@@ -8788,7 +8859,8 @@ async def _run_cave_public_entry_batch(
         failed=failed,
         steps=steps,
         outcomes=outcomes,
-    )
+    ):
+        return
     completion_message = (
         f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。"
     )

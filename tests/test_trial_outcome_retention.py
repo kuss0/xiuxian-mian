@@ -27,9 +27,11 @@ def batch(monkeypatch):
     monkeypatch.setattr(ui, "console_log", Mock())
     monkeypatch.setattr(ui.trial_operations, "archive_cross_day_unknown", Mock(return_value={}))
     saves = []
-    monkeypatch.setattr(ui, "save_state", Mock(side_effect=lambda: saves.append(
-        json.loads(json.dumps(state_module.get_miniapp_auto_config()))),
-    ))
+    def save():
+        saves.append(json.loads(json.dumps(state_module.get_miniapp_auto_config())))
+        return True
+
+    monkeypatch.setattr(ui, "save_state", Mock(side_effect=save))
     action = AsyncMock(return_value=(True, "fixture complete", {
         "settled_count": 3, "gains": {"trace": 43}, "rewards": {"material": 1},
     }))
