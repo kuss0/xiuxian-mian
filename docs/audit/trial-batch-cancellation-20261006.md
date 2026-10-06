@@ -79,3 +79,9 @@ At 14:40 the live trial slots still contained 24 complete operations and 72
 round receipts; both daily waves were completed for October 6. The old worker
 deferred Lpprceqei's uncalibrated duel again to 15:10:54. These observations are
 not acceptance of the staged cancellation or duel-calibration changes.
+
+Code `3ce30b48` was fast-forwarded to production disk and pushed to
+`xiuxian-mian/main`. Post-merge isolated regression: 189 passed. At 14:45
+supervisor 2207210, worker 2207227, observer 2322377 and watchdog 2178662
+remained unchanged; only the two historical held-summary warnings persisted.
+The only unrelated dirty production file was runtime quiz learning data.
