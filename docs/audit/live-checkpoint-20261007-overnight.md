@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 03:28 CST. This is a checkpoint, not a
+Observations through October 7, 2026, 04:17 CST. This is a checkpoint, not a
 claim that staged runtime fixes have been loaded or naturally accepted.
 
 ## Code And Services
@@ -255,3 +255,56 @@ Watch next: Baji voyage at 03:57:45, planned maintenance at 04:29:57, WA voyage
 watch (outside preparation window), pending queue empty, watchdog healthy.
 Deep retreat does not block Tianxing. These are checkpoints, not completion of
 the monitor-repair loop or a claim that all debt is closed.
+
+## Follow-Up Through 04:17
+
+`c3bd8e64` corrects the staged stargazer classifier: only `wait` with a valid
+farm snapshot and no error/unknown/backoff is routine. The planner can return
+`inspect` for `reason=unknown`, so that status must not be newly downgraded.
+The real planner regression failed before the correction and passed after it.
+Final full regression: 16685 passed / 1484 subtests; cross-review 268 / 17;
+production-directory isolated recheck 123 / 17. Push to `xiuxian-mian/main`
+confirmed. These changes remain unloaded, not naturally accepted.
+
+Baji's voyage returned through MiniApp at 03:57:47 (stored settlement
+03:57:46): cultivation +364, stones +80, soul-nurturing wood x1, affection +4.
+The expected fishing reservation was not a voyage failure. Five catches then
+completed at 03:59:46, 04:01:48, 04:04:12, 04:06:17 and 04:09:41: silver fish
+x3 and green-scale fish x2. Supply confirmations did not count as casts.
+The read-only fishing report verifies 5/5, accounted cast/supply operations,
+no error, and next fishing October 8 00:00:04. Voyage restarted at 04:09:44,
+with return time 10:09:48. No manual action or sixth cast was observed.
+
+At 04:16 fishing selection covers 23 identities: three with recorded catches,
+13 skipped for no companion, six for no rod, and WA still awaiting voyage
+return at 05:05:01. No identity-level report warning. Old saved slots and
+future timers alone are not execution evidence.
+
+The 04:10:59 summary receipt `369666e87ed74253bd9404009d1b117a` is confirmed,
+477 UTF-16 units / 11 lines / no explicit mention. Queue is empty; the same
+two historical held batches remain untouched. The external @axial5511 timeout
+at 03:35:48 stayed local. Old-worker receipts do not certify new formatting.
+
+The read-only trial inventory validates 24 current operations and 72 receipts,
+no pending request/save, no cross-operation round-key conflict. Current slots
+are 28505 encoded bytes; one old unknown archive remains. This mixes current
+slots from different batches, not a claim that all 24 ran today. Wave1 is
+completed for October 7; wave2 still records October 6. Parent ownership and
+durable reward handoff remain unverified. Source review still finds ordinary
+terminal/pause checkpoints ignoring save acknowledgement; no live persistence
+failure was established and that implementation debt is not closed.
+
+At 04:11 health/watchdog checks show no new anomaly, only the two held batches.
+Supervisor 2207210, worker 2207227, observer 2322377 and watchdog 2178662 remain
+unchanged; worker generation is still `f7958deb`. Pre-maintenance read-only
+switch snapshot preserves WA/Baji refining off, harvest on, both voyages on,
+global enabled, the existing 19 frozen channel identities and public MiniApp
+selections. Do not infer public MiniApp inactivity from channel enabled=0.
+
+Follower 52586 remains active until approximately 04:47. Scheduled backup at
+04:29:57 is the next loading checkpoint; observe its actual stop/start and
+post-load behavior, without an extra manual restart or game probe. WA fate
+24/30 and mudamuda0 4->0 remain unresolved; the latter repeated at 03:32:07
+and 04:02:16 without draw/choose/settle. Do not overwrite either snapshot or
+infer completion from cultivation gains. WA voyage check 05:13:18 and Tianxing
+preparation before rift 07:06:07 remain the next business watches.
