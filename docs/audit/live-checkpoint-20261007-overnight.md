@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 05:35 CST. Runtime code through
+Observations through October 7, 2026, 06:01 CST. Runtime code through
 `c3bd8e64` loaded during the scheduled backup recovery at 04:31. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -449,3 +449,60 @@ block Tianxing. Trial durable child-to-parent reward handoff, backup admission,
 Boss timing, held notices and Gate 4 remain separate debts, not closed by this
 healthy checkpoint. New notification/prayer/harvest changes still require their
 own natural samples; no jobs were retriggered to manufacture acceptance.
+
+## Follow-Up Through 06:01
+
+`51d116a4` read-only inventory diagnostics and `7f418377` empty-trial-selection
+repair are merged and pushed to `xiuxian-mian/main`. The latter removes the
+false completion write when no identity is eligible, preserves retained retry
+progress and lets ordinary background work continue. Full regression:
+16741 passed / 1484 subtests; second review 299 passed; production-directory
+isolated recheck 54 passed. See its [audit](trial-empty-selection-20261007.md).
+All tests and push sessions completed. Only foreground follower **78668**
+remains active, bounded until about 07:50.
+
+No restart or state/switch change occurred. Runtime worker 2835306 still runs
+through `c3bd8e64`; `514c3a97` terminal checkpoints and `7f418377` empty-wave
+handling are staged, not naturally accepted. PIDs and NRestarts remain as
+above. The actual next backup timer is **October 8 04:47:28**, not an assumed
+six-hour interval. Do not infer imminent loading from old maintenance notes.
+
+At 05:41:35 Lpprceqei's ordinary 问道 completed with cultivation +1100 and
+materials; its earlier acknowledgement was replayed through the normal path.
+No manual request was made. This gain is not one of the duel-only resource
+ledger's deltas; do not label that ledger projection as exact live balance.
+
+Third natural duel: command **1290085**, 05:43:25 -> official **1290087**,
+05:43:42, in -1002083016447. Winner ccahen, cultivation transfer 67000.
+Next local check briefly showed 05:45:47; that check sent nothing, correctly
+recorded target cooling down and moved next check to 05:58:00. Target's
+confirmed hold was 05:53:42. No target cooldown was bypassed.
+
+Fourth natural duel: command **1290142**, 05:58:04 -> official **1290144**,
+05:58:48, same group, hantianzun33_bot. Winner ccahen, transfer 67000; report
+also records ten-minute weakness and 杀人夺宝: 法则碎片·空间 x1. Keep the
+material result visible; it is a game result, not a send/parser failure.
+The report again names a treasure in narrative prose; this does not invalidate
+the earlier complete native active=[] observation or justify another unequip.
+
+State after the fourth result: pending 0, last error empty, batch **9/10**,
+observed completed today **4**, observed mind remaining **6**, next decision
+**06:12:53**. Four anchored cultivation deltas total **-268000**; the ledger
+projection is 5823710, subject to the non-ledger gain caveat above. Exactly
+one enabled and currently available identity has duel enabled: Lpprceqei.
+The 19 frozen identities' old module flags/timers are not ongoing duel sends.
+WA/Baji duel and incense-refinement switches remain off.
+
+At 05:57:09 dingfengbosushi completed the public MiniApp tower naturally:
+21 floors, cultivation +2712, tower seals +47. At 05:51 the read-only semantic
+report counted 2088 captured HTTP requests, peak 44/90 per minute, zero
+saturation windows and the one earlier recovered transient error; 59 local
+non-HTTP records were excluded. Eight explicit probe requests are additional.
+The two small-world panels have no within-day comparable pair per identity;
+an empty delta report is not proof of no faith/population changes.
+
+mudamuda0's fate read again returned 4->0 at 05:45:47, with no draw/choose/claim;
+original progress retained. No new unexplained send burst, retry or restart
+was observed. Health's only warning remains the two held historical notices;
+ordinary queue has two rows, next summary **06:11:35**. Watch that delivery,
+the 06:12 duel/batch completion, and WA's 06:56 preparation / 07:06:07 rift.

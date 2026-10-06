@@ -47,8 +47,9 @@ a prior aggregate here does not make it an owned receipt ledger.
   This is a separate review pass, not an external independent audit.
 - Full isolated regression: **16741 passed / 1484 subtests**, 456.49 seconds;
   JUnit `/tmp/xiuxian-trial-empty-selection-20261007.xml`.
-- Ruff, compileall and diff checks pass. Code accepted for scoped merge;
-  runtime loading and a natural eligible-empty-restored sample remain separate.
+- Ruff, compileall and diff checks pass. Merged and pushed as `7f418377`;
+  production-directory isolated recheck passed 54 tests. Runtime loading and
+  a natural eligible-empty-restored sample remain separate.
   Do not toggle production identities or clear completed markers for testing.
 
 ## Production Boundary
