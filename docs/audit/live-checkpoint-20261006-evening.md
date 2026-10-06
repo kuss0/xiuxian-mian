@@ -1,7 +1,7 @@
 # Evening Live Checkpoint
 
 Initial observation through October 6, 2026, 19:26 CST; appendices update it
-through 22:04, including the documented observation gap. No service restart, account
+through 23:11, including the documented observation gap. No service restart, account
 switch, manual game request, reply replay or state correction was performed.
 
 ## WA Rift
@@ -175,3 +175,39 @@ Earlier follower 91374 expires about 22:09 naturally. Upcoming checkpoints:
 Lpprceqei's held duel check 22:11:34, summary 22:24:24, WA voyage 23:04:49,
 and Tianxing preparation before the 01:13:49 wild action. Backup still runs
 at 04:29:57 and may load staged code; that is not current acceptance.
+
+## WA Voyage And Notifications Through 23:11
+
+Baji's two ordinary voyage messages were combined and delivered at 22:24:26:
+receipt `66d30f649587454cb5a142f88edf968c`, 120 UTF-16 units / 4 lines /
+no mention. Queue cleared, held stayed 2. With no new ordinary row, the
+22:54 timer produced no empty summary.
+
+WA's scheduled check ran at 23:04:53, about three seconds after its local
+due time. The same cave capture file shows four successful HTTP requests:
+identity load (1280ms), one `.远航归来` (115ms), another identity load (106ms),
+and one `.侍妾远航 月殿寻痕` (132ms). All returned 200; journal confirms parser
+application for return at 23:04:55 and departure at 23:04:57. No group send
+was found in that action window.
+
+State is phase idle / voyage sailing, settled-at 23:04:53, next return
+October 7 05:05:01 and check 05:13:18, with no error or pending reply. Affinity
+was 603 before the check and is now 608. No exact cultivation/material reward
+is inferred from response shapes or the old group-command receipt.
+
+The external-player timeout for `@jmpjnz` at 23:04:41 remained in the local
+journal: the ordinary queue contains only WA's return/departure rows and no
+new independent notification receipt was observed. Next ordinary timer is
+23:34:55; historical held remains 2. This is a scoped natural routing sample,
+not certification of every legacy notification fallback.
+
+At 23:11 observer still only reports held batches; preflight has no pending
+task and leaves WA's wild/rift preparation for their upcoming windows. The
+day's capture total is 2482, peak 73/90, earlier error counts unchanged.
+Lpprceqei remains a staged calibration debt, not a newly released duel.
+
+Foreground follower 86357 started at 22:49 and is bounded to about October 7
+02:49. Followers 91374 and 87952 expired naturally; their windows overlapped
+the replacement, with no new observation gap. No test or push session is
+outstanding. Production disk is `fa74778a` before this evidence-only update;
+runtime remains unchanged and the only unrelated dirt is the quiz bank.
