@@ -461,6 +461,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave1_last_succeeded": 0,
     "trial_daily_wave1_last_failed": 0,
     "trial_daily_wave1_last_steps": [],
+    "trial_daily_wave1_last_failed_steps": [],
     "trial_daily_wave1_last_outcomes": {},
     "trial_daily_wave2_last_run_day": "",
     "trial_daily_wave2_last_batch_id": "",
@@ -475,6 +476,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave2_last_succeeded": 0,
     "trial_daily_wave2_last_failed": 0,
     "trial_daily_wave2_last_steps": [],
+    "trial_daily_wave2_last_failed_steps": [],
     "trial_daily_wave2_last_outcomes": {},
     "cave_public_small_world_enabled": True,
     "cave_public_small_world_harvest_enabled": True,
@@ -768,7 +770,10 @@ def normalize_miniapp_auto_config(config=None):
             result[key] = int(result.get(key, 0) or 0) if key.endswith(("_cursor", "_completed", "_succeeded", "_failed")) else float(result.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
             result[key] = 0 if key.endswith(("_cursor", "_completed", "_succeeded", "_failed")) else 0.0
-    for key in ("trial_daily_wave1_last_steps", "trial_daily_wave2_last_steps"):
+    for key in (
+        "trial_daily_wave1_last_steps", "trial_daily_wave2_last_steps",
+        "trial_daily_wave1_last_failed_steps", "trial_daily_wave2_last_failed_steps",
+    ):
         raw_steps = result.get(key)
         if not isinstance(raw_steps, (list, tuple)):
             raw_steps = []
@@ -854,6 +859,17 @@ def _trial_daily_effective_retry_at(config, wave_key):
     return last_run_at + TRIAL_DAILY_RETRY_BACKOFF_SEC if last_run_at > 0 else 0.0
 
 
+def _trial_failed_prefix_valid(steps, cursor, failed, failed_steps):
+    if len(failed_steps) != failed or not 0 <= cursor <= len(steps):
+        return False
+    remaining = list(steps[:cursor])
+    for step in failed_steps:
+        if step not in remaining:
+            return False
+        remaining.remove(step)
+    return True
+
+
 def _trial_daily_wave_recovery_hold(config, wave_key, day_key):
     prefix = f"trial_daily_{wave_key}_last_"
     if str(config.get(f"{prefix}status") or "") != "retry_pending":
@@ -861,7 +877,14 @@ def _trial_daily_wave_recovery_hold(config, wave_key, day_key):
     if str(config.get(f"{prefix}progress_day") or "") != str(day_key or ""):
         return False
     reason = str(config.get(f"{prefix}retry_reason") or "").strip().lower()
-    if "operation_pending" in reason or "outcome_unknown" in reason:
+    if "operation_pending" in reason or "outcome_unknown" in reason or reason == "failed_prefix_missing":
+        return True
+    if not _trial_failed_prefix_valid(
+        config.get(f"{prefix}steps") or [],
+        int(config.get(f"{prefix}cursor") or 0),
+        int(config.get(f"{prefix}failed") or 0),
+        config.get(f"{prefix}failed_steps") or [],
+    ):
         return True
     for item in config.get(f"{prefix}steps") or ():
         if not isinstance(item, dict) or str(item.get("action") or "").strip().lower() != "trial":
@@ -8256,6 +8279,7 @@ def _persist_trial_daily_batch_state(
     succeeded=None,
     failed=None,
     steps=None,
+    failed_steps=None,
     outcomes=None,
     retry_at=None,
     retry_reason=None,
@@ -8295,6 +8319,11 @@ def _persist_trial_daily_batch_state(
             {"identity_id": int(identity_id), "action": str(action)}
             for identity_id, action in steps
         ]
+    if failed_steps is not None:
+        config[f"{prefix}failed_steps"] = [
+            {"identity_id": int(identity_id), "action": str(action)}
+            for identity_id, action in failed_steps
+        ]
     if outcomes is not None or completed:
         config[f"{prefix}outcomes"] = deepcopy(dict(outcomes or {}))
     config["trial_daily_last_batch_id"] = str(batch_id or "")
@@ -8309,6 +8338,7 @@ def _persist_trial_daily_batch_state(
         config[f"{prefix}succeeded"] = 0
         config[f"{prefix}failed"] = 0
         config[f"{prefix}steps"] = []
+        config[f"{prefix}failed_steps"] = []
         # Keep the final reward snapshot; completed status prevents a work replay.
     set_miniapp_auto_config(config)
     save_state()
@@ -8377,6 +8407,10 @@ def _trial_daily_batch_resume_state(context):
         "completed": max(0, int(config.get(f"{prefix}completed") or cursor)),
         "succeeded": max(0, int(config.get(f"{prefix}succeeded") or 0)),
         "failed": max(0, int(config.get(f"{prefix}failed") or 0)),
+        "failed_steps": [
+            (item["identity_id"], item["action"])
+            for item in config.get(f"{prefix}failed_steps") or []
+        ],
         "outcomes": outcomes,
     }
 
@@ -8393,6 +8427,7 @@ async def _run_cave_public_entry_batch(
     initial_completed=0,
     initial_succeeded=0,
     initial_failed=0,
+    initial_failed_steps=None,
     initial_outcomes=None,
     steps_override=None,
 ):
@@ -8407,6 +8442,7 @@ async def _run_cave_public_entry_batch(
     succeeded = max(0, int(initial_succeeded or 0))
     failed = max(0, int(initial_failed or 0))
     outcomes = deepcopy(initial_outcomes) if isinstance(initial_outcomes, dict) else {}
+    failed_steps = list(initial_failed_steps or [])
     next_cursor = resume_cursor
     _set_cave_public_batch_state(
         running=True,
@@ -8425,6 +8461,17 @@ async def _run_cave_public_entry_batch(
         f"🧩 洞府公共入口串行批次启动：batch={batch_id}｜动作={','.join(actions)}｜步骤 {total}｜间隔 {int(delay_sec)}s。",
         scope="global",
     )
+    if trial_daily_context and not _trial_failed_prefix_valid(steps, resume_cursor, failed, failed_steps):
+        message = "试炼失败步骤证据缺失，保留当前批次待核查，不自动重跑。"
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
+        _persist_trial_daily_batch_state(
+            trial_daily_context, batch_id=batch_id, status="retry_pending", result=message,
+            cursor=resume_cursor, completed_count=completed, succeeded=succeeded, failed=failed,
+            steps=steps, failed_steps=failed_steps, outcomes=outcomes,
+            retry_at=0, retry_reason="failed_prefix_missing",
+        )
+        await send_audit_log(message, scope="global", priority="normal", limit=220)
+        return
     if total <= 0:
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result="无可执行步骤")
         _persist_trial_daily_batch_state(
@@ -8445,7 +8492,6 @@ async def _run_cave_public_entry_batch(
     try:
         repeated_fail_key = ""
         repeated_fail_count = 0
-        failed_steps = []
         trial_recovery_hold_reasons = []
         for index, (identity_id, action) in enumerate(steps[resume_cursor:], start=resume_cursor + 1):
             next_cursor = index - 1
@@ -8491,9 +8537,10 @@ async def _run_cave_public_entry_batch(
                     succeeded=succeeded,
                     failed=failed,
                     steps=steps,
+                    failed_steps=failed_steps,
                     outcomes=outcomes,
                     retry_at=0,
-                    retry_reason="",
+                    retry_reason=next(iter(trial_recovery_hold_reasons), ""),
                 )
                 await send_audit_log(
                     f"⏸️ 洞府公共入口批次遇到{pause_reason}，已完成 {completed}/{total}；"
@@ -8547,9 +8594,10 @@ async def _run_cave_public_entry_batch(
                     succeeded=succeeded,
                     failed=failed,
                     steps=steps,
+                    failed_steps=failed_steps,
                     outcomes=outcomes,
                     retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
-                    retry_reason="",
+                    retry_reason=next(iter(trial_recovery_hold_reasons), ""),
                 )
                 await send_audit_log(
                     f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止；"
@@ -8590,9 +8638,10 @@ async def _run_cave_public_entry_batch(
                     succeeded=succeeded,
                     failed=failed,
                     steps=steps,
+                    failed_steps=failed_steps,
                     outcomes=outcomes,
                     retry_at=retry_at,
-                    retry_reason="",
+                    retry_reason=next(iter(trial_recovery_hold_reasons), ""),
                 )
                 await send_audit_log(
                     f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
@@ -8617,9 +8666,10 @@ async def _run_cave_public_entry_batch(
             succeeded=succeeded,
             failed=failed,
             steps=steps,
+            failed_steps=failed_steps,
             outcomes=outcomes,
             retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
-            retry_reason="",
+            retry_reason=next(iter(trial_recovery_hold_reasons), ""),
         )
         await send_audit_log(
             f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
@@ -8654,6 +8704,7 @@ async def _run_cave_public_entry_batch(
             succeeded=0,
             failed=0,
             steps=failed_steps,
+            failed_steps=[],
             outcomes={},
             retry_at=retry_at,
             retry_reason=recovery_hold_reason,
@@ -8764,6 +8815,7 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
             initial_completed=resume_state.get("completed", 0),
             initial_succeeded=resume_state.get("succeeded", 0),
             initial_failed=resume_state.get("failed", 0),
+            initial_failed_steps=resume_state.get("failed_steps") or [],
             initial_outcomes=resume_state.get("outcomes") or {},
             steps_override=resume_state.get("steps") or None,
         ))
@@ -8786,6 +8838,7 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
         "completed": int(resume_state.get("completed", 0) or 0),
         "succeeded": int(resume_state.get("succeeded", 0) or 0),
         "failed": int(resume_state.get("failed", 0) or 0),
+        "failed_steps": list(resume_state.get("failed_steps") or []),
         "outcomes": dict(resume_state.get("outcomes") or {}),
     }
 
@@ -9762,6 +9815,7 @@ async def run_miniapp_daily_scheduler(now):
             completed_count=int(extra.get("completed", 0) or 0),
             succeeded=int(extra.get("succeeded", 0) or 0),
             failed=int(extra.get("failed", 0) or 0),
+            failed_steps=extra.get("failed_steps") or [],
             steps=[
                 (int(item.get("identity_id") or 0), str(item.get("action") or ""))
                 for item in (extra.get("batch_steps") or [])
