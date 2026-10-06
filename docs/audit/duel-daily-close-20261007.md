@@ -63,10 +63,9 @@ SQLite backup, and changes only this identity's completion day, progress,
 consumed baseline, switch and next schedule. Other identity rows and its
 target/count/reserve/window/Tianxing configuration must compare unchanged.
 
-The correction is not yet applied in this revision. Do not confuse merged code
-with loaded runtime, or the completed offline replay with tomorrow's natural
-batch acceptance. WA's 06:56 preparation / 07:06 rift window takes precedence
-over deployment timing. Its duel remains independently off.
+Do not confuse merged code with loaded runtime, or the completed offline replay
+with tomorrow's natural batch acceptance. The initial deployment plan protected
+WA's 06:56 preparation / 07:06 rift window. Its duel remains independently off.
 
 ## Deployment And Initial Observation
 

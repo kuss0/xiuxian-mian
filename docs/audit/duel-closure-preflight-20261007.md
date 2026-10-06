@@ -39,4 +39,13 @@ missing path fails instead of silently creating an empty database.
 
 Main runtime remains `51c2e348`; Lpprceqei's switch is restored on, completed
 day October 7, progress zero, observed baseline five, next October 8 01:38:41.
-Production timer loading and post-merge check remain to be recorded below.
+
+## Loaded Observation
+
+`8aac83fe` merged and pushed to `xiuxian-mian/main`. Production-directory
+isolated checks passed 34 tests. The existing systemd timer ran the new probe
+at 07:10:59; its journal explicitly shows the healthy duel closure check and
+empty pending queue, with exit success. Follow-up CLI checks remain healthy
+for this invariant. Main supervisor/worker and observer/watchdog PIDs did not
+change. This helper adds no Telegram delivery and no automatic response to an
+invariant violation. Tomorrow's natural batch boundary remains to be observed.

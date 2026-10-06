@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 06:58 CST. Runtime code through
+Observations through October 7, 2026, 07:19 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -51,6 +51,28 @@ change-fate and stores the terminal receipt once. No manual release occurred.
 The result notification confirmed as `ae4ac3bf7ed342969f4fab9a749e6ead`,
 96 UTF-16 units / three lines / one mention. This high-risk route result remains
 separate from routine wild summaries. No claim is made about all future rifts.
+
+### Follow-Up Through 07:19
+
+Read-only preflight `8aac83fe` is merged/pushed and naturally loaded by its
+existing minute timer at 07:10:59. It reports Lpprceqei's closure healthy;
+today's actual attacks remain five, with no equipment sends. No additional
+service restart occurred. Dedicated tests 393 / 24 subtests, independent review
+selection 400 / 10, production-directory isolated tests 34 pass.
+
+At 07:17 the ordinary notification queue has two records (startup recovery
+and growrdick's natural 07:00 tower result), next flush 07:23:35. Two historical
+held batches remain unchanged. Since startup only the protected rift result
+has an independent delivery receipt; no duplicate payload was confirmed.
+The 07:16 capture report contains 2121 HTTP records, rolling peak 44/90, and
+only the earlier recovered transient error. Watchdog is healthy; observer's
+only current warning is the held-notification review.
+
+The next harvests remain Baji 08:22:25 and WA 08:39:46, refining off for both.
+mudamuda0 progress regression remains unresolved; its independent deep-retreat
+end is approximately 09:53:58 and is a useful later natural observation, not
+permission to force exit or claim from a stale quest. No new game probe ran.
+Follower 78668 remains active until about 07:50 and must be renewed before then.
 
 ## Code And Services
 
