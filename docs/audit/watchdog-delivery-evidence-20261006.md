@@ -2,6 +2,8 @@
 
 Base: `ead26a9b`. Worktree:
 `/root/xiuxian-watchdog-delivery-evidence-20261006`.
+Merged and pushed as `a2eec0db` to `xiuxian-mian/main`; post-merge isolated
+verification: 319 passed / 16 subtests. The running watchdog has not reloaded.
 
 ## Finding
 
@@ -61,7 +63,7 @@ Ruff, compileall, diff checks and `python -S tools/safety_watchdog.py --help`
 pass. All tests use `XIUXIAN_ALLOW_LIVE_TEST_DB=0` and mock Telegram. No test
 warning was sent and no service was restarted. The maintainer review is not
 an independent external audit. Runtime load and natural delivery remain
-unaccepted; the patch is ready for disk merge and post-merge verification.
+unaccepted; disk merge and post-merge verification are complete.
 
 ## Live Boundary
 
