@@ -72,8 +72,8 @@ the only health warning is the unchanged historical held notification.
 next deadline 16:54:14. This completes the six due YuanYing observation windows
 (four channels plus WA/Baji). The 08:42:47 ordinary digest was confirmed,
 receipt `47050b341db54b97875baf257815acc5`, 433 UTF-16 units/10 lines/no
-mention. One new YuanYing row is waiting for the next normal digest; the old
-held batch remains untouched. No extra game request or notification was sent
+mention. At 08:56 two newer YuanYing rows are waiting for the 09:13:28 normal
+digest; the old held batch remains untouched. No extra game request or notification was sent
 to produce acceptance evidence.
 
 October 6 captured HTTP peak is 39/90 in the default 60-second sliding window.
