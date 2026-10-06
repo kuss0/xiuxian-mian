@@ -24,6 +24,7 @@ MAX_HELD_BYTES = 32 * 1024
 PENDING_TTL = 86400
 HELD_TTL = 7 * 86400
 COMPACTED_KEY = "__audit_summary_compacted__"
+SUMMARY_KINDS = frozenset({"yuanying", "deep_retreat"})
 
 
 def _encoded_size(value):
@@ -43,7 +44,7 @@ def _validate_row(row):
         raise ValueError("invalid summary row")
     key = row.get("bucket_key")
     if isinstance(key, list):
-        if (len(key) != 4 or key[0] != "routine" or key[1] not in {"yuanying", "deep_retreat"}
+        if (len(key) != 4 or key[0] != "routine" or key[1] not in SUMMARY_KINDS
                 or (key[2] is not None and type(key[2]) is not int)
                 or not isinstance(key[3], str) or len(key[3]) != 64):
             raise ValueError("invalid routine key")
@@ -56,8 +57,12 @@ def _validate_row(row):
         _number(row.get(field))
     if row.get("identity_id") is not None and type(row["identity_id"]) is not int:
         raise ValueError("invalid summary identity")
-    if row.get("summary_kind", "") not in {"", "yuanying", "deep_retreat"}:
+    if row.get("summary_kind", "") not in SUMMARY_KINDS | {""}:
         raise ValueError("invalid summary kind")
+    presentation = row.get("presentation_kind", "")
+    if (not isinstance(presentation, str) or presentation not in {"", "fishing_skip"}
+            or (presentation and row.get("summary_kind", ""))):
+        raise ValueError("invalid summary presentation")
     for field in ("html", "plain", "first_ts", "last_ts"):
         if not isinstance(row.get(field), str) or len(row[field]) > 32768:
             raise ValueError("invalid summary text")

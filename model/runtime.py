@@ -3201,10 +3201,13 @@ def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", iden
             "html": message_body,
             "seq": _low_priority_audit_seq,
             "bucket_key": key,
-            "summary_kind": summary_kind,
+            "summary_kind": "" if summary_kind == "fishing_skip" else summary_kind,
             "identity_id": identity_id,
             "first_at": now,
         }
+        if summary_kind == "fishing_skip":
+            # Optional presentation metadata is readable by pre-migration observers.
+            row["presentation_kind"] = summary_kind
         _low_priority_audit_bucket[key] = row
         _low_priority_audit_order.append(key)
     row["count"] += 1

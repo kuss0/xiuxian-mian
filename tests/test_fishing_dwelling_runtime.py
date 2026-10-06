@@ -203,6 +203,7 @@ def test_confirmed_terminal_skip_waits_until_next_day(fishing_env, monkeypatch, 
     result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
     assert result["ok"] and result["extra"]["terminal_skip"]
     assert result["extra"]["status"] == "skipped"
+    assert h.audit.await_args.kwargs["summary_kind"] == "fishing_skip"
     assert {"fishing_rod_missing": "未持有鱼竿", "fishing_daily_limit_reached": "次数已用尽",
             "fishing_companion_missing": "无可用侍妾"}[reason] in h.identity["fishing_last_result"]
     assert h.identity["next_fishing_time"] > h.now + 1800
@@ -232,6 +233,7 @@ def test_no_rod_failed_local_save_does_not_mark_day_done(fishing_env, monkeypatc
     monkeypatch.setattr(native.persistence, "save_state", save)
     result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
     assert not result["ok"] and not result["extra"]["terminal_skip"]
+    assert h.audit.await_args.kwargs["summary_kind"] == ""
     assert h.identity["next_fishing_time"] == before
 
 

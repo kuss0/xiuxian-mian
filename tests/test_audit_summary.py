@@ -10,8 +10,8 @@ from telethon.extensions import html as telegram_html
 from telethon.tl.types import MessageEntityMention
 
 from model.audit_messages import text_units
-from model.audit_summary import confirmed_summary_kind, format_grouped_summary, routine_bucket_key
-from model.audit_summary_store import AuditSummaryStore
+from model.audit_summary import SUMMARY_TITLES, confirmed_summary_kind, format_grouped_summary, routine_bucket_key
+from model.audit_summary_store import AuditSummaryStore, SUMMARY_KINDS
 from model import runtime
 from model.features import cave_treasure_runtime as cave
 
@@ -32,6 +32,56 @@ def test_confirmed_results_and_unknown_kind(key):
     result = {"ok": True, "extra": {key: {"handled": True}}}
     assert confirmed_summary_kind("yuanying", result) == "yuanying"
     assert confirmed_summary_kind("world_boss", result) == ""
+
+
+def fishing_skip_response():
+    return {"ok": True, "extra": {
+        "native": True, "status": "skipped", "terminal_skip": True,
+        "outcome_unknown": False, "committed": False, "supply_committed": False, "expected_wait": False,
+    }}
+
+
+def test_summary_schema_kinds_match_presentation_without_importing_it_into_store():
+    assert set(SUMMARY_TITLES) == SUMMARY_KINDS | {"fishing_skip"}
+    assert isinstance(routine_bucket_key("fishing_skip", 1, "skip"), str)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("native", None), ("native", 1), ("terminal_skip", False), ("terminal_skip", "true"),
+    ("status", "settled"), ("status", "blocked"), ("outcome_unknown", True),
+    ("committed", True), ("supply_committed", True), ("expected_wait", True),
+])
+def test_fishing_skip_requires_confirmed_absence_not_rewards_supply_or_unknown(field, value):
+    response = fishing_skip_response()
+    assert confirmed_summary_kind("fishing_skip", response) == "fishing_skip"
+    response["extra"][field] = value
+    assert confirmed_summary_kind("fishing_skip", response) == ""
+
+
+@pytest.mark.parametrize("field", list(fishing_skip_response()["extra"]))
+def test_missing_skip_evidence_keeps_existing_notice(field):
+    response = fishing_skip_response()
+    del response["extra"][field]
+    assert confirmed_summary_kind("fishing_skip", response) == ""
+
+
+def test_skip_group_keeps_rewards_visible_and_does_not_consume_detail_budget():
+    rows = [{"summary_kind": "fishing_skip", "identity_id": i, "count": 1, "html": "今日跳过"}
+            for i in range(24)]
+    before = deepcopy(rows)
+    only_skips = format_grouped_summary(rows, now_text="10:00")
+    assert only_skips == "<b>运行摘要 · 10:00</b>\n钓鱼跳过：24 个身份，24 条记录"
+    assert rows == before
+    output = format_grouped_summary(rows + [{"identity_id": 30, "count": 1, "html": "银须灵鲢x1"}],
+                                    now_text="10:00", max_details=1)
+    assert "银须灵鲢x1" in output
+    assert "今日跳过" not in output and "成功" not in output
+
+
+def test_untyped_historical_skip_rows_are_not_inferred_from_copy():
+    text = format_grouped_summary([{"count": 1, "html": "未持有鱼竿，今日跳过", "identity_id": 1}], now_text="10:00")
+    assert "钓鱼跳过：" not in text
+    assert "未持有鱼竿" in text
 
 
 def test_semantic_bucket_preserves_long_content_and_stable_identity():
@@ -109,6 +159,33 @@ class RuntimeStructuredSummaryTests(IsolatedAsyncioTestCase):
         assert "元婴：24 个身份，24 条记录" in text
         assert "全部完成" not in text and "tg://user" not in text
         assert runtime._audit_summary_interval() == 1800
+
+    async def test_skip_group_survives_checkpoint_and_one_delivery(self):
+        sender = AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", sender):
+            for identity in range(1, 25):
+                await runtime.send_audit_log("无可用侍妾，今日跳过", priority="low", send_as_id=identity,
+                                             summary_kind=confirmed_summary_kind("fishing_skip", fishing_skip_response()))
+            sender.assert_not_awaited()
+            reloaded = AuditSummaryStore(self.store.path, {}, [], clock=lambda: 1000)
+            async with reloaded.lock:
+                assert await reloaded._load()
+            assert len(reloaded.bucket) == 24
+            assert {r["summary_kind"] for r in reloaded.bucket.values()} == {""}
+            assert {r["presentation_kind"] for r in reloaded.bucket.values()} == {"fishing_skip"}
+            assert all(isinstance(key, str) for key in reloaded.bucket)
+            await self.flush()
+        sender.assert_awaited_once()
+        assert "钓鱼跳过：24 个身份，24 条记录" in sender.call_args.args[0]
+        assert "今日跳过" not in sender.call_args.args[0]
+
+    async def test_fishing_hint_does_not_delay_high_priority_or_interactive_notices(self):
+        sender = AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", sender):
+            await runtime.send_audit_log("需要人工核实", priority="high", summary_kind="fishing_skip")
+            await runtime.send_audit_log("请处理", priority="normal", summary_kind="fishing_skip", buttons=[["button"]])
+        assert sender.await_count == 2
+        assert not runtime._low_priority_audit_bucket
 
     async def test_legacy_switch_keeps_existing_delivery(self):
         sender = AsyncMock(return_value=True)

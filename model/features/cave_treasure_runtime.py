@@ -4618,7 +4618,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
             return cancelled
         try:
             await send_audit_log(f"🎣 {response['message']}", scope="identity", send_as_id=identity_id,
-                                 priority=priority, limit=limit)
+                                 priority=priority, limit=limit,
+                                 summary_kind=confirmed_summary_kind("fishing_skip", response))
             if not operation.owner.is_current():
                 return cancelled
             if daily and notice.is_current() and _public_entry_allowed() and (
