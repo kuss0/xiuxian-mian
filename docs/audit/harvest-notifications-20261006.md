@@ -1,6 +1,8 @@
 # Routine Harvest Notifications
 
-Base: `a302c172`. Candidate in `/root/xiuxian-harvest-notification-20261006`.
+Base: `a302c172`. Worktree: `/root/xiuxian-harvest-notification-20261006`.
+Merged and pushed as `b05f619d`. Post-merge isolated verification:
+**313 passed / five subtests**. The runtime change is staged on disk only.
 Main worker is still on `f7958deb`; no main restart planned for notification
 changes alone.
 
@@ -65,3 +67,17 @@ and future server deadlines. The 19 channel send-as freezes do not disable
 their eligible public-entry HTTP path. No settings or gameplay were altered
 for these checks. Main, observer and watchdog remain active with NRestarts=0;
 the only health warning is the unchanged historical held notification.
+
+`xuruode6` completed its status-first, identity-bound launch at 08:54:11,
+next deadline 16:54:14. This completes the six due YuanYing observation windows
+(four channels plus WA/Baji). The 08:42:47 ordinary digest was confirmed,
+receipt `47050b341db54b97875baf257815acc5`, 433 UTF-16 units/10 lines/no
+mention. One new YuanYing row is waiting for the next normal digest; the old
+held batch remains untouched. No extra game request or notification was sent
+to produce acceptance evidence.
+
+October 6 captured HTTP peak is 39/90 in the default 60-second sliding window.
+An earlier operator invocation incorrectly used `--limit 8 --window-sec 3600`;
+those options set the rate threshold/window, not output size/lookback. Its
+931/8 saturation is not evidence of a production limit breach. Corrected the
+invocation without changing any runtime budget or hiding historical errors.
