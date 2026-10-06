@@ -1888,6 +1888,8 @@ class SafetyWatchdogTests(unittest.TestCase):
         captured = {}
 
         class FakeResponse:
+            status = 200
+
             def __enter__(self):
                 return self
 
@@ -1895,7 +1897,7 @@ class SafetyWatchdogTests(unittest.TestCase):
                 return False
 
             def read(self, _limit):
-                return b'{"ok":true}'
+                return b'{"ok":true,"result":{"message_id":42,"chat":{"id":-1001}}}'
 
         def fake_urlopen(url, data=None, timeout=None):
             captured["url"] = url
