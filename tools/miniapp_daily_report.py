@@ -392,6 +392,7 @@ def send_log_group(message: str, env_file: Path = DEFAULT_ENV_FILE) -> BotDelive
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     receipt = read_bot_delivery(
         lambda: urllib.request.urlopen(url, data=body, timeout=20), chat_id,
+        source="miniapp_daily_report", message=message,
     )
     receipt.require_confirmed("MiniApp report")
     return receipt

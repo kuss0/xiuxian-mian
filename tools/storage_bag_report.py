@@ -666,6 +666,7 @@ def send_log_group_chunks(chunks: list[str], env_file: Path, *, topic_id: int = 
         req = request.Request(api_url, data=body, method="POST")
         receipt = read_bot_delivery(
             lambda: request.urlopen(req, timeout=20), chat_id, topic_id=max(0, int(topic_id or 0)),
+            source="storage_bag_report", message=chunk,
         )
         receipt.require_confirmed(f"Storage report chunk={index}/{len(chunks)} confirmed={index - 1}/{len(chunks)}")
         print(f"Storage report chunk={index}/{len(chunks)}: {receipt.diagnostic}", flush=True)

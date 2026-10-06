@@ -1651,6 +1651,7 @@ def send_log_via_bot(env: dict[str, str], message: str) -> str:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     return read_bot_delivery(
         lambda: urllib.request.urlopen(url, data=payload, timeout=8), chat_id,
+        source="safety_watchdog", message=message,
     ).diagnostic
 
 
