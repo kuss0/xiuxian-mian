@@ -11,7 +11,7 @@
 - `trial_operations` 已有身份/账号所有权、operation_id、单调 sequence、不可变 receipt 前缀和 round_key。round_key 由入口/挑战摘要组成，不含原始授权；不能改用用户名或通知正文去重。
 - 正常 `finish_result()` 返回 operation_id 和底层回执；`recover_local()` 返回已验证的收益投影。公共入口 `extra` 目前只交付合计 gains/rewards/settled_count，没有向父批次交付逐次结算键。
 - `last_outcomes` 是合计快照，不是回执账本。完成快照保留和失败前缀修复都不能解决失败重试时旧收益被清除、重复恢复投影被累加的问题。
-- 操作账本目前只保存每个身份的当前操作；下一次开始可能覆盖已完成记录。不能在批次全部结束时再读取它并猜测所有历史收益。
+- 正常已完成操作目前只保存在每个身份的当前操作槽，下一次开始可能覆盖它。另有 `trial_operation_archive`，仅用于跨日未知操作（原因 `cross_day_outcome_unknown`），不是已完成收益历史；不能混用为父批次收益账本。13:10 只读核对 24 个当前槽均 complete，只有 xuruode8 保留 1 条旧未知归档。不能在批次全部结束时才读取当前槽并猜测所有历史收益。
 - `business:trial` capture 当前记录整次合计，报告直接累加；不是具备严格去重/父批次归属的耐久发件箱，不能直接提升为调度或收益核销的事实源。
 
 ## 下批实施顺序

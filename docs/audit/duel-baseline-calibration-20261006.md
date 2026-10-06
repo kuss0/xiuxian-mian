@@ -93,3 +93,13 @@ At 13:10:40 the unchanged production worker postponed the same identity to
 13:40:40. The last profile-request timestamp remained June 28, the baseline
 remained empty and no duel command was pending. This is fresh evidence of
 the old liveness gap, not a failed acceptance of the un-loaded candidate.
+
+## Staged Merge
+
+`a8ee68d6` was fast-forwarded into production `main` and pushed to
+`xiuxian-mian/main`. Post-merge isolated regression: 274 passed and 6 subtests.
+The only unrelated dirty production file remains the runtime-learned quiz bank.
+Main supervisor remains PID 2207210, NRestarts 0; the worker has not been
+restarted and still loads `f7958deb`. Calibration and all previously staged
+runtime fixes require a later validated maintenance load and natural acceptance.
+At 13:23 preflight, game pending was empty and WA's next rift was unchanged.
