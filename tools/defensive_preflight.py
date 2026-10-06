@@ -8,7 +8,7 @@ import json
 import sqlite3
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -395,6 +395,40 @@ def _fetch_rows(conn: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
     return [dict(row) for row in conn.execute(query).fetchall()]
 
 
+def _duel_daily_status(row: dict[str, Any], now: float) -> dict[str, Any] | None:
+    local_now = datetime.fromtimestamp(now, timezone(timedelta(hours=8)))
+    day = local_now.date().isoformat()
+    if not row.get("duel_enabled") or row.get("duel_daily_completed_day") != day:
+        return None
+    result = str(row.get("duel_last_result") or "")
+    phase = result.removeprefix("斗法配装:")
+    restoring = result.startswith("斗法配装:") and (
+        phase in {"restore_needed", "restore_unequip_wait"}
+        or phase.startswith(("restore_equip:", "restore_equip_wait:"))
+    )
+    tomorrow = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    anomalies = []
+    if _epoch(row.get("duel_reply_to_msg_id")) or _epoch(row.get("duel_open_msg_id")):
+        anomalies.append("pending_after_close")
+    if not restoring:
+        if _epoch(row.get("duel_completed_count")):
+            anomalies.append("progress_reopened")
+        if _epoch(row.get("next_duel_time")) < tomorrow:
+            anomalies.append("schedule_reopened")
+    return {
+        "level": "at_risk" if anomalies else "watch" if restoring else "healthy",
+        "module": "duel", "action": "当日批次结束校验",
+        "label": str(row.get("label") or row.get("username") or row.get("send_as_id") or ""),
+        "send_as_id": row.get("send_as_id"), "completed_day": day,
+        "anomalies": anomalies,
+        "reason": (
+            "当日斗法已结束但状态冲突：" + ", ".join(anomalies) + "；需核查回包与调度，不自动补发。"
+            if anomalies else "当日斗法已结束，恢复装备仍在进行。"
+            if restoring else "当日斗法已结束，未见当日重开。"
+        ),
+    }
+
+
 def _listener_service_state() -> str:
     try:
         proc = subprocess.run(
@@ -458,7 +492,7 @@ def _listener_status(now: float) -> dict[str, Any]:
 def snapshot(*, horizon_sec: int) -> dict[str, Any]:
     now = time.time()
     checks: list[dict[str, Any]] = [_listener_status(now)]
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro", uri=True) as conn:
         pending = _fetch_rows(
             conn,
             """
@@ -491,6 +525,25 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
             )
         else:
             checks.append({"level": "healthy", "module": "pending_tasks", "count": 0, "reason": "pending queue empty"})
+
+        # Older databases have no durable daily closure fact to evaluate.
+        runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)")}
+        if "duel_daily_completed_day" in runtime_columns:
+            duel_rows = _fetch_rows(conn, """
+                SELECT i.send_as_id, i.label, i.username, m.duel_enabled,
+                    r.duel_daily_completed_day, r.duel_completed_count,
+                    r.duel_reply_to_msg_id, r.duel_open_msg_id, r.duel_last_result,
+                    t.next_duel_time
+                FROM identities i
+                JOIN identity_module_state m USING (send_as_id)
+                JOIN identity_runtime_state r USING (send_as_id)
+                LEFT JOIN identity_timers t USING (send_as_id)
+                WHERE i.enabled = 1 AND m.duel_enabled = 1
+            """)
+            for row in duel_rows:
+                item = _duel_daily_status(row, now)
+                if item:
+                    checks.append(item)
 
         rows = _fetch_rows(
             conn,
