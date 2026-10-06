@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 07:19 CST. Runtime code through
+Observations through October 7, 2026, 07:43 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -73,6 +73,32 @@ mudamuda0 progress regression remains unresolved; its independent deep-retreat
 end is approximately 09:53:58 and is a useful later natural observation, not
 permission to force exit or claim from a stale quest. No new game probe ran.
 Follower 78668 remains active until about 07:50 and must be renewed before then.
+
+### Follow-Up Through 07:43
+
+07:23:40 routine summary confirmed as `5a34c9266da54599857cdbef327776bf`,
+144 UTF-16 units / four lines / no mention. Queue cleared, held stays two,
+next flush 07:53:39. WA's 07:20:41 command 1290373 was `.抚摸法宝`, not
+an equip/unequip action; official reply 1290374 confirms rapport +4, XP +14.
+
+At 07:31, the read-only trial inventory still validates 24 owned current slots,
+72 receipts, no pending request/save, and one older unknown archive with zero
+receipts. Current slots total 28,508 bytes. Parent-batch/player binding and
+all-day completeness remain unverified; no receipt was adopted or removed.
+The durable reporting plan remains open, and child notices remain intact.
+
+07:36-07:37 SSH fetches of `/root/xiuxian-wxjerry-main` and
+`/root/xiuxianbot-rs` leave wxjerry main/xuruodeaiban at `aa9dba29`/`cd2a2e64`
+and Rust main at `3c39edc8`. Additional local remote refs are historical branches;
+the newest is an October 5 Cargo dependency branch, not a new native game fix.
+No remote commit is dated after the previous evening check. Checkouts stay
+clean, with no merge, dependency update, migration or production switch change.
+
+Replacement foreground follower **56988** started at 07:43:18 and runs until
+about **10:43**. Old follower 78668 is allowed to expire normally near 07:50.
+Main supervisor/worker and long-running monitor PIDs remain unchanged;
+watchdog and daily-close invariant remain healthy. Next natural checks remain
+the two harvests and mudamuda0's independent deep-retreat settlement, above.
 
 ## Code And Services
 
