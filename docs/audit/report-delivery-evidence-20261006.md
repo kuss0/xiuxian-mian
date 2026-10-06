@@ -2,6 +2,8 @@
 
 Base: `205b6ad2`. Worktree:
 `/root/xiuxian-report-delivery-evidence-20261006`.
+Merged and pushed as `b16f4114` to `xiuxian-mian/main`; production-checkout
+isolated verification: 277 passed. No service was restarted.
 
 ## Finding
 

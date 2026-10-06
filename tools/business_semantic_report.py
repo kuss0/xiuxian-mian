@@ -99,6 +99,36 @@ def _number(value: Any) -> int:
         return 0
 
 
+def _id(value: Any, *, signed: bool = False) -> int:
+    return value if type(value) is int and (-(2**63) < value < 2**63 if signed else 0 < value < 2**63) else 0
+
+
+def _message_key(row: dict[str, Any], field: str = "message_id") -> tuple[int, int] | None:
+    chat_id, message_id = _id(row.get("chat_id"), signed=True), _id(row.get(field))
+    return (chat_id, message_id) if chat_id and message_id else None
+
+
+def _mentions(text: str) -> set[str]:
+    return {name.lower() for name in re.findall(r"(?<![A-Za-z0-9_@])@([A-Za-z0-9_]+)", text)}
+
+
+def _identity_aliases(rows):
+    owners: dict[str, set[int]] = defaultdict(set)
+    for row in rows:
+        sender_id = _id(row.get("sender_id"))
+        alias = row.get("sender_username")
+        if row.get("event_type") not in {"sent", "message"} or not sender_id or not isinstance(alias, str):
+            continue
+        alias = alias.lstrip("@").lower()
+        if re.fullmatch(r"[a-z0-9_]{1,32}", alias):
+            owners[alias].add(sender_id)
+    by_identity: dict[int, set[str]] = defaultdict(set)
+    for alias, identities in owners.items():
+        if len(identities) == 1:
+            by_identity[next(iter(identities))].add(alias)
+    return by_identity, sum(len(identities) > 1 for identities in owners.values())
+
+
 def _parse_ts(value: Any) -> float:
     text = str(value or "").strip()
     if text.endswith(" UTC+8"):
@@ -150,7 +180,7 @@ def _parse_panel(text: str) -> dict[str, int] | None:
 
 def _event_explanations(
     rows: list[dict[str, Any]],
-    roots: dict[int, dict[str, Any]],
+    roots: dict[tuple[int, int], dict[str, Any]],
     identity_id: int,
     start: float,
     end: float,
@@ -166,49 +196,37 @@ def _event_explanations(
     expected_faith = previous_faith
     has_faith_evidence = False
     if identity_aliases is None:
-        identity_aliases = {
-            str(row.get("sender_username") or "").lstrip("@").lower()
-            for row in rows
-            if row.get("event_type") in {"sent", "message"}
-            and int(row.get("sender_id") or 0) == identity_id
-            and row.get("sender_username")
-        }
+        identity_aliases = _identity_aliases(rows)[0].get(identity_id, set())
     candidate_rows = indexed_rows if indexed_rows is not None else rows
 
     def add_event(row: dict[str, Any], kind: str, **values: Any) -> None:
+        anchor = _message_key(row)
+        if anchor is None:
+            return
         event = {
             "ts": _format_ts(_parse_ts(row.get("ts"))),
-            "message_id": _number(row.get("message_id")),
+            "chat_id": anchor[0],
+            "message_id": anchor[1],
             "kind": kind,
             **values,
         }
-        key = (event["message_id"], kind, tuple(sorted(values.items())))
+        key = (anchor, kind, tuple(sorted(values.items())))
         if key in event_keys:
             return
         event_keys.add(key)
         events.append(event)
 
     for row in candidate_rows:
-        ts = _parse_ts(row.get("ts"))
-        if not start < ts <= end:
-            continue
         text = str(row.get("text") or "")
         event_type = str(row.get("event_type") or "")
-        if event_type == "sent":
+        if event_type not in {"message", "edit"} or row.get("sender_is_bot") is not True or _message_key(row) is None:
             continue
 
-        try:
-            reply_to = int(row.get("reply_to_msg_id") or 0)
-        except (TypeError, ValueError, OverflowError):
-            reply_to = 0
-        root = roots.get(reply_to)
-        if row.get("sender_is_bot") and root is not None and int(root.get("sender_id") or 0) == identity_id:
+        root = roots.get(_message_key(row, "reply_to_msg_id"))
+        if root is not None and _id(root.get("sender_id")) == identity_id:
             manifest = _MANIFEST_DELTA.search(text)
             if manifest:
                 delta = _number(manifest.group(1))
-                expected_faith = max(0, min(100, expected_faith + delta))
-                has_faith_evidence = True
-                explanations.append("同身份显灵回复")
                 add_event(
                     row,
                     "manifest_delta",
@@ -219,34 +237,46 @@ def _event_explanations(
             absolute = _ABSOLUTE_FAITH.search(text)
             if absolute:
                 target = _number(absolute.group(1))
-                expected_faith = max(0, min(100, target))
-                has_faith_evidence = True
-                explanations.append("同身份神迹回复")
                 add_event(row, "god_absolute_faith", faith=target)
 
         # Broadcast losses are not replies to our query, but are still direct
         # business evidence when the bot names the same identity.
         if event_type in {"message", "edit"} and row.get("sender_is_bot"):
-            lowered = text.lower()
-            if identity_aliases and any(f"@{alias}" in lowered for alias in identity_aliases):
+            if identity_aliases and identity_aliases & _mentions(text):
                 loss = _FAITH_LOSS.search(text)
                 if loss:
                     delta = _number(loss.group(1))
-                    expected_faith = max(0, min(100, expected_faith + delta))
-                    has_faith_evidence = True
-                    explanations.append("同身份天灾/信仰变更文案")
                     add_event(row, "faith_loss", faith_delta=delta)
                 stock_loss = _STOCK_LOSS.search(text)
                 if stock_loss:
                     amount = abs(_number(stock_loss.group(1)))
-                    explanations.append("同身份库存香火失窃文案")
                     add_event(row, "stock_loss", incense_delta=-amount)
+    # Deduplicate before selecting a panel interval: a late replay belongs to
+    # its first observation, not to the next panel's faith change.
+    variants = Counter((event["chat_id"], event["message_id"], event["kind"]) for event in events)
+    events = [event for event in events if start < _parse_ts(event["ts"]) <= end]
+    conflicts = set()
+    reasons = {"manifest_delta": "同身份显灵回复", "god_absolute_faith": "同身份神迹回复",
+               "faith_loss": "同身份天灾/信仰变更文案", "stock_loss": "同身份库存香火失窃文案"}
+    for event in events:
+        key = (event["chat_id"], event["message_id"], event["kind"])
+        explanations.append(reasons[event["kind"]])
+        if variants[key] > 1:
+            conflicts.add(key)
+            event["conflicting"] = True
+        if "faith_delta" in event:
+            has_faith_evidence = True
+            expected_faith = max(0, min(100, expected_faith + event["faith_delta"]))
+        elif "faith" in event:
+            has_faith_evidence = True
+            expected_faith = max(0, min(100, event["faith"]))
     return {
         "explanations": list(dict.fromkeys(explanations)),
         "events": events,
-        "expected_faith": expected_faith if has_faith_evidence else None,
+        "expected_faith": expected_faith if has_faith_evidence and not conflicts else None,
+        "conflicting_events": len(conflicts),
         "has_faith_evidence": has_faith_evidence,
-        "matched": bool(has_faith_evidence and expected_faith == current_faith),
+        "matched": bool(has_faith_evidence and not conflicts and expected_faith == current_faith),
     }
 
 
@@ -264,79 +294,66 @@ def build_small_world_evidence(
 
     # Only roots persisted as script sends are eligible. Player messages that
     # happen to use the same command are deliberately excluded.
-    roots: dict[int, dict[str, Any]] = {}
+    roots: dict[tuple[int, int], dict[str, Any]] = {}
+    conflicting_roots: set[tuple[int, int]] = set()
+    unscoped_roots = invalid_root_owners = 0
     for row in rows:
         if row.get("event_type") != "sent":
             continue
         text = str(row.get("text") or "").strip()
         if not _ACTION_RE.match(text):
             continue
-        try:
-            message_id = int(row.get("message_id") or 0)
-        except (TypeError, ValueError, OverflowError):
+        key = _message_key(row)
+        if key is None:
+            unscoped_roots += 1
             continue
-        roots[message_id] = row
+        if not _id(row.get("sender_id")):
+            invalid_root_owners += 1
+            conflicting_roots.add(key)
+            continue
+        previous = roots.get(key)
+        if previous is not None and (previous.get("sender_id"), previous.get("text")) != (row["sender_id"], row.get("text")):
+            conflicting_roots.add(key)
+        else:
+            roots[key] = row
+    for key in conflicting_roots:
+        roots.pop(key, None)
 
-    identity_aliases_by_id: dict[int, set[str]] = defaultdict(set)
-    for row in rows:
-        if row.get("event_type") not in {"sent", "message"} or not row.get("sender_username"):
-            continue
-        try:
-            sender_id = int(row.get("sender_id") or 0)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if sender_id:
-            identity_aliases_by_id[sender_id].add(
-                str(row.get("sender_username") or "").lstrip("@").lower()
-            )
+    identity_aliases_by_id, ambiguous_aliases = _identity_aliases(rows)
 
     # Build the same reply/broadcast candidate set once. The previous path
     # rescanned every message for every panel delta, which made a multi-day
     # report scale quadratically with the log volume.
     indexed_events: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        if row.get("event_type") == "sent" or not row.get("sender_is_bot"):
+        if row.get("event_type") not in {"message", "edit"} or row.get("sender_is_bot") is not True:
             continue
-        try:
-            reply_to = int(row.get("reply_to_msg_id") or 0)
-        except (TypeError, ValueError, OverflowError):
-            reply_to = 0
-        root = roots.get(reply_to)
+        root = roots.get(_message_key(row, "reply_to_msg_id"))
+        candidates = set()
         if root is not None:
-            try:
-                root_identity_id = int(root.get("sender_id") or 0)
-            except (TypeError, ValueError, OverflowError):
-                root_identity_id = 0
-            if root_identity_id:
-                indexed_events[root_identity_id].append(row)
-
-        if row.get("event_type") not in {"message", "edit"}:
-            continue
-        lowered = str(row.get("text") or "").lower()
-        if not lowered:
-            continue
+            candidates.add(root["sender_id"])
+        mentions = _mentions(str(row.get("text") or ""))
         for candidate_identity_id, aliases in identity_aliases_by_id.items():
-            if any(f"@{alias}" in lowered for alias in aliases):
-                indexed_events[candidate_identity_id].append(row)
+            if aliases & mentions:
+                candidates.add(candidate_identity_id)
+        for identity_id in candidates:
+            indexed_events[identity_id].append(row)
 
     panels: list[dict[str, Any]] = []
     for row in rows:
-        if row.get("event_type") not in {"message", "edit"} or not row.get("sender_is_bot"):
+        if row.get("event_type") not in {"message", "edit"} or row.get("sender_is_bot") is not True or _message_key(row) is None:
             continue
         panel = _parse_panel(str(row.get("text") or ""))
         if panel is None:
             continue
-        try:
-            reply_to = int(row.get("reply_to_msg_id") or 0)
-        except (TypeError, ValueError, OverflowError):
-            reply_to = 0
-        root = roots.get(reply_to)
+        root = roots.get(_message_key(row, "reply_to_msg_id"))
         if root is None:
             continue
         panels.append({
             "identity_id": int(root.get("sender_id") or 0),
             "message_id": int(row.get("message_id") or 0),
-            "root_message_id": reply_to,
+            "chat_id": row["chat_id"],
+            "root_message_id": row["reply_to_msg_id"],
             "ts": _parse_ts(row.get("ts")),
             "faith": panel["faith"],
             "stability": panel["stability"],
@@ -377,6 +394,7 @@ def build_small_world_evidence(
                 "faith_delta": faith_delta,
                 "stability_delta": stability_delta,
                 "expected_faith": evidence["expected_faith"],
+                "conflicting_events": evidence["conflicting_events"],
                 "explanations": evidence["explanations"],
                 "events": evidence["events"],
                 "status": status,
@@ -387,7 +405,7 @@ def build_small_world_evidence(
     event_keys: set[tuple[Any, ...]] = set()
     for item in deltas:
         for event in item.get("events") or []:
-            key = (item["identity_id"], event.get("message_id"), event.get("kind"))
+            key = (item["identity_id"], json.dumps({key: value for key, value in event.items() if key != "ts"}, sort_keys=True))
             if key in event_keys:
                 continue
             event_keys.add(key)
@@ -398,6 +416,12 @@ def build_small_world_evidence(
         "days": max(1, days),
         "script_roots": len(roots),
         "script_panels": len(panels),
+        "scope": {
+            "unscoped_roots": unscoped_roots,
+            "invalid_root_owners": invalid_root_owners,
+            "conflicting_roots": len(conflicting_roots),
+            "ambiguous_aliases": ambiguous_aliases,
+        },
         "identities": sorted(grouped),
         "deltas": deltas,
         "events": events,
@@ -543,9 +567,9 @@ def build_report(**kwargs) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only semantic evidence report.")
     parser.add_argument("--day", default="", help="End day YYYY-MM-DD; default is today for message logs.")
-    parser.add_argument("--days", type=int, default=3)
-    parser.add_argument("--limit", type=int, default=90)
-    parser.add_argument("--window-sec", type=int, default=60)
+    parser.add_argument("--days", type=int, default=3, help="Log-file lookback in days.")
+    parser.add_argument("--limit", type=int, default=90, help="Request threshold per window, not an output row limit.")
+    parser.add_argument("--window-sec", type=int, default=60, help="Rolling request-count window, not log lookback.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     report = build_report(day=args.day or None, days=args.days, limit=args.limit, window_sec=args.window_sec)

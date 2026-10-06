@@ -27,7 +27,7 @@ def test_small_world_report_uses_script_roots_and_marks_unexplained_delta():
             {"ts": "2026-07-18 10:03:01 UTC+8", "event_type": "message", "message_id": 17, "sender_is_bot": True, "reply_to_msg_id": 16, "text": "【甲的小世界】\n🙏 信仰: 90 / 100\n⚖️ 稳定: 100 / 100"},
             {"ts": "2026-07-18 10:04:00 UTC+8", "event_type": "message", "message_id": 18, "sender_is_bot": True, "reply_to_msg_id": 999, "text": "【玩家的小世界】\n🙏 信仰: 1 / 100"},
         ]
-        _write_jsonl(root / "2026-07-18.log", rows)
+        _write_jsonl(root / "2026-07-18.log", [{"chat_id": -1001, **row} for row in rows])
         result = report.build_small_world_evidence(root, day="2026-07-18", days=1)
 
     assert result["script_roots"] == 4
@@ -100,7 +100,7 @@ def test_small_world_report_preserves_partial_disaster_and_theft_evidence():
                 "text": "【甲的小世界】\n🙏 信仰: 82 / 100\n⚖️ 稳定: 90 / 100",
             },
         ]
-        _write_jsonl(root / "2026-07-18.log", rows)
+        _write_jsonl(root / "2026-07-18.log", [{"chat_id": -1001, **row} for row in rows])
         result = report.build_small_world_evidence(root, day="2026-07-18", days=1)
 
     assert result["summary"] == {"explained": 0, "partially_explained": 1, "unexplained": 0}
@@ -121,7 +121,7 @@ def test_small_world_report_indexes_reply_and_broadcast_evidence_per_identity():
             {"ts": "2026-07-18 10:01:01 UTC+8", "event_type": "message", "message_id": 13, "sender_is_bot": True, "reply_to_msg_id": 12, "text": "【甲的小世界】\n🙏 信仰: 85 / 100"},
             {"ts": "2026-07-18 10:00:30 UTC+8", "event_type": "message", "message_id": 14, "sender_is_bot": True, "reply_to_msg_id": 0, "text": "道友 @old_name 遭遇天灾！信仰 -13 点"},
         ]
-        _write_jsonl(root / "2026-07-18.log", rows)
+        _write_jsonl(root / "2026-07-18.log", [{"chat_id": -1001, **row} for row in rows])
         result = report.build_small_world_evidence(root, day="2026-07-18", days=1)
 
     assert result["summary"] == {"explained": 1, "partially_explained": 0, "unexplained": 0}
@@ -139,7 +139,7 @@ def test_small_world_report_parses_spaced_absolute_faith_reply():
             {"ts": "2026-07-18 10:02:00 UTC+8", "event_type": "sent", "message_id": 14, "sender_id": 101, "text": ".小世界"},
             {"ts": "2026-07-18 10:02:01 UTC+8", "event_type": "message", "message_id": 15, "sender_is_bot": True, "reply_to_msg_id": 14, "text": "【甲的小世界】\n🙏 信仰: 85 / 100\n⚖️ 稳定: 84 / 100"},
         ]
-        _write_jsonl(root / "2026-07-18.log", rows)
+        _write_jsonl(root / "2026-07-18.log", [{"chat_id": -1001, **row} for row in rows])
         result = report.build_small_world_evidence(root, day="2026-07-18", days=1)
 
     assert result["deltas"][0]["status"] == "explained"
