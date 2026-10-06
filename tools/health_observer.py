@@ -123,6 +123,7 @@ PHASEFUL_ATTENTION_PHASES = {
 IDLE_PHASE_VALUES = {"", "idle", "normal", "none", "{}", "[]"}
 NEXT_LAG_WARN_SEC = 180
 NEXT_LAG_ERROR_SEC = 600
+PUBLIC_PHASEFUL_REVIEW_SEC = 3600
 OK_PRINT_INTERVAL_SEC = 10 * 60
 WARN_PRINT_INTERVAL_SEC = 15 * 60
 ERROR_PRINT_INTERVAL_SEC = 60
@@ -1974,6 +1975,104 @@ def summarize_module_pending(module_summary: list[dict[str, object]], *, limit: 
     return total, samples
 
 
+def build_public_phaseful_summary(
+    conn, now, *, config, restore_ids, scheduling_suppressed, entry_blocked,
+) -> list[dict[str, object]]:
+    """Observe HTTP work excluded by the ordinary disabled-identity filter.
+
+    DB deadlines cannot prove a scheduler stall: per-operation backoff, account
+    connectivity and the active HTTP slot are held in worker memory.
+    """
+    if not restore_ids:
+        return []
+
+    def epoch(value):
+        parsed = parse_optional_epoch(value)
+        return parsed if math.isfinite(parsed) else 0.0
+
+    identities = fetch_table_rows_by_identity(conn, "identities")
+    modules = fetch_table_rows_by_identity(conn, "identity_module_state")
+    timers = fetch_table_rows_by_identity(conn, "identity_timers")
+    runtimes = fetch_table_rows_by_identity(conn, "identity_runtime_state")
+    records = parse_json_dict(read_meta_state(conn).get("miniapp_state_records"))
+    entry_present = bool(_normalize_cave_public_entry_urls(
+        config.get("cave_public_entry_urls") or config.get("cave_public_entry_url")
+    ))
+    shared_retry_at = epoch(config.get("cave_public_shared_retry_at"))
+    rows = []
+    for identity_id in sorted(set(restore_ids)):
+        identity = identities.get(identity_id)
+        if not identity or boolish(identity.get("enabled", True)):
+            continue
+        for module, flag, game_key in (
+            ("deep_retreat", "cave_public_deep_status_enabled", "cave_deep_retreat"),
+            ("yuanying", "cave_public_yuanying_enabled", "cave_yuanying"),
+        ):
+            if not boolish(config.get(flag)) or not boolish(modules.get(identity_id, {}).get(f"{module}_enabled")):
+                continue
+            runtime = runtimes.get(identity_id, {})
+            next_time = epoch(timers.get(identity_id, {}).get(f"next_{module}_time"))
+            record = records.get(f"{identity_id}:{game_key}")
+            record = record if isinstance(record, dict) else {}
+            bound = type(record.get("identity_id")) is int and record["identity_id"] == identity_id and record.get("game_key") == game_key
+            payload = record.get("state") if bound else None
+            payload = payload if isinstance(payload, dict) else {}
+            snapshot = payload.get("snapshot")
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+            observed_at = epoch(record.get("updated_at")) if bound else 0
+            phase = str(runtime.get(f"{module}_phase") or "idle")
+            verified_deep = (
+                module == "deep_retreat" and record.get("source") == "cave_dwelling_miniapp"
+                and 0 < observed_at <= now and payload.get("identity_verified") is True
+                and observed_at >= epoch(runtime.get("last_deep_retreat_command_time"))
+                and phase == "running"
+                and payload.get("ok") is True and payload.get("parser_version") == 2
+                and snapshot.get("known") is True and snapshot.get("conflicting") is False
+                and snapshot.get("can_settle") is not True and snapshot.get("completed") is not True
+            )
+            server_end = epoch(snapshot.get("end_ms")) / 1000 if verified_deep else 0
+            overdue = int(now - next_time) if 0 < next_time < now else 0
+            unknown = boolish(payload.get("outcome_unknown")) or (
+                module == "yuanying" and payload.get("status") in ("dispatching", "unknown")
+            )
+            pending = (
+                boolish(runtime.get(f"{module}_probe_pending"))
+                or positive_int(runtime.get(f"last_{module}_summary_msg_id")) > 0
+                or phase in ("launching", "waiting_summary", "observing_summary")
+            )
+            if scheduling_suppressed:
+                reason = "scheduling_suppressed"
+            elif not entry_present:
+                reason = "entry_missing"
+            elif entry_blocked:
+                reason = "entry_blocked"
+            elif shared_retry_at > now:
+                reason = "shared_retry_after"
+            elif unknown:
+                reason = "result_unknown"
+            elif pending:
+                reason = "pending"
+            elif verified_deep and snapshot.get("active") is True and server_end > now:
+                reason = "server_running"
+            elif next_time > now:
+                reason = "local_wait"
+            elif next_time == 0:
+                reason = "schedule_evidence_missing"
+            else:
+                reason = "due_unverified"
+            needs_review = overdue > PUBLIC_PHASEFUL_REVIEW_SEC and reason in {"due_unverified", "result_unknown", "pending"}
+            rows.append({
+                "identity_id": identity_id, "username": str(identity.get("username") or ""),
+                "module": module, "transport": "public_entry", "phase": phase,
+                "reason": reason, "needs_review": needs_review,
+                "next_time": next_time, "overdue_sec": overdue,
+                "observed_at": observed_at, "server_end": server_end,
+                "outcome_unknown": unknown,
+                "evidence_scope": "persisted_only_worker_backoff_unavailable",
+            })
+    return rows
+
+
 def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     if not db_path.exists():
         return {
@@ -1994,6 +2093,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     recovery_throttle_until = 0.0
     account_target_memberships: dict[str, object] = {}
     world_boss_miniapp_health: dict[str, object] = {}
+    public_phaseful_summary: list[dict[str, object]] = []
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -2109,6 +2209,21 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 for identity_id in channel_send_as_health.get("restore_identity_ids") or []
                 if positive_int(identity_id) > 0
             ]
+            public_phaseful_summary = build_public_phaseful_summary(
+                conn, now, config=miniapp_config,
+                restore_ids=channel_restore_ids if channel_status == "closed" else (),
+                scheduling_suppressed=(
+                    (global_paused and global_pause_source != "tianzun_maintenance") or recovery_active
+                ),
+                entry_blocked=cave_entry_blocked,
+            )
+            public_phaseful_review = [item for item in public_phaseful_summary if item["needs_review"]]
+            if public_phaseful_review:
+                alerts.append(business_alert(
+                    "channel-frozen public phaseful schedules need verification: "
+                    f"{len(public_phaseful_review)} (worker backoff unavailable; not proof of a stall)",
+                    count=len(public_phaseful_review), sample=public_phaseful_review[:8],
+                ))
             if channel_status == "closed" and (channel_frozen_ids or channel_restore_ids):
                 alerts.append(
                     business_alert(
@@ -2336,6 +2451,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "channel_send_as_health": channel_send_as_health,
         "account_target_memberships": account_target_memberships,
         "world_boss_miniapp_health": world_boss_miniapp_health,
+        "public_phaseful_summary": public_phaseful_summary,
         "alerts": alerts,
     }
 
