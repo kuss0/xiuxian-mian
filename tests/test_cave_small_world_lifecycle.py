@@ -400,12 +400,16 @@ def test_resource_shortage_still_has_high_priority(world_env):
     assert h.audit.await_args.kwargs["priority"] == "high"
 
 
-def test_harvest_enters_durable_summary_and_keeps_material_text(world_env, monkeypatch, tmp_path):
+@pytest.mark.parametrize("partial", [False, True])
+def test_harvest_enters_durable_summary_and_keeps_material_text(world_env, monkeypatch, tmp_path, partial):
     from model import runtime
     from model.audit_summary_store import AuditSummaryStore
 
     h = world_env
-    h.flow.return_value["data"]["action_result"]["message"] = "fixture harvest +800"
+    message = ("你大手一挥，将凡间供奉的 **6031** 点香火尽数收入紫府。\n当前香火库存: 236283"
+               if partial else "fixture harvest +800")
+    h.flow.return_value["data"]["snapshot_current"] = not partial
+    h.flow.return_value["data"]["action_result"].update(message=message, completed=True)
     clock = [NOW]
     store = AuditSummaryStore(tmp_path / "summary.db", {}, [], clock=lambda: clock[0])
     sender = AsyncMock(return_value=True)
@@ -429,7 +433,9 @@ def test_harvest_enters_durable_summary_and_keeps_material_text(world_env, monke
 
     asyncio.run(run())
     sender.assert_awaited_once()
-    assert "fixture harvest +800" in sender.await_args.args[0]
+    assert ("236283" if partial else message) in sender.await_args.args[0]
+    if partial:
+        assert "6031" in sender.await_args.args[0]
     assert "tg://user?id=" not in sender.await_args.args[0]
     assert not store.bucket and not store.held
     h.flow.assert_awaited_once()

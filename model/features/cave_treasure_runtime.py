@@ -2580,7 +2580,7 @@ class _CaveSmallWorldOperation:
         )
 
 
-def _record_cave_small_world_state(identity_id, result, *, now, result_msg_id=0, update_snapshot=True):
+def _record_cave_small_world_state(identity_id, result, *, now, result_msg_id=0, update_snapshot=True, harvest_receipt=None):
     data = dict((result or {}).get("data") or {})
     overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
     small_world = overview.get("small_world") if isinstance(overview.get("small_world"), dict) else {}
@@ -2593,6 +2593,9 @@ def _record_cave_small_world_state(identity_id, result, *, now, result_msg_id=0,
         payload.update(small_world)
         payload["snapshot_updated_at"] = now
     payload["snapshot_current"] = bool(small_world and update_snapshot)
+    if harvest_receipt:
+        payload["incense_stock"] = harvest_receipt["stock"]
+        payload["last_harvest_receipt"] = {**harvest_receipt, "observed_at": now}
     if confirmed:
         payload.update(
             last_action=data.get("action") or "", last_action_at=now, last_action_confirmed=True,
@@ -2803,6 +2806,40 @@ def _cave_small_world_action_message(result):
     data = dict(result.get("data") or {})
     action_result = data.get("action_result") if isinstance(data.get("action_result"), dict) else {}
     return str(action_result.get("rawMessage") or action_result.get("message") or result.get("error") or "").strip()
+
+
+def _partial_cave_harvest_receipt(result, identity_id):
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    business = data.get("action_result") if isinstance(data.get("action_result"), dict) else {}
+    if (result.get("ok") is not True or result.get("status") != "acted" or result.get("error")
+            or result.get("outcome_unknown") or data.get("outcome_unknown") or business.get("error")
+            or miniapp_retry_after_sec(result) > 0 or data.get("snapshot_current") is not False
+            or data.get("action") != "collect" or data.get("action_confirmed") is not True
+            or data.get("action_dispatched") is not True or business.get("ok") is not True
+            or business.get("completed") is not True
+            or cave_action_player_error(data.get("raw"), identity_id)):
+        return None
+
+    def parse(message):
+        if not isinstance(message, str) or len(message) > 512:
+            return None
+        match = re.fullmatch(
+            r"你大手一挥，将凡间供奉的 (?P<bold>\*\*)?(?P<amount>[0-9]{1,16})(?(bold)\*\*)"
+            r" 点香火尽数收入紫府。\r?\n当前香火库存\s*[:：]\s*(?P<stock>[0-9]{1,16})",
+            message.strip(),
+        )
+        if match is None:
+            return None
+        amount, stock = int(match["amount"]), int(match["stock"])
+        if not 0 <= amount <= stock <= 2**53 - 1:
+            return None
+        return {"collected": amount, "stock": stock}
+
+    receipt = parse(business.get("rawMessage") or business.get("message"))
+    other = parse(business.get("message"))
+    if other is not None and other != receipt:
+        return None
+    return receipt
 
 
 def _record_cave_deep_retreat_state(identity_id, action, result, sync_result, *, now, result_msg_id=0):
@@ -3368,6 +3405,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             action = str(data.get("action") or plan.get("action") or "")
             snapshot_current = data.get("snapshot_current") is True
             panel_owned = operation.panel_is_current(now)
+            harvest_receipt = _partial_cave_harvest_receipt(result, identity_id)
             update_snapshot = bool(
                 small_world.get("available") and small_world.get("has_world")
                 and snapshot_current and panel_owned
@@ -3381,8 +3419,17 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                     cached["updated_at"] = 0
                     state["small_world_panel_snapshot"] = cached
                 state["small_world_last_panel_at"] = 0
+            if harvest_receipt and panel_owned:
+                # Only this balance is confirmed. Do not freshen the full panel
+                # or infer that pending incense, faith or population are zero.
+                state["small_world_incense_stock"] = harvest_receipt["stock"]
+                cached = dict(state.get("small_world_panel_snapshot") or {})
+                if cached:
+                    cached["stock"] = harvest_receipt["stock"]
+                    state["small_world_panel_snapshot"] = cached
             record = _record_cave_small_world_state(
                 identity_id, result, now=now, update_snapshot=update_snapshot,
+                harvest_receipt=harvest_receipt if panel_owned else None,
             ) if operation.record_is_current() and float(operation.record.get("updated_at") or 0) <= now else {}
             action_message = _cave_small_world_action_message(result)
             resource_blocked = not confirmed and (plan.get("blocked") == "resource" or ("不足" in action_message and action == "manifest"))
@@ -3510,7 +3557,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
         }
         priority = "high" if resource_blocked else ("normal" if action or not result.get("ok") else "low")
         if (action == "collect" and confirmed and result.get("ok") is True
-                and snapshot_current and not result.get("error") and retry_after_sec <= 0):
+                and (snapshot_current or harvest_receipt) and not result.get("error") and retry_after_sec <= 0):
             priority = "low"
         try:
             await send_audit_log(
