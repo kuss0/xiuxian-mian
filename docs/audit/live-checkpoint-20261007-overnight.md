@@ -1,7 +1,8 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 04:17 CST. This is a checkpoint, not a
-claim that staged runtime fixes have been loaded or naturally accepted.
+Observations through October 7, 2026, 04:44 CST. Runtime code through
+`c3bd8e64` loaded during the scheduled backup recovery at 04:31. Earlier
+sections describe earlier generations; loading does not certify every feature.
 
 ## Code And Services
 
@@ -308,3 +309,60 @@ post-load behavior, without an extra manual restart or game probe. WA fate
 and 04:02:16 without draw/choose/settle. Do not overwrite either snapshot or
 infer completion from cultivation gains. WA voyage check 05:13:18 and Tianxing
 preparation before rift 07:06:07 remain the next business watches.
+
+## Scheduled Load And Follow-Up Through 04:44
+
+The timer scheduled for 04:29:57 actually started at 04:30:04. Backup stopped
+observer/watchdog/main at 04:30:07; the supervisor requested quiescence at
+04:30:09, stopped the worker at 04:30:10 and exited successfully at 04:30:12.
+Pre-stop pending queue was empty; no in-flight fishing or companion action
+was observed. This is one quiet-window sample, not a repair of backup admission.
+
+Main resumed at 04:31:11, watchdog at 04:31:14, observer at 04:31:17; bootstrap
+completed at 04:31:28. Supervisor/worker are **2835304/2835306**, watchdog
+**2835315**, observer **2835325**, all active with NRestarts=0. Disk HEAD was
+`4cc23807` (documentation on runtime `c3bd8e64`). New compact startup behavior
+is observed: identity diagnostics stay local, the two-line startup message is
+queued for ordinary summary instead of an immediate standalone send.
+
+Backup saved snapshot `861128a0`, checked without errors and completed at
+04:32:19. Restic emitted a cache-directory warning but backup/check succeeded;
+this was not an application failure. No manual restart was performed.
+
+The recorded before/after identity switches, global switch and MiniApp enabled,
+confirmed and identity-selection fields match exactly. Both incense refining
+switches remain off. Wave1 retains October 7 completion and wave2 October 6;
+no new trial batch was started. Baji remains 5/5 with voyage return 10:09:48,
+not a sixth cast. Runtime quiz learning remains the only unrelated dirty file.
+
+At 04:32:08 WA fate settled naturally. The saved quest is settled, 30/30;
+actual gains are cultivation +48 and remnants +3, with a settlement receipt.
+The quest's base reward field is not the actual gain total. Fate is now 23/24
+settled. This verifies read/claim after loading, not a timed demonstration of
+the 30-minute wait cap: the process-local wait also reset during startup.
+mudamuda0 still reported 4->0 at 04:31:36; old progress is retained and no
+draw/choose/settle was attempted. Its cause and durable business waiting remain
+open. Across the first post-start capture sample, all 11 HTTP requests were
+200, including one fate settlement. No claim is made about uninstrumented HTTP.
+
+Lpprceqei's due duel hold naturally requested primary-only profile calibration:
+`.我的灵根` 1289919 at 04:42:08 -> acknowledgement 1289920 and authoritative
+profile 1289921 at 04:42:16, group -1002083016447. The profile from official
+hantianzun24_bot confirms cultivation 6091710; that exact server-clock/message
+evidence is now the owned resource baseline. The existing followup `.战力`
+1289922 at 04:42:43 -> official hantianzun21_bot final edit 1289923 at
+04:42:49 completed the same refresh operation. No YuanYing/second-soul read
+was added, and no duel was sent. Next protected duel decision stays 05:12:07;
+target cooldown, equipment and reserve must still be checked. The old
+duel_last_error records the pre-refresh decision and is not a missing baseline
+claim after the successful refresh.
+
+At 04:43:18 frozen-channel identity xuruode1 naturally completed MiniApp tower:
+21 floors, cultivation +6680, tower seals +59; next run October 8 04:55:03.
+This is public-entry continuation evidence, not proof of all frozen identities.
+Health/watchdog remain stable with only the same two historical held batches.
+Ordinary queue has three rows, next delivery 05:01:28. Current follower
+**35263** includes backup and runtime logs, expires about **04:55**; earlier
+**52586** remains until about 04:47. Renew before expiry, observe the summary,
+WA voyage/fishing window and 05:12 duel decision. Harvest/prayer/stargazer and
+other as-yet untriggered staged changes remain naturally unaccepted.
