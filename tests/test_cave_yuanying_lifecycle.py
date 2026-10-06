@@ -59,7 +59,7 @@ def env(monkeypatch):
     }
     loader = AsyncMock(return_value=session)
     flow = AsyncMock(side_effect=[result(READY), result(LAUNCHED)])
-    audit, save = AsyncMock(), Mock()
+    audit, save = AsyncMock(), Mock(return_value=True)
     clock = SimpleNamespace(now=NOW)
     monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
     monkeypatch.setattr(cave, "_load_cave_public_identity_session", loader)

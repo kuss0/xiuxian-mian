@@ -2217,8 +2217,13 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
 
         plain_message = re.sub(r"[*_`]+", "", message)
         ready_status = command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*窍中温养", plain_message)
-        retreat_status = command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*元婴闭关", plain_message)
-        if ready_status and (retreat_status or "归来倒计时" in plain_message):
+        retreat_status = command == yuanying.CMD_YUANYING_STATUS and re.search(r"(?m)^\s*状态\s*[:：]\s*元婴闭关\s*$", plain_message)
+        retreat_started = (
+            command == yuanying.CMD_YUANYING_SECT_RETREAT
+            and plain_message.strip() == "你心念一动，元婴已在你丹田的次元空间内开始闭关，它将为你持续提供修为。"
+        )
+        if ((ready_status and retreat_status)
+                or ((ready_status or retreat_status) and "归来倒计时" in plain_message)):
             return {
                 "handled": False, "ready": False, "reason": "conflicting_yuanying_status",
                 "message": message, "phase": str(state.get("yuanying_phase") or ""),
@@ -2242,7 +2247,7 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
                 "phase": str(state.get("yuanying_phase") or ""),
             }
 
-        if retreat_status:
+        if retreat_status or retreat_started:
             previous_next_time = float(state.get("next_yuanying_time", 0) or 0)
             state["yuanying_probe_pending"] = False
             yuanying.clear_yuanying_summary_flags()
@@ -2255,8 +2260,8 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
             return {
                 "handled": True,
                 "ready": False,
-                "reason": "active_yuanying_retreat",
-                "kind": "retreat",
+                "reason": "" if retreat_started else "active_yuanying_retreat",
+                "kind": "retreat_started" if retreat_started else "retreat",
                 "message": message,
                 "phase": str(state.get("yuanying_phase") or ""),
             }
@@ -4739,6 +4744,7 @@ class _CaveYuanyingOperation:
     schedule: dict
     record: dict
     enabled: bool
+    launch_command: str
 
     @classmethod
     def capture(cls, identity_id):
@@ -4754,6 +4760,7 @@ class _CaveYuanyingOperation:
             )},
             deepcopy(get_miniapp_state_records().get(f"{identity_id}:cave_yuanying") or {}),
             bool(owner.identity.get(spec.enabled_key)),
+            yuanying.get_yuanying_launch_command(identity_id),
         )
 
     def result_is_current(self):
@@ -4766,6 +4773,7 @@ class _CaveYuanyingOperation:
     def can_dispatch(self):
         return (
             self.result_is_current() and self.enabled
+            and yuanying.get_yuanying_launch_command(self.owner.identity_id) == self.launch_command
             and bool(self.owner.identity.get("yuanying_enabled")) == self.enabled
             and is_cave_public_identity_available(self.owner.identity_id)
             and _public_entry_allowed()
@@ -4773,7 +4781,7 @@ class _CaveYuanyingOperation:
 
     def advanced(self):
         current = self.capture(self.owner.identity_id)
-        return type(self)(self.owner, current.schedule, current.record, self.enabled)
+        return type(self)(self.owner, current.schedule, current.record, self.enabled, self.launch_command)
 
 
 def _record_cave_yuanying_state(owner, payload, now):
@@ -4781,10 +4789,9 @@ def _record_cave_yuanying_state(owner, payload, now):
         owner.identity_id, "cave_yuanying", {"account_id": owner.account_id, **payload},
         source="cave_public_yuanying", source_id=f"cave_yuanying:{stable_payload_digest(payload)}",
         now=now, outputs=["yuanying_phase", "next_yuanying_time"],
-        replaces_commands=[yuanying.CMD_YUANYING_STATUS, yuanying.CMD_YUANYING], persist=False,
+        replaces_commands=[yuanying.CMD_YUANYING_STATUS, yuanying.CMD_YUANYING, yuanying.CMD_YUANYING_SECT_RETREAT], persist=False,
     )
-    save_state()
-    return recorded
+    return {**recorded, "persisted": save_state() is True}
 
 
 def _defer_cave_yuanying(owner, now, *, unknown, retry_after_sec=0):
@@ -4901,7 +4908,15 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
                 identity_id, status_data, now=now, command=yuanying.CMD_YUANYING_STATUS,
             )
         if pending:
-            reconciled = prior.get("account_id") == operation.owner.account_id and status_sync.get("kind") == "running"
+            prior_command = prior.get("command", yuanying.CMD_YUANYING)
+            expected_kind = {
+                yuanying.CMD_YUANYING: "running",
+                yuanying.CMD_YUANYING_SECT_RETREAT: "retreat",
+            }.get(prior_command) if isinstance(prior_command, str) else None
+            reconciled = bool(
+                prior.get("account_id") == operation.owner.account_id
+                and expected_kind and status_sync.get("kind") == expected_kind
+            )
             if not reconciled:
                 _defer_cave_yuanying(
                     operation.owner, now, unknown=True, retry_after_sec=miniapp_retry_after_sec(status_result),
@@ -4910,7 +4925,11 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
                 **prior, "status": "reconciled_running" if reconciled else "unknown",
                 "outcome_unknown": not reconciled, "last_status_kind": status_sync.get("kind") or "",
             }, now)
-            message = "洞府天机阁元婴状态已确认云游中" if reconciled else "洞府天机阁上次出窍结果仍待核实，仅查状态，不重复出窍"
+            message = (
+                "洞府天机阁元婴状态已确认闭关中" if reconciled and expected_kind == "retreat"
+                else "洞府天机阁元婴状态已确认云游中" if reconciled
+                else "洞府天机阁上次元婴操作结果仍待核实，仅查状态，不重复派遣"
+            )
             response = {"ok": bool(reconciled), "message": message, "extra": _miniapp_result_extra({
                 "status_sync": status_sync, "launched": False, "outcome_unknown": not reconciled,
             }, status_result)}
@@ -4938,15 +4957,25 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
         intent = {
             "status": "dispatching", "outcome_unknown": True,
             "player_id": selected_player_id, "started_at": now,
+            "command": operation.launch_command,
         }
         with use_identity(identity_id):
             yuanying.set_yuanying_phase("launching")
-        _record_cave_yuanying_state(operation.owner, intent, now)
+        try:
+            written = _record_cave_yuanying_state(operation.owner, intent, now)
+        except Exception:
+            written = {}
         operation = operation.advanced()
+        if written.get("persisted") is not True:
+            _defer_cave_yuanying(operation.owner, now, unknown=True)
+            return {
+                "ok": False, "message": "洞府元婴派遣记录未确认存盘，未发送派遣请求",
+                "extra": {"status": "persistence_pending", "action_dispatched": False},
+            }
         cancelled_flow = None
         try:
             result = await run_cave_tianjige_command_production_flow(
-                identity_id, token=token, webview_url=webview_url, command=yuanying.CMD_YUANYING,
+                identity_id, token=token, webview_url=webview_url, command=operation.launch_command,
                 init_data=init_data, player_id=selected_player_id, capture_sink=_capture_store(now),
                 capture_source=f"cave_public_tianjige_yuanying:{identity_id}", operation_check=can_continue,
             )
@@ -4967,7 +4996,7 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
             data = {}
         sync_result = {"handled": False}
         if result.get("ok") is True and _cave_tianjige_action_succeeded(data):
-            sync_result = await sync_cave_tianjige_yuanying_result(identity_id, data, now=now, command=yuanying.CMD_YUANYING)
+            sync_result = await sync_cave_tianjige_yuanying_result(identity_id, data, now=now, command=operation.launch_command)
         unknown = _cave_yuanying_launch_unknown(result, sync_result)
         if not sync_result.get("handled"):
             _defer_cave_yuanying(operation.owner, now, unknown=unknown, retry_after_sec=miniapp_retry_after_sec(result))
@@ -4977,17 +5006,18 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
             "action_dispatched": result.get("action_dispatched", True),
             "result_kind": sync_result.get("kind") or "", "error": result.get("error") or sync_result.get("reason") or "",
         }, now)
+        launch_label = operation.launch_command.lstrip(".")
         if sync_result.get("handled"):
-            message = f"洞府天机阁元婴出窍：{sync_result.get('message') or '已同步'}"
+            message = f"洞府天机阁{launch_label}：{sync_result.get('message') or '已同步'}"
         elif unknown:
-            message = "洞府天机阁元婴出窍结果未知，保留记录，仅允许后续查状态"
+            message = f"洞府天机阁{launch_label}结果未知，保留记录，仅允许后续查状态"
         else:
-            message = f"洞府天机阁元婴出窍未执行：{result.get('error') or '请求被拒绝'}"
+            message = f"洞府天机阁{launch_label}未执行：{result.get('error') or '请求被拒绝'}"
         response = {
             "ok": bool(sync_result.get("handled")), "message": message,
             "extra": _miniapp_result_extra({
                 "status_sync": status_sync, "sync": sync_result,
-                "launched": sync_result.get("kind") == "launched", "outcome_unknown": unknown,
+                "launched": sync_result.get("kind") in {"launched", "retreat_started"}, "outcome_unknown": unknown,
                 "action_dispatched": result.get("action_dispatched", True),
             }, status_result, result),
         }

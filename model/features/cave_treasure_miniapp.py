@@ -17,6 +17,7 @@ from ..config import (
     CMD_TIANTI_STATUS,
     CMD_TIANXING_PANEL,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
     CMD_YUANYING_STATUS,
     MESSAGES_DIR,
 )
@@ -126,6 +127,7 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
     CMD_TIANXING_PANEL,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
     CMD_YUANYING_STATUS,
     ".我的阴罗幡",
     ".我的侍妾",
@@ -2442,7 +2444,7 @@ async def run_cave_tianjige_command_production_flow(
             missing_contract = 200 <= result.status_code < 300 and not result.ok and result.data.get("ok") is not False
             response["action_dispatched"] = dispatched
             response["outcome_unknown"] = bool(
-                command == CMD_YUANYING and dispatched
+                command in {CMD_YUANYING, CMD_YUANYING_SECT_RETREAT} and dispatched
                 and (player_error or missing_contract or _is_uncertain_cave_mutation_result(result) and result.status_code != 429)
             )
             return response
