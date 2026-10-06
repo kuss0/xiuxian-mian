@@ -67,5 +67,6 @@ careful anti-storm behavior. The current observation shows no mismatch.
 - A second maintainer pass checked endpoint scope, no-write payloads, ownership,
   empty-versus-missing evidence and no-retry exits. Its cross-module regression
   passed **202 tests / 6 subtests**. This is not an independent external audit.
-- Ruff, compileall and diff checks pass. Ready for scoped merge; the production
-  worker remains unchanged and this tool needs no runtime reload.
+- Ruff, compileall and diff checks pass. Merged and pushed as `51d116a4`;
+  production-directory isolated recheck passed 44 tests. The production worker
+  remains unchanged and this explicit tool needs no runtime reload.

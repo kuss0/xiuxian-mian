@@ -9978,24 +9978,18 @@ async def run_miniapp_daily_scheduler(now):
             "day_key": str(config.get("today") or ""),
         }
         if not identity_ids:
-            _persist_trial_daily_batch_state(
-                trial_daily_context,
-                batch_id="",
-                status="completed",
-                result="本批无启用身份",
-                now=now,
-                completed=True,
-            )
-            return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
-        ok, message, extra = await ui_start_cave_public_entry_batch({
-            "send_as_ids": identity_ids,
-            "actions": ["trial"],
-            "delay_sec": raw_config.get("cave_public_delay_sec"),
-        }, trial_daily_context=trial_daily_context)
-        if not ok:
-            return {"started": False, "reason": "public_batch_create_failed", "message": message}
-        batch_id = str(extra.get("batch_id") or "")
-        return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
+            # Eligibility is not a game outcome; preserve any prior batch prefix.
+            trial_hold = {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
+        else:
+            ok, message, extra = await ui_start_cave_public_entry_batch({
+                "send_as_ids": identity_ids,
+                "actions": ["trial"],
+                "delay_sec": raw_config.get("cave_public_delay_sec"),
+            }, trial_daily_context=trial_daily_context)
+            if not ok:
+                return {"started": False, "reason": "public_batch_create_failed", "message": message}
+            batch_id = str(extra.get("batch_id") or "")
+            return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
 
     background = await _run_cave_public_background_scheduler(now, raw_config)
     if background.get("started"):
