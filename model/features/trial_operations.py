@@ -464,10 +464,12 @@ def recover_local(identity_id):
             checkpoint["pending"]["action"], "trial_previous_outcome_unknown",
         )
         return held_result(record, reason)
+    results = [deepcopy(item["data"]) for item in checkpoint["round_receipts"]]
+    data = {"results": results, "settled_count": len(results)}
     if checkpoint["phase"] == "complete":
         if resaved:
             return {**held_result(record, ""), "status": "recovered", "operation_id": record["operation_id"],
-                    "outcome_unknown": False}
+                    "outcome_unknown": False, "data": data}
         return None
     staged = deepcopy(record)
     status = "partial" if checkpoint["round_receipts"] else "failed"
@@ -476,9 +478,8 @@ def recover_local(identity_id):
     staged.update(revision=record["revision"] + 1, updated_at=max(time.time(), record["updated_at"]))
     if not valid_record(staged) or not _save_owned(owner, record, staged):
         return held_result(record, "trial_persistence_pending")
-    results = [deepcopy(item["data"]) for item in checkpoint["round_receipts"]]
     return {"ok": bool(results), "status": status, "error": "trial_interrupted_local_recovery",
-            "data": {"results": results, "settled_count": len(results)}, "events": [],
+            "data": data, "events": [],
             "operation_id": record["operation_id"], "persistence_only": True,
             "action_dispatched": False, "outcome_unknown": False}
 

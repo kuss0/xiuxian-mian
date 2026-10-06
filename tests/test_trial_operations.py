@@ -350,19 +350,68 @@ def test_completed_foreign_record_cannot_authorize_another_operation(h, field, e
     asyncio.run(scenario())
 
 
-def test_completed_pending_save_is_a_local_only_public_call(h):
+@pytest.mark.parametrize("rounds", [1, 2])
+def test_completed_pending_save_is_a_local_only_public_call(h, rounds):
     async def scenario():
-        writer, result = await owned_run(h)
+        writer, result = await owned_run(h, rounds=rounds)
         assert writer.finish(result)
         h.owner[operations.STATE_KEY]["pending_save"] = True
         return await cave.run_cave_public_trial(IDENTITY, h.public_url)
 
     result = asyncio.run(scenario())
     assert result["extra"].get("persistence_only") is True
+    assert result["ok"] is False
+    assert result["extra"]["status"] == "recovered"
+    assert result["extra"]["settled_count"] == rounds
+    assert result["extra"]["gains"] == {"天机残痕": 3 * rounds}
     h.loader.assert_not_awaited()
     h.external.assert_not_awaited()
     h.flow.assert_not_awaited()
     assert not operations.pending(h.owner)
+    assert operations.recover_local(IDENTITY) is None
+
+
+@pytest.mark.parametrize("pending_save", [False, True])
+def test_retained_receipt_with_later_unknown_request_stays_held(h, pending_save):
+    finishes = 0
+
+    def transport(request):
+        nonlocal finishes
+        if request["safe_summary"]["endpoint"] == "finish":
+            finishes += 1
+            if finishes == 2:
+                raise OSError("fixture second finish unknown")
+            return {"ok": True, "result": {"traceGain": 3}, "nextChallenge": challenge(2)}
+        return {"ok": True, "challenge": challenge()}
+
+    async def scenario():
+        writer, result = await owned_run(h, transport=transport, rounds=2)
+        assert writer.finish(result)
+        h.owner[operations.STATE_KEY]["pending_save"] = pending_save
+        return await cave.run_cave_public_trial(IDENTITY, h.public_url)
+
+    response = asyncio.run(scenario())
+    assert response["ok"] is False
+    assert response["extra"]["status"] == "operation_pending"
+    assert response["extra"]["confirmed_rounds_retained"] == 1
+    assert response["extra"]["settled_count"] == 0
+    assert response["extra"]["gains"] == {}
+    assert operations.pending(h.owner)
+    h.loader.assert_not_awaited()
+    h.external.assert_not_awaited()
+    h.flow.assert_not_awaited()
+
+
+def test_completed_empty_resave_does_not_invent_rewards(h):
+    async def scenario():
+        writer, result = await owned_run(h, transport=lambda _request: {"ok": False, "error": "daily_limit"})
+        assert writer.finish(result)
+        h.owner[operations.STATE_KEY]["pending_save"] = True
+        return operations.recover_local(IDENTITY)
+
+    recovered = asyncio.run(scenario())
+    assert recovered["status"] == "recovered" and recovered["ok"] is False
+    assert recovered["data"] == {"results": [], "settled_count": 0}
     assert operations.recover_local(IDENTITY) is None
 
 
@@ -534,6 +583,11 @@ def test_sqlite_receipt_abort_retains_memory_facts_until_local_save(trial_db):
     conn.commit()
     recovered = operations.recover_local(IDENTITY)
     assert recovered["persistence_only"] and recovered["status"] == "recovered"
+    assert recovered["ok"] is False and recovered["action_dispatched"] is False
+    assert recovered["data"]["settled_count"] == 1
+    assert recovered["data"]["results"][0]["traceGain"] == 3
+    recovered["data"]["results"][0]["traceGain"] = 999
+    assert h.owner[operations.STATE_KEY]["checkpoint"]["round_receipts"][0]["data"]["traceGain"] == 3
     assert not operations.pending(h.owner)
     assert persistence.load_state()
     restored = state_module.get_identity_state(IDENTITY)[operations.STATE_KEY]
