@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 01:58 CST. This is a checkpoint, not a
+Observations through October 7, 2026, 02:29 CST. This is a checkpoint, not a
 claim that staged runtime fixes have been loaded or naturally accepted.
 
 ## Code And Services
@@ -124,9 +124,11 @@ Old-format routine summaries confirmed:
 At 01:58 there are 68 queued records, next summary about 02:02:22, and the same
 two historical held batches. Ordinary stargazer successes still use individual
 notices; legacy routing is not fully closed. No notifications were replayed.
-The 01:00 trial batch ended 11/12 successful because dingfengbosushi's public
-entry was busy with wild training; the batch remains incomplete and only its
-failed step is eligible for the existing retry. No manual trial was started.
+The 01:00 trial batch initially ended 11/12 successful because dingfengbosushi's
+public entry was busy with wild training. Retrospective verification at 02:03
+found the natural retry: one step restarted at 01:42:39, settled three games
+at 01:43:34 and marked wave1 completed. The original eleven successful steps
+did not repeat. No manual trial was started.
 
 Health checks at 01:33 and 01:54 report only those held-notification warnings;
 watchdog is healthy. Both small-world identities remain idle, refining off and
@@ -134,3 +136,51 @@ harvest on, with checks still WA 02:27:38 / Baji 03:26:49. Their harvest balance
 remain subject to the unloaded partial-receipt fix described above. Natural
 deep-retreat settlements/restarts and several fate-card rewards continue.
 Observe the next summary, trial retry, and prayer window before extending scope.
+
+## Follow-Up Through 02:22
+
+The 02:02:22 ordinary summary confirmed as 1273 UTF-16 units / 23 lines /
+no explicit mention, receipt `87ee46fd0a964f18975536e538b8c72f`.
+External `@ilinuxio` timeout at 02:05:29 stayed local; subsequent queue query
+found zero matching rows. Ordinary stargazer notices still deliver individually.
+Through about 02:14, current-day captures contain 1782 HTTP records, rolling
+60-second peak 44, one error (the earlier recovered 429). This is observed
+capture coverage, not a claim to see every external request.
+
+At 02:01:08 mudamuda0's fate-card read reported progress 4 -> 0, target 30.
+Identity load, selected-role load, details, external entry and fate start all
+returned HTTP 200; no draw/interpret/choose/settle followed. Previous progress
+4 remains stored. Same-day/record/choice/quest checks passed before rejection;
+the native contract requires an explicit nonnegative integer progress, so this
+is not a missing-field default. Wild training finished at 00:39:32, before the
+00:42 task, and no later matching game message establishes another loss.
+Neither net cultivation nor upstream staleness is proven as the cause.
+
+By 02:22 there are 22/24 settled fate-card records. Boxboxji settled at 02:21:57.
+The two remaining records are mudamuda0 and WA. WA's stored 00:50 progress is
+24/30; its subsequent eight wild runs earned cultivation, but the fate waiting
+helper uses deep-retreat time (capped at 12 hours), and the background retry map
+does not distinguish a business wait from server Retry-After. No gain event
+invalidates that business wait. This confirms the existing waiting-strategy
+debt; do not clear the shared map, invent progress, or prematurely claim the
+task. A later fix needs separate authority for business and transport waiting.
+
+Services and pending queues remain stable. Next direct observation is WA's
+02:27:38 small-world check. Staged notification/prayer fixes are still unloaded.
+
+## WA Prayer Check At 02:27
+
+The normal scheduler sent `.小世界` once at 02:27:42, message 1289167 in
+-1002083016447. Official hantianzun33_bot replied as 1289168 at 02:27:44 with
+population 420000, faith 97/100, stability 84/100, incense stock 197541, and
+pending incense 1912.93. It explicitly says no prayer and another 5h59m59s wait.
+The reducer returned to idle with query/manifest anchors zero and no error;
+next check is 08:37:12. No manifest/god/refine action followed. Latest god
+timestamp remains the earlier 23:25 sermon. Refining is off, harvesting on.
+
+This full panel also naturally corrected the old worker's stale incense balance
+to the authoritative 197541. It does not certify the unloaded partial-harvest
+patch or prayer-deadline fix, and no local balance/timer correction was made.
+Pending game tasks are zero. Baji's next prayer check remains 03:26:49, and its
+voyage check 03:57:45. Renew follower before 02:49; backup at 04:29:57 still
+requires loaded-generation and post-maintenance verification.
