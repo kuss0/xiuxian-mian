@@ -1919,6 +1919,126 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertEqual(4, state_module.state["duel_observed_completed_count"])
 
+    async def test_daily_completion_survives_late_final_report_reconciliation(self):
+        identity_id = self._prepare_identity(7538826434)
+        now = 1_700_000_000.0
+        entries = []
+        for index in range(5):
+            command_id = 400 + index * 10
+            report = (
+                "【天道战报·文字版】\n攻方：@walterwa2000 · 攻方\n守方：@target · 守方\n"
+                "胜者：@target\n败者：@walterwa2000 | 损失修为 -6.7万\n"
+                f"今日神念：{9-index}/10"
+            )
+            entries.extend([
+                {"event_type": "sent", "message_id": command_id, "sender_id": identity_id,
+                 "text": ".斗法 @target", "ts_epoch": now - 500 + index * 100},
+                {"event_type": "message", "message_id": command_id + 1,
+                 "reply_to_msg_id": command_id, "text": report, "ts_epoch": now - 495 + index * 100},
+            ])
+        with state_module.use_identity(identity_id):
+            for key, value in {
+                "duel_enabled": True, "duel_target": "@target", "duel_total_count": 10,
+                "duel_completed_count": 9, "duel_observed_completed_count": 4,
+                "duel_observed_baseline_count": 0, "duel_log_reconcile_day": duel._duel_day_key(now),
+                "duel_reply_to_msg_id": 440, "duel_reply_due_at": now + 120,
+            }.items():
+                state_module.state[key] = value
+            with patch.object(duel, "save_state"), patch.object(duel, "send_audit_log", new=AsyncMock()):
+                await duel._handle_duel_text(report, now, result_msg_id=441)
+            tomorrow = state_module.state["next_duel_time"]
+            self.assertGreater(tomorrow, now + 3600)
+            with patch.object(duel, "save_state"), patch.object(duel, "send_audit_log", new=AsyncMock()) as notify:
+                await duel._handle_duel_text(report, now + 1, result_msg_id=441)
+                notify.assert_not_awaited()
+                self.assertEqual(tomorrow, state_module.state["next_duel_time"])
+                self.assertEqual(0, state_module.state["duel_completed_count"])
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries), \
+                    patch.object(duel, "save_state"), \
+                    patch.object(duel, "send_game_command", new=AsyncMock()) as send:
+                for offset in (1, 30, 1200):
+                    duel.reconcile_duel_from_message_log(now + offset, force=True)
+                    await duel.run_duel_scheduler(now + offset)
+                    self.assertEqual(tomorrow, state_module.state["next_duel_time"])
+                    self.assertEqual(0, state_module.state["duel_completed_count"])
+                send.assert_not_awaited()
+            self.assertEqual(5, state_module.state["duel_observed_completed_count"])
+            self.assertTrue(state_module.state["duel_enabled"])
+
+    def test_daily_completion_marker_is_cleared_only_by_explicit_reset(self):
+        identity_id = self._prepare_identity(7538826434)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_daily_completed_day"] = "2026-10-07"
+            duel.apply_duel_config(target="@target", persist=False)
+            self.assertEqual("2026-10-07", state_module.state["duel_daily_completed_day"])
+            duel.apply_duel_config(reset_progress=True, persist=False)
+            self.assertEqual("", state_module.state["duel_daily_completed_day"])
+
+    def test_daily_completion_does_not_block_next_day(self):
+        identity_id = self._prepare_identity(7538826434)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_daily_completed_day"] = duel._duel_day_key(now)
+            self.assertTrue(duel._duel_daily_batch_closed(now))
+            self.assertFalse(duel._duel_daily_batch_closed(now + 86400))
+
+    async def test_daily_completion_still_allows_wa_loadout_restore(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_target"] = "@target"
+            completion = duel._complete_duel_batch(now)
+            self.assertTrue(completion["restoring"])
+            self.assertTrue(duel._duel_daily_batch_closed(now))
+            with patch.object(duel, "reconcile_duel_from_message_log", return_value=False), \
+                    patch.object(duel, "_run_controlled_loadout_restore", new=AsyncMock(return_value=True)) as restore, \
+                    patch.object(duel, "send_game_command", new=AsyncMock()) as send:
+                await duel.run_duel_scheduler(now + 1)
+                restore.assert_awaited_once()
+                send.assert_not_awaited()
+
+    async def test_late_daily_report_keeps_real_wa_restore_chain(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        report = (
+            "【天道战报·文字版】\n攻方：@walterwa2000 · 攻方\n守方：@target · 守方\n"
+            "胜者：@target\n败者：@walterwa2000 | 损失修为 -6.7万\n今日神念：5/10"
+        )
+        entries = [
+            {"event_type": "sent", "message_id": 440, "sender_id": identity_id,
+             "text": ".斗法 @target", "ts_epoch": now - 5},
+            {"event_type": "message", "message_id": 441, "reply_to_msg_id": 440,
+             "text": report, "ts_epoch": now - 1},
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["duel_daily_completed_day"] = duel._duel_day_key(now)
+            for phase, expected in (
+                ("restore_needed", "restore_equip:0"),
+                ("restore_equip_wait:0", "restore_equip_wait:0"),
+            ):
+                with self.subTest(phase=phase):
+                    duel._DUEL_LOG_RECONCILE_RUNTIME.clear()
+                    state_module.state["duel_last_msg_id"] = 0
+                    state_module.state["duel_last_result"] = f"斗法配装:{phase}"
+                    state_module.state["duel_magic_due_at"] = now + 120
+                    with patch.object(duel, "_duel_day_log_entries", return_value=entries), \
+                            patch.object(duel, "_find_loadout_reply", return_value=None), \
+                            patch.object(duel, "save_state"), \
+                            patch.object(duel, "send_game_command", new=AsyncMock()) as send:
+                        duel.reconcile_duel_from_message_log(now, force=True)
+                        await duel.run_duel_scheduler(now)
+                        send.assert_not_awaited()
+                    self.assertEqual(f"斗法配装:{expected}", state_module.state["duel_last_result"])
+                    self.assertEqual(441, state_module.state["duel_last_msg_id"])
+                    self.assertEqual(10, state_module.state["duel_completed_count"])
+
     async def test_own_cooldown_reply_releases_target_reservation(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

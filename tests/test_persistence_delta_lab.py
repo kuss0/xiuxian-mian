@@ -57,6 +57,26 @@ class PersistenceDeltaLabTests(unittest.TestCase):
         with patch.object(persistence, "_write_live_guard_backup"):
             return persistence.save_state()
 
+    def test_duel_daily_closure_survives_save_and_reload(self):
+        from model.features import duel
+
+        now = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            state_module.ensure_identity_registered(990115)
+            with state_module.use_identity(990115):
+                state_module.state["duel_daily_completed_day"] = duel._duel_day_key(now)
+                state_module.state["duel_enabled"] = True
+                state_module.state["next_duel_time"] = now + 86400
+            self.assertTrue(self._save_without_guard_backup())
+            loaded = persistence._load_identity_from_db(990115)
+            self.assertEqual(duel._duel_day_key(now), loaded["duel_daily_completed_day"])
+            self.assertEqual(now + 86400, loaded["next_duel_time"])
+            with state_module.use_identity(990115):
+                self.assertTrue(duel._duel_daily_batch_closed(now + 30))
+                self.assertFalse(duel._duel_daily_batch_closed(now + 86400))
+
     def test_heart_demon_chat_and_choice_anchors_survive_reload(self):
         from model.features import second_soul
 

@@ -747,6 +747,10 @@ def _consume_observed_duel_progress():
         state["duel_observed_baseline_count"] = observed
 
 
+def _duel_daily_batch_closed(now):
+    return state.get("duel_daily_completed_day", "") == _duel_day_key(now)
+
+
 def _duel_progress_label(completed, total):
     completed = max(0, int(completed or 0))
     total = max(0, int(total or 0))
@@ -864,6 +868,7 @@ def _complete_duel_batch(now):
     loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
     restore_items = tuple((loadout_config or {}).get("restore") or ())
     restoring = bool(loadout_prepared and restore_items and not keep_unequipped)
+    state["duel_daily_completed_day"] = _duel_day_key(now)
     _release_all_managed_pair_batches(now, queue_restore=True)
     _consume_observed_duel_progress()
     if restoring:
@@ -1261,7 +1266,8 @@ def reconcile_duel_from_message_log(now, *, force=False):
     observed_completed = int(evidence.get("completed") or 0)
     baseline = min(observed_completed, max(0, int(state.get("duel_observed_baseline_count", 0) or 0)))
     effective_completed = max(0, observed_completed - baseline)
-    if effective_completed > int(state.get("duel_completed_count", 0) or 0):
+    daily_closed = _duel_daily_batch_closed(now)
+    if not daily_closed and effective_completed > int(state.get("duel_completed_count", 0) or 0):
         state["duel_completed_count"] = effective_completed
         changed = True
     for target in evidence.get("limited_targets") or []:
@@ -1274,8 +1280,10 @@ def reconcile_duel_from_message_log(now, *, force=False):
     report_at = float(report.get("ts_epoch") or 0)
     if report_msg_id > int(state.get("duel_last_msg_id", 0) or 0):
         state["duel_last_msg_id"] = report_msg_id
-        state["duel_last_result"] = parse_duel_result_summary(report_text)
-        state["duel_last_error"] = ""
+        # The result field also owns the active equipment restoration phase.
+        if not _loadout_phase().startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore"):
+            state["duel_last_result"] = parse_duel_result_summary(report_text)
+            state["duel_last_error"] = ""
         changed = True
     total_count = max(0, int(state.get("duel_total_count", 0) or 0))
     completed_count = max(0, int(state.get("duel_completed_count", 0) or 0))
@@ -1291,6 +1299,7 @@ def reconcile_duel_from_message_log(now, *, force=False):
         report_text
         and expected_due_upper > 0
         and total_count > completed_count
+        and not daily_closed
         and _target_token(now)
         and not int(state.get("duel_reply_to_msg_id", 0) or 0)
         and not preserve_runtime_backoff
@@ -2690,6 +2699,7 @@ def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
     state["duel_window_start_minute"] = window_start
     state["duel_window_end_minute"] = window_end
     state["duel_completed_count"] = 0
+    state["duel_daily_completed_day"] = ""
     _clear_duel_pending()
     state["duel_last_msg_id"] = 0
     state["duel_last_result"] = ""
@@ -2738,6 +2748,7 @@ def apply_duel_config(
         state["duel_window_end_minute"] = end
     if reset_progress:
         state["duel_completed_count"] = 0
+        state["duel_daily_completed_day"] = ""
         if now is not None and str(state.get("duel_log_reconcile_day") or "") == _duel_day_key(now):
             state["duel_observed_baseline_count"] = int(state.get("duel_observed_completed_count", 0) or 0)
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
@@ -2868,6 +2879,8 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     raw_text = str(text or "").strip()
     if not raw_text:
         return False
+    if _duel_daily_batch_closed(now) and not state.get("duel_reply_to_msg_id"):
+        return True
 
     # A due Yuanying/deep-retreat settlement may be emitted as the first reply
     # to the duel command root. The game can then continue the same duel chain,
@@ -3095,6 +3108,10 @@ async def run_duel_scheduler(now):
     if loadout_config and await _run_controlled_loadout_restore(now, loadout_config):
         return
     if not state.get("duel_enabled"):
+        return
+
+    # Late final evidence may arrive after the daily batch has already closed.
+    if _duel_daily_batch_closed(now) and not state.get("duel_reply_to_msg_id"):
         return
 
     targets = _target_tokens()
