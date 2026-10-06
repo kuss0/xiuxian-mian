@@ -58,11 +58,24 @@ aggregation receives only a grouped verification warning when necessary.
 
 ## Deployment
 
-Candidate validated in `/root/xiuxian-public-phaseful-observer-20261006`.
-Ready to merge; only the observer needs reloading. The main worker and
-watchdog must not restart for this change; staged notification/runtime changes
-remain disk-only until a separate normal maintenance window.
+Merged and pushed to `xiuxian-mian/main` as `fcd00218`. Post-merge isolated
+verification: 245 passed / 16 subtests. Observer reloaded at 09:48:53, PID
+2322377; supervisor 2207210, worker 2207227 and watchdog 2178662 unchanged.
+Staged notification/runtime changes remain disk-only until a separate normal
+maintenance window; the main worker still runs the earlier `f7958deb` code.
 
-This closes only supplementary persisted phaseful coverage, not live in-memory
+The daemon's 09:50:54 and 09:51:55 snapshots contain all 19 frozen-channel deep
+retreats and four selected YuanYing modules. Xuruode6 moves from a pending
+settlement to `server_running` after its natural 09:51:29 launch, with no review
+warning. At 09:52, twelve identities have completed natural deep renewals since
+09:32 and there are zero unknown deep/YuanYing records. The remaining due
+windows continue to be watched, not forced.
+
+At 09:49:50, a new routine digest was confirmed (receipt
+`2d70fc7302ce4a128ad872326d820658`, 722ms, 1021 UTF-16 units, 23 lines, no
+mentions). This does not resolve the two older held deliveries; both remain
+intact. Those are the only current observer warning, not a new phaseful fault.
+
+Natural acceptance closes only supplementary persisted phaseful coverage, not live in-memory
 scheduler visibility, all MiniApp module monitoring, notification unknown
 delivery, backup drain, or CommandAttempt recovery.
