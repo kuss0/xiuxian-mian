@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 02:29 CST. This is a checkpoint, not a
+Observations through October 7, 2026, 03:28 CST. This is a checkpoint, not a
 claim that staged runtime fixes have been loaded or naturally accepted.
 
 ## Code And Services
@@ -184,3 +184,74 @@ patch or prayer-deadline fix, and no local balance/timer correction was made.
 Pending game tasks are zero. Baji's next prayer check remains 03:26:49, and its
 voyage check 03:57:45. Renew follower before 02:49; backup at 04:29:57 still
 requires loaded-generation and post-maintenance verification.
+
+## Follow-Up Through 03:28
+
+Two additional scoped changes are merged and pushed to `xiuxian-mian/main`:
+
+- `449f3efc`: bound normal fate quest rechecks to the existing 30-minute wait
+  or earlier retreat completion, retaining actual server Retry-After on failed
+  `/start` reads. Full regression 16681 / 1478 subtests; second review 975 / 31;
+  production-directory isolated recheck 309 / 5. No wait-map clearing or live
+  progress correction. See its dedicated audit for the remaining durable-wait
+  and upstream-progress issues.
+- `8810b336`: send ordinary stargazer successes through the existing summary;
+  changed abnormal/backoff/unknown outcomes retain their prior route. No game
+  behavior or storage format change. Full regression 16684 / 1484 subtests;
+  second review 392 / 17; production-directory isolated recheck 182 / 17.
+
+All test/push sessions have completed. No service was restarted. Supervisor
+2207210, worker 2207227, observer 2322377 and watchdog 2178662 remain unchanged,
+active, NRestarts=0. Worker generation is still `f7958deb`; production dirt is
+only runtime quiz learning. Follower 86357 expired normally; replacement
+**52586** is active, bounded until approximately **04:47**. Observe the scheduled
+04:29:57 backup and renewal before that follower expires.
+
+At 03:01:35 mudamuda0 again reported progress 4 -> 0. Original 4 is preserved,
+with no draw/choose/settle. At 03:11 fate remains 22/24 settled; WA remains at
+the old 24/30 snapshot. No assumption was made that local cultivation gains
+authorize claiming without a new server read. The new waiting patch is not
+yet loaded.
+
+Official Mulan evidence, all in -1002083016447:
+- Yinluo command 1289253 -> ack/final edit 1289254, 02:59:21 -> 02:59:27,
+  hantianzun31_bot: cultivation +217, stones +158, hundred-year ironwood x2.
+- Baji command 1289265 -> ack/final edit 1289266, 03:00:59 -> 03:01:07,
+  hantianzun23_bot: cultivation +409, stones +195, gold concentrate x2.
+Both support steps occurred once and reached their final business state.
+
+WA's 03:20:20 command 1289429 was artifact petting, not equipment replacement
+or a duel. Official 1289431 replied at 03:20:22 with rapport +4, experience +16;
+next pet time is 05:20:27 and pending queue is empty.
+
+The next ordinary summary was correctly scheduled from a new idle batch at
+02:51:16, not assumed to run at a fixed half-hour boundary. At 03:21:17 receipt
+`4c20f0106ea741c0b7634795470fd7a7` confirmed, 361 UTF-16 units / eight lines /
+no explicit mention. Pending summary rows are zero, the same two historical
+held batches remain untouched. This is old-renderer evidence, not acceptance
+of newly staged wild/fishing/stargazer formatting.
+
+Across October 7 files in `data/state/miniapp_capture`, at 03:22 there were
+1855 captured HTTP records, 1854 HTTP 200 and the one earlier recovered 429.
+Observed rolling-60-second peak is 44. This is capture coverage, not proof
+that every possible external request is instrumented.
+
+## Baji Prayer Check At 03:27
+
+The scheduler sent `.小世界` once at 03:26:59, message 1289448 in
+-1002083016447. Official hantianzun35_bot replied as 1289450 at 03:27:00:
+population/capacity 320000, faith 98/100, stability 100/100, incense stock
+242283, pending incense 2319.50. No prayer; another 5h59m59s wait.
+
+Reducer returned to idle with query/manifest anchors zero, no pending god
+action or error, next check 09:35:50. No manifest, miracle or refinement
+followed. Both identities still have refining off and harvesting on. Baji's
+next harvest remains 08:22:25; WA's remains 08:39:46. This full panel corrected
+Baji's previously stale balance naturally; it does not validate the unloaded
+partial-harvest fix. No balance difference was treated as an extra harvest.
+
+Watch next: Baji voyage at 03:57:45, planned maintenance at 04:29:57, WA voyage
+05:13:18, and Tianxing preparation before rift 07:06:07. Current preflight is
+watch (outside preparation window), pending queue empty, watchdog healthy.
+Deep retreat does not block Tianxing. These are checkpoints, not completion of
+the monitor-repair loop or a claim that all debt is closed.
