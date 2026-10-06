@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Iterable
 from urllib import parse, request
 
+if __package__:
+    from .bot_delivery import read_bot_delivery
+else:
+    from bot_delivery import read_bot_delivery
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT
@@ -649,7 +654,7 @@ def send_log_group_chunks(chunks: list[str], env_file: Path, *, topic_id: int = 
     if not chat_id:
         raise RuntimeError("LOG_GROUP_ID 为空，无法发送日志群")
     api_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks, 1):
         body = parse.urlencode(
             {
                 "chat_id": chat_id,
@@ -659,10 +664,11 @@ def send_log_group_chunks(chunks: list[str], env_file: Path, *, topic_id: int = 
             }
         ).encode("utf-8")
         req = request.Request(api_url, data=body, method="POST")
-        with request.urlopen(req, timeout=20) as resp:
-            payload = resp.read().decode("utf-8", errors="replace")
-            if resp.status >= 400:
-                raise RuntimeError(f"日志群发送失败 HTTP {resp.status}: {payload}")
+        receipt = read_bot_delivery(
+            lambda: request.urlopen(req, timeout=20), chat_id, topic_id=max(0, int(topic_id or 0)),
+        )
+        receipt.require_confirmed(f"Storage report chunk={index}/{len(chunks)} confirmed={index - 1}/{len(chunks)}")
+        print(f"Storage report chunk={index}/{len(chunks)}: {receipt.diagnostic}", flush=True)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

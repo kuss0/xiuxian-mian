@@ -11,6 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+if __package__:
+    from .bot_delivery import BotDelivery, read_bot_delivery
+else:
+    from bot_delivery import BotDelivery, read_bot_delivery
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("XIUXIAN_DATA_DIR") or PROJECT_ROOT / "data")
@@ -373,7 +378,7 @@ def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
     return "\n".join(lines)
 
 
-def send_log_group(message: str, env_file: Path = DEFAULT_ENV_FILE):
+def send_log_group(message: str, env_file: Path = DEFAULT_ENV_FILE) -> BotDelivery:
     env = {**_load_env_file(env_file), **os.environ}
     token = str(env.get("LOG_BOT_TOKEN") or "").strip()
     chat_id = str(env.get("LOG_GROUP_ID") or "").strip()
@@ -385,11 +390,11 @@ def send_log_group(message: str, env_file: Path = DEFAULT_ENV_FILE):
         "disable_web_page_preview": "true",
     }).encode("utf-8")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    with urllib.request.urlopen(url, data=body, timeout=20) as response:
-        payload = response.read().decode("utf-8", errors="replace")
-        if response.status >= 400:
-            raise RuntimeError(f"日志群发送失败 HTTP {response.status}: {payload}")
-        return payload
+    receipt = read_bot_delivery(
+        lambda: urllib.request.urlopen(url, data=body, timeout=20), chat_id,
+    )
+    receipt.require_confirmed("MiniApp report")
+    return receipt
 
 
 def parse_args() -> argparse.Namespace:
@@ -406,8 +411,8 @@ def main():
     report = build_report(args.day, Path(args.capture_dir))
     print(report)
     if args.send_log_group:
-        send_log_group(report, Path(args.env_file))
-        print("sent log group")
+        receipt = send_log_group(report, Path(args.env_file))
+        print(receipt.diagnostic)
 
 
 if __name__ == "__main__":

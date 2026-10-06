@@ -17,13 +17,17 @@ import sqlite3
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+if __package__:
+    from .bot_delivery import read_bot_delivery
+else:
+    from bot_delivery import read_bot_delivery
 
 
 GUARDED_PREFIXES = (
@@ -1631,43 +1635,6 @@ def stop_service(service_name: str) -> str:
     return f"systemctl stop failed rc={proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:200]}"
 
 
-_BOT_REPLY_MAX_BYTES = 65536
-
-
-def _bot_reply_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate reply key")
-        result[key] = value
-    return result
-
-
-def _bot_reply_diagnostic(raw: bytes, status: int, chat_id: str) -> str:
-    if len(raw) > _BOT_REPLY_MAX_BYTES:
-        return "log bot unknown: oversized response"
-    try:
-        payload = json.loads(raw, object_pairs_hook=_bot_reply_object)
-    except (ValueError, TypeError, RecursionError):
-        return "log bot unknown: invalid response"
-    if not isinstance(payload, dict):
-        return "log bot unknown: invalid response"
-    if payload.get("ok") is False:
-        code = payload.get("error_code")
-        if type(code) is int and 400 <= code < 500 and status == code:
-            return f"log bot unconfirmed: HTTP {code}"
-        return "log bot unknown: unproven rejection"
-    result = payload.get("result")
-    if status != 200 or payload.get("ok") is not True or not isinstance(result, dict):
-        return "log bot unknown: missing message receipt"
-    receipt_chat = result.get("chat")
-    if (type(result.get("message_id")) is not int or not 0 < result["message_id"] < 2**63
-            or not isinstance(receipt_chat, dict) or type(receipt_chat.get("id")) is not int
-            or str(receipt_chat["id"]) != chat_id):
-        return "log bot unknown: invalid message receipt"
-    return f"log bot ok: message_id={result['message_id']}"
-
-
 def send_log_via_bot(env: dict[str, str], message: str) -> str:
     token = str(env.get("LOG_BOT_TOKEN") or "").strip()
     chat_id = str(env.get("LOG_GROUP_ID") or "").strip()
@@ -1682,17 +1649,9 @@ def send_log_via_bot(env: dict[str, str], message: str) -> str:
         }
     ).encode()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        try:
-            response = urllib.request.urlopen(url, data=payload, timeout=8)
-        except urllib.error.HTTPError as exc:
-            # A rejection is evidence only when its body and HTTP status agree.
-            response = exc
-        with response:
-            return _bot_reply_diagnostic(response.read(_BOT_REPLY_MAX_BYTES + 1), response.status, chat_id)
-    except Exception as exc:
-        # Exception text may contain the Bot token URL or the notification body.
-        return f"log bot unknown: {type(exc).__name__}"
+    return read_bot_delivery(
+        lambda: urllib.request.urlopen(url, data=payload, timeout=8), chat_id,
+    ).diagnostic
 
 
 def admin_ids_from_env(env: dict[str, str]) -> list[int]:
