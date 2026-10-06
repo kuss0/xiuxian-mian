@@ -8283,6 +8283,7 @@ def _persist_trial_daily_batch_state(
     outcomes=None,
     retry_at=None,
     retry_reason=None,
+    require_save_ack=False,
 ):
     context = _normalize_trial_daily_batch_context(context)
     if not context:
@@ -8341,8 +8342,8 @@ def _persist_trial_daily_batch_state(
         config[f"{prefix}failed_steps"] = []
         # Keep the final reward snapshot; completed status prevents a work replay.
     set_miniapp_auto_config(config)
-    save_state()
-    return True
+    saved = save_state()
+    return saved is True if require_save_ack else True
 
 
 def _trial_daily_retry_hold(context, now=None):
@@ -8444,10 +8445,20 @@ async def _run_cave_public_entry_batch(
     outcomes = deepcopy(initial_outcomes) if isinstance(initial_outcomes, dict) else {}
     failed_steps = list(initial_failed_steps or [])
     next_cursor = resume_cursor
+    run_state = _cave_public_batch_state
+    run_started_at = time.time()
+
+    def owns_batch():
+        return (
+            _cave_public_batch_state is run_state
+            and run_state.get("batch_id") == batch_id
+            and run_state.get("started_at") == run_started_at
+        )
+
     _set_cave_public_batch_state(
         running=True,
         batch_id=batch_id,
-        started_at=time.time(),
+        started_at=run_started_at,
         finished_at=0,
         total=total,
         completed=completed,
@@ -8489,6 +8500,7 @@ async def _run_cave_public_entry_batch(
         await send_audit_log("🧩 洞府公共入口串行批次结束：无可执行步骤。", scope="global", priority="low", limit=220)
         return
 
+    step_inflight = False
     try:
         repeated_fail_key = ""
         repeated_fail_count = 0
@@ -8513,7 +8525,9 @@ async def _run_cave_public_entry_batch(
                         priority="low",
                         limit=280,
                     )
+            step_inflight = True
             ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+            step_inflight = False
             shared_pause = isinstance(extra, dict) and extra.get("shared_rate_limit")
             if not ok and (_is_cave_public_batch_pause(message) or shared_pause):
                 pause_reason = "共享入口限流" if shared_pause else "全局暂停"
@@ -8653,6 +8667,42 @@ async def _run_cave_public_entry_batch(
                 return
             if index < total:
                 await asyncio.sleep(delay_sec)
+    except asyncio.CancelledError:
+        if owns_batch() and run_state.get("running"):
+            reason = (
+                "batch_cancelled_outcome_unknown" if step_inflight
+                else next(iter(trial_recovery_hold_reasons), "")
+            )
+            message = "批次已取消，保留已确认进度。"
+            if reason:
+                message += "当前结果待核查，本日不自动重跑。"
+            _set_cave_public_batch_state(
+                running=False, finished_at=time.time(), current="", last_result=message,
+            )
+            if trial_daily_context:
+                saved = False
+                try:
+                    saved = _persist_trial_daily_batch_state(
+                        trial_daily_context, batch_id=batch_id, status="retry_pending", result=message,
+                        cursor=next_cursor, completed_count=completed, succeeded=succeeded, failed=failed,
+                        steps=steps, failed_steps=failed_steps, outcomes=outcomes,
+                        retry_at=0, retry_reason=reason, require_save_ack=True,
+                    )
+                except Exception:
+                    pass
+                if not saved and owns_batch():
+                    # Keep the in-memory scheduler held if durable progress is unconfirmed.
+                    _set_cave_public_batch_state(last_result="批次已取消，中断进度未确认存盘，等待核查。")
+                    try:
+                        config = normalize_miniapp_auto_config()
+                        prefix = f"trial_daily_{trial_daily_context['wave_key']}_last_"
+                        if (config.get(f"{prefix}batch_id") == batch_id
+                                and config.get(f"{prefix}progress_day") == trial_daily_context["day_key"]):
+                            config[f"{prefix}retry_reason"] = "batch_cancelled_outcome_unknown"
+                            set_miniapp_auto_config(config)
+                    except Exception:
+                        pass
+        raise
     except Exception as exc:
         message = f"批次异常：{type(exc).__name__}: {exc}"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
@@ -8790,10 +8840,12 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
     account_identity_ids = _cave_public_batch_identity_ids_for_action("", identity_ids)
     # Claim the batch before creating the background task. Without this, two quick UI
     # clicks can both observe `running=False` and start concurrent HTTP batches.
+    claimed_state = _cave_public_batch_state
+    claimed_at = time.time()
     _set_cave_public_batch_state(
         running=True,
         batch_id=batch_id,
-        started_at=time.time(),
+        started_at=claimed_at,
         finished_at=0,
         total=len(steps),
         completed=0,
@@ -8803,23 +8855,37 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
         last_result="",
         delay_sec=delay_sec,
     )
+
+    def release_unstarted_cancel(task):
+        if (task.cancelled() and _cave_public_batch_state is claimed_state
+                and claimed_state.get("batch_id") == batch_id
+                and claimed_state.get("started_at") == claimed_at
+                and claimed_state.get("current") == "等待启动"):
+            _set_cave_public_batch_state(
+                running=False, finished_at=time.time(), current="", last_result="批次在启动前取消，未执行新步骤。",
+            )
+
+    worker = _run_cave_public_entry_batch(
+        batch_id,
+        public_entry_url,
+        identity_ids,
+        actions,
+        delay_sec,
+        trial_daily_context=trial_daily_context,
+        resume_cursor=resume_state.get("cursor", 0),
+        initial_completed=resume_state.get("completed", 0),
+        initial_succeeded=resume_state.get("succeeded", 0),
+        initial_failed=resume_state.get("failed", 0),
+        initial_failed_steps=resume_state.get("failed_steps") or [],
+        initial_outcomes=resume_state.get("outcomes") or {},
+        steps_override=resume_state.get("steps") or None,
+    )
     try:
-        _fire_and_forget(_run_cave_public_entry_batch(
-            batch_id,
-            public_entry_url,
-            identity_ids,
-            actions,
-            delay_sec,
-            trial_daily_context=trial_daily_context,
-            resume_cursor=resume_state.get("cursor", 0),
-            initial_completed=resume_state.get("completed", 0),
-            initial_succeeded=resume_state.get("succeeded", 0),
-            initial_failed=resume_state.get("failed", 0),
-            initial_failed_steps=resume_state.get("failed_steps") or [],
-            initial_outcomes=resume_state.get("outcomes") or {},
-            steps_override=resume_state.get("steps") or None,
-        ))
+        task = _fire_and_forget(worker)
+        if isinstance(task, asyncio.Future):
+            task.add_done_callback(release_unstarted_cancel)
     except Exception as exc:
+        worker.close()
         message = f"创建洞府公共入口批次失败：{type(exc).__name__}: {exc}"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
         return False, message, dict(_cave_public_batch_state)
