@@ -308,7 +308,11 @@ def test_cancel_before_worker_starts_releases_only_original_claim(batch, monkeyp
     else:
         assert ui._cave_public_batch_state["current"] == ""
     batch.action.assert_not_awaited()
-    batch.persist.assert_not_called()
+    assert batch.persist.call_count == (1 if replace_claim else 2)
+    assert batch.saved[0][PREFIX + "status"] == "running"
+    if not replace_claim:
+        assert batch.saved[-1][PREFIX + "status"] == "retry_pending"
+        assert batch.saved[-1][PREFIX + "cursor"] == 0
     batch.notify.assert_not_awaited()
 
 

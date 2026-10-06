@@ -8805,6 +8805,7 @@ async def _run_cave_public_entry_batch(
 
 async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=None):
     payload = dict(payload or {})
+    trial_daily_context = _normalize_trial_daily_batch_context(trial_daily_context)
     shared_hold = _cave_public_shared_hold(time.time())
     if shared_hold:
         return False, "洞府公共入口共享限流，等待服务端冷却", shared_hold
@@ -8838,6 +8839,7 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
         identity_ids = sorted({identity_id for identity_id, _action in steps})
     batch_id = str(resume_state.get("batch_id") or "") or f"cave_public_{int(time.time())}_{len(steps)}"
     account_identity_ids = _cave_public_batch_identity_ids_for_action("", identity_ids)
+    previous_config = normalize_miniapp_auto_config() if trial_daily_context else {}
     # Claim the batch before creating the background task. Without this, two quick UI
     # clicks can both observe `running=False` and start concurrent HTTP batches.
     claimed_state = _cave_public_batch_state
@@ -8856,13 +8858,59 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
         delay_sec=delay_sec,
     )
 
+    def owns_claim():
+        return (
+            _cave_public_batch_state is claimed_state
+            and claimed_state.get("batch_id") == batch_id
+            and claimed_state.get("started_at") == claimed_at
+            and claimed_state.get("current") == "等待启动"
+        )
+
+    def persist_start(status, result):
+        if not trial_daily_context:
+            return True
+        try:
+            return _persist_trial_daily_batch_state(
+                trial_daily_context, batch_id=batch_id, status=status, result=result,
+                cursor=resume_state.get("cursor", 0),
+                completed_count=resume_state.get("completed", 0),
+                succeeded=resume_state.get("succeeded", 0), failed=resume_state.get("failed", 0),
+                steps=steps, failed_steps=resume_state.get("failed_steps") or [],
+                outcomes=resume_state.get("outcomes") or {}, retry_at=0, retry_reason="",
+                require_save_ack=True,
+            )
+        except Exception:
+            return False
+
+    saved = persist_start("running", f"批次已登记 {len(steps)} 个步骤，等待启动")
+    if not owns_claim():
+        return False, "批次启动已被替代，未执行新步骤。", {"reason": "trial_start_superseded"}
+    if not saved:
+        # No task exists yet. Restore only this wave's fields, retaining unrelated config edits.
+        message = "试炼启动进度未确认存盘，未创建任务，等待存储恢复。"
+        try:
+            prefix = f"trial_daily_{trial_daily_context['wave_key']}_last_"
+            config = normalize_miniapp_auto_config()
+            if (config.get(prefix + "batch_id") == batch_id
+                    and config.get(prefix + "progress_day") == trial_daily_context["day_key"]):
+                for key, value in previous_config.items():
+                    if key.startswith((prefix, "trial_daily_last_")):
+                        config[key] = deepcopy(value)
+                set_miniapp_auto_config(config)
+        except Exception:
+            message += "旧进度待核查。"
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
+        return False, message, {"reason": "trial_start_save_failed"}
+
     def release_unstarted_cancel(task):
-        if (task.cancelled() and _cave_public_batch_state is claimed_state
-                and claimed_state.get("batch_id") == batch_id
-                and claimed_state.get("started_at") == claimed_at
-                and claimed_state.get("current") == "等待启动"):
+        if task.cancelled() and owns_claim():
+            message = "批次在启动前取消，未执行新步骤。"
+            if not persist_start("retry_pending", message):
+                message += "进度未确认存盘。"
+            if not owns_claim():
+                return
             _set_cave_public_batch_state(
-                running=False, finished_at=time.time(), current="", last_result="批次在启动前取消，未执行新步骤。",
+                running=False, finished_at=time.time(), current="", last_result=message,
             )
 
     worker = _run_cave_public_entry_batch(
@@ -8886,8 +8934,12 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
             task.add_done_callback(release_unstarted_cancel)
     except Exception as exc:
         worker.close()
-        message = f"创建洞府公共入口批次失败：{type(exc).__name__}: {exc}"
-        _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
+        message = f"创建洞府公共入口批次失败：{type(exc).__name__}"
+        if owns_claim():
+            if not persist_start("retry_pending", message):
+                message += "；进度未确认存盘。"
+            if owns_claim():
+                _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
         return False, message, dict(_cave_public_batch_state)
     return True, f"已启动洞府公共入口串行批次：{len(account_identity_ids)} 个登录账号｜{len(steps)} 步，间隔 {int(delay_sec)}s", {
         "batch_id": batch_id,
@@ -9871,24 +9923,6 @@ async def run_miniapp_daily_scheduler(now):
         if not ok:
             return {"started": False, "reason": "public_batch_create_failed", "message": message}
         batch_id = str(extra.get("batch_id") or "")
-        _persist_trial_daily_batch_state(
-            trial_daily_context,
-            batch_id=batch_id,
-            status="running",
-            result=f"{wave_label}已启动 {len(identity_ids)} 个身份",
-            now=now,
-            cursor=int(extra.get("resume_cursor", 0) or 0),
-            completed_count=int(extra.get("completed", 0) or 0),
-            succeeded=int(extra.get("succeeded", 0) or 0),
-            failed=int(extra.get("failed", 0) or 0),
-            failed_steps=extra.get("failed_steps") or [],
-            steps=[
-                (int(item.get("identity_id") or 0), str(item.get("action") or ""))
-                for item in (extra.get("batch_steps") or [])
-                if isinstance(item, dict)
-            ],
-            outcomes=extra.get("outcomes") or {},
-        )
         return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
 
     background = await _run_cave_public_background_scheduler(now, raw_config)

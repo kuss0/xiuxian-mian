@@ -1974,12 +1974,14 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([1001, 1002], start_mock.await_args.args[0]["send_as_ids"])
         self.assertEqual(["trial"], start_mock.await_args.args[0]["actions"])
         self.assertEqual("wave1", start_mock.await_args.kwargs["trial_daily_context"]["wave_key"])
-        save_mock.assert_called_once()
+        # Admission owns persistence now; this scheduler stub must not write a
+        # second startup snapshot over the worker's potentially newer state.
+        save_mock.assert_not_called()
         snapshot = ui.get_miniapp_status_snapshot()["automation"]
         self.assertFalse(snapshot["trial_daily_done_today"])
-        self.assertEqual("batch-auto", snapshot["trial_daily_last_batch_id"])
-        self.assertEqual("batch-auto", snapshot["trial_daily_wave1_last_batch_id"])
-        self.assertEqual("running", snapshot["trial_daily_wave1_last_status"])
+        self.assertEqual("", snapshot["trial_daily_last_batch_id"])
+        self.assertEqual("", snapshot["trial_daily_wave1_last_batch_id"])
+        self.assertEqual("", snapshot["trial_daily_wave1_last_status"])
         self.assertEqual("", snapshot["trial_daily_wave1_last_run_day"])
 
     async def test_miniapp_daily_scheduler_does_not_duplicate_running_batch(self):
@@ -2033,7 +2035,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([1003, 1004], start_mock.await_args.args[0]["send_as_ids"])
         config = ui.normalize_miniapp_auto_config()
         self.assertEqual("", config["trial_daily_wave2_last_run_day"])
-        self.assertEqual("running", config["trial_daily_wave2_last_status"])
+        self.assertEqual("retry_pending", config["trial_daily_wave2_last_status"])
 
     async def test_miniapp_daily_scheduler_resumes_paused_wave_after_window(self):
         state_module._meta_state["miniapp_auto_config"] = {

@@ -80,3 +80,50 @@ regression 214 passed / 11 subtests. This is a tools-only change, with no
 service restart or real test notification. The artifact reply was also
 verified directly: official `hantianzun22_bot` message `1286936` replies to
 `1286935`, confirming rapport +4 / experience +12.
+
+## Observation Resumed At 21:09
+
+The previous foreground follower expired around 20:29. The main agent did not
+consume fresh output continuously until 21:09; background monitors remained
+active. The resumed follower includes journal history from 20:23. Do not label
+that elapsed gap as uninterrupted agent observation.
+
+WA's old-group disaster broadcast `12635637` at 20:23:56 names WA and reports
+faith -11. There was one new-group script `.神迹 布道` (`1287207`, 20:24:00).
+Official `hantianzun35_bot` reply `1287208` at 20:24:02 confirms cultivation
+-12000, faith to 100 and stability to 89. State is idle, pending ID cleared,
+god cooldown to 23:24:02 and next check to 23:34:48. This was preaching, not
+relief or incense refining; no agent-triggered replay occurred.
+
+Baji's new-group query `1287500` at 21:21:36 received panel `1287501` from
+`hantianzun23_bot`: population 320000, faith 97, stability 100, incense stock
+236283 and an explicit prayer. Script manifest `1287502` at 21:21:52 received
+success `1287503` at 21:21:54 from `hantianzun21_bot`: faith +8, stability +5,
+population +0, prayer cooldown 360 minutes. Runtime is idle with faith capped
+at 100, manifest pending cleared, next check October 7 03:26:49. No relief,
+extra preaching or refining was sent for this prayer. Both incense-refining
+switches remain off and harvest remains on.
+
+WA's artifact care `1287498 -> 1287499` at 21:19 also confirmed once, rapport
++3 and experience +18. Baji's sailing return is expected 21:46:13; WA's at
+22:59:37, subject to actual next checks. Lpprceqei is still held on no-baseline,
+5/10, next check 21:41:33. Its already staged calibration has not run live.
+
+At 21:25 the same three services remain active and unchanged; observer only
+reports the two historical held notification batches. The semantic report has
+2474 captures, peak 73/90, the same seven earlier error classifications, and
+seven small-world panels (three partially explained/two unexplained intervals).
+Additional faith residuals remain unknown, not grounds for compensating spend.
+
+Boss test/evidence change `2cd1108f` is merged and pushed; production-directory
+isolated tests pass 174 tests / 14 subtests. No production runtime or Boss
+parameter was changed. Trial-start checkpoint work is a separate unmerged Lab.
+Foreground session 91374 is active until about 22:09 and must be renewed then.
+
+At 21:30:02 the pending ordinary summary confirmed with receipt
+`ee6a0b8321394cad995267a97f567fa0`, 261 UTF-16 units / 4 lines / no mention.
+Queue is empty again, held remains 2; next ordinary timer is 22:00:01.
+The supplied 20:23-21:30 journal contains two confirmed runtime receipts
+and no tool-source receipt. It does not establish instrumented coverage for
+other independent senders. At 21:34 the services and PIDs remain unchanged;
+trial-start candidate full regression and second cross-module review passed.
