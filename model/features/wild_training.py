@@ -21,6 +21,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from ..config import CMD_TIANXING_PANEL, WILD_TRAINING_STRATEGIES
+from ..audit_wild import confirmed_wild_outcome
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command, track_background_task
 from ..state import (
@@ -55,6 +56,7 @@ from .tianxing import (
     mark_tianxing_route_result_unknown,
     normalize_tianxing_observation,
     normalize_tianxing_timeline_state,
+    parse_tianxing_text,
     run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
@@ -564,6 +566,26 @@ async def _notify_wild_training(message, **kwargs):
         logging.getLogger(__name__).warning("Wild-training notification failed (%s); result preserved", type(exc).__name__)
 
 
+def _wild_summary_outcome(identity_id, result):
+    try:
+        outcome = confirmed_wild_outcome(identity_id, result)
+        if outcome is None:
+            return None
+        raw_text = _wild_training_result_text(result["extra"]["action_result"])
+        parsed = parse_tianxing_text(raw_text, family="wild_training") or {}
+        for key, name in (("last_tianji_gain", "天机"), ("last_contrib_gain", "贡献")):
+            if key not in parsed:
+                continue
+            amount = parsed[key]
+            if name in outcome["gains"] and outcome["gains"][name] != amount:
+                return None
+            outcome["gains"][name] = amount
+        return outcome
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Wild summary projection failed (%s); keeping original notice", type(exc).__name__)
+        return None
+
+
 async def _apply_miniapp_result(result, now, *, operation=None, notify=True):
     if operation is not None and not operation.owner.is_current():
         return "cancelled"
@@ -727,6 +749,7 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, due_at, *, operat
                         await _notify_wild_training(
                             f"🏞️ MiniApp 野外历练结果｜{summary}｜下次 {fmt_abs_ts(next_time)}",
                             send_as_id=identity_id, priority="low", limit=320,
+                            wild_outcome=_wild_summary_outcome(identity_id, result),
                         )
                     elif outcome == "failed":
                         await _notify_wild_training(

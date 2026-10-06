@@ -3,8 +3,10 @@
 import hashlib
 import json
 from collections import defaultdict
+from html import escape
 
 from .audit_messages import folded_summary_details, short_html_text
+from .audit_wild import validate_wild_outcome
 
 
 SUMMARY_TITLES = {"deep_retreat": "闭关", "yuanying": "元婴", "fishing_skip": "钓鱼跳过"}
@@ -35,15 +37,64 @@ def routine_bucket_key(kind, identity_id, content):
     return json.dumps(key, separators=(",", ":")) if kind == "fishing_skip" else key
 
 
+def _wild_summary(rows):
+    receipts, conflicts, actors = {}, set(), {}
+    for row in rows:
+        result = row["wild_outcome"]
+        key = (result["identity_id"], result["reset_at"], result["run"])
+        identity = result["identity_id"]
+        if identity not in actors or float(row.get("last_at") or 0) >= float(actors[identity].get("last_at") or 0):
+            actors[identity] = row
+        if key in receipts and receipts[key]["wild_outcome"] != result:
+            conflicts.add(key)
+        receipts[key] = row
+    totals = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    counts = defaultdict(int)
+    for key, row in receipts.items():
+        identity = key[0]
+        if key in conflicts:
+            continue
+        counts[identity] += 1
+        for name, amount in row["wild_outcome"]["gains"].items():
+            totals[identity][name][0 if amount >= 0 else 1] += amount
+    heading = f"野外：{len(actors)} 个身份，{sum(counts.values())} 次结算"
+    if conflicts:
+        heading += f"；{len(conflicts)} 份冲突结算未计收益"
+    details = []
+    for identity in sorted(actors):
+        parts = []
+        for name, (gain, loss) in sorted(totals[identity].items(), key=lambda item: (item[0] != "修为", item[0])):
+            amounts = "/".join(f"{n:+d}" for n in (gain, loss) if n)
+            if amounts:
+                parts.append(escape(name) + amounts)
+        actor = actors[identity].get("wild_actor") or str(identity)
+        details.append(f"<code>{escape(actor)}</code> {counts[identity]} 次｜"
+                       + ("，".join(parts) or "未计入物资变化"))
+    return heading, details
+
+
 def format_grouped_summary(rows, *, now_text, max_details=20):
     groups = defaultdict(list)
     for row in rows:
+        if row.get("wild_outcome") is not None:
+            try:
+                validate_wild_outcome(row["wild_outcome"], row.get("identity_id"))
+            except ValueError:
+                pass
+            else:
+                groups["wild"].append(row)
+                continue
         kind = row.get("summary_kind") or row.get("presentation_kind")
         groups[kind if kind in SUMMARY_TITLES else "other"].append(row)
     headings, details = [], []
-    for kind in (*SUMMARY_TITLES, "other"):
+    for kind in (*SUMMARY_TITLES, "wild", "other"):
         items = groups.get(kind, [])
         if not items:
+            continue
+        if kind == "wild":
+            heading, group_details = _wild_summary(items)
+            headings.append(heading)
+            details.append([short_html_text(body, 200) for body in group_details])
             continue
         title = SUMMARY_TITLES.get(kind, "其他记录")
         total = sum(int(row.get("count") or 0) for row in items)

@@ -63,4 +63,6 @@ The pre-compatibility full suite passed 16625 tests / 1478 subtests in 453.21s.
 It does not certify the subsequent backward-compatible row encoding; the final
 run above is the acceptance result. Ready to merge and push without a restart.
 
+Merged and pushed as `72d76453`; production-directory isolated verification
+passed 245 tests. Worker generation remains `f7958deb`, without a restart.
 No production loading or natural acceptance of this candidate is claimed.

@@ -9,6 +9,7 @@ import secrets
 import time
 import traceback
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -21,6 +22,7 @@ from .audit_messages import bounded_html, fold_audit_body, folded_summary_detail
 from .audit_delivery import bot_delivery_outcome, emit_delivery_receipt
 from .audit_summary import SUMMARY_TITLES, format_grouped_summary, routine_bucket_key
 from .audit_summary_store import AuditSummaryStore
+from .audit_wild import validate_wild_outcome, wild_bucket_key
 from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
 
 from .account_membership import (
@@ -3184,12 +3186,14 @@ def _schedule_low_priority_audit_flush(*, force=False):
     _low_priority_audit_flush_task.add_done_callback(_handle_low_priority_audit_flush_done)
 
 
-def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", identity_id=None, content=""):
+def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", identity_id=None, content="", wild_outcome=None):
     global _low_priority_audit_seq
     now = time.time()
     now_text = datetime.fromtimestamp(now, TZ_LOCAL).strftime("%H:%M:%S")
     plain_key = str(plain_body or "").strip() or "-"
     key = routine_bucket_key(summary_kind, identity_id, content) if summary_kind else plain_key
+    if wild_outcome is not None:
+        key = wild_bucket_key(wild_outcome)
     row = _low_priority_audit_bucket.get(key)
     if row is None:
         _low_priority_audit_seq += 1
@@ -3208,6 +3212,8 @@ def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", iden
         if summary_kind == "fishing_skip":
             # Optional presentation metadata is readable by pre-migration observers.
             row["presentation_kind"] = summary_kind
+        if wild_outcome is not None:
+            row["wild_outcome"] = wild_outcome
         _low_priority_audit_bucket[key] = row
         _low_priority_audit_order.append(key)
     row["count"] += 1
@@ -3215,6 +3221,8 @@ def _queue_low_priority_audit(message_body, plain_body, *, summary_kind="", iden
     row["last_at"] = now
     row["html"] = message_body
     row["plain"] = plain_key
+    if wild_outcome is not None:
+        row["wild_actor"] = _format_log_identity_prefix(identity_id).strip()
     _schedule_low_priority_audit_flush()
 
 
@@ -3392,7 +3400,7 @@ async def _flush_low_priority_audit_after_delay():
     await flush_low_priority_audit_summary()
 
 
-async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None, summary_kind=""):
+async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None, summary_kind="", wild_outcome=None):
     if _should_suppress_dungeon_quiet_failure_audit(content, scope=scope, send_as_id=send_as_id):
         return True
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
@@ -3409,6 +3417,14 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
     # Clip visible text, not markup bytes, so links/tags and astral characters
     # survive the caller's display budget. Console logging retains its own copy.
     identity_id = _resolve_log_identity(scope=scope, send_as_id=send_as_id)
+    if wild_outcome is not None:
+        try:
+            wild_outcome = deepcopy(validate_wild_outcome(wild_outcome, identity_id))
+        except ValueError:
+            wild_outcome = None
+        if (not LOG_GROUP_STRUCTURED_SUMMARY or audit_priority != AUDIT_PRIORITY_LOW or buttons
+                or summary_kind or _resolve_audit_priority(content) == AUDIT_PRIORITY_HIGH):
+            wild_outcome = None
     message_body = _format_log_identity_prefix(identity_id, html=True) + bounded_html(display_content, min(limit, 3000))
     plain_body = _format_log_message(display_content, scope=scope, send_as_id=send_as_id, html=False,
                                     limit=min(limit, 3000) if LOG_GROUP_STRUCTURED_SUMMARY else limit)
@@ -3416,7 +3432,7 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
     if audit_priority == AUDIT_PRIORITY_LOW:
         def add_row():
             _queue_low_priority_audit(message_body, plain_body, summary_kind=summary_kind,
-                                     identity_id=identity_id, content=content)
+                                     identity_id=identity_id, content=content, wild_outcome=wild_outcome)
         if LOG_GROUP_STRUCTURED_SUMMARY:
             return await _get_audit_summary_store().enqueue(add_row, _audit_summary_interval())
         add_row()

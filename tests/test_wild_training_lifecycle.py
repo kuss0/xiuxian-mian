@@ -327,6 +327,17 @@ def test_notification_failure_does_not_turn_completion_into_gameplay_failure(wil
     assert not wild_env.identity["wild_training_last_error"]
 
 
+def test_summary_projection_failure_does_not_turn_completion_into_gameplay_failure(wild_env, monkeypatch):
+    monkeypatch.setattr(wild, "confirmed_wild_outcome", Mock(side_effect=RuntimeError("bad-summary")))
+    asyncio.run(run_worker())
+    assert wild_env.identity["wild_training_retry_count"] == 0
+    assert wild_env.identity["wild_training_last_completed_at"] == NOW
+    assert wild_env.identity["next_wild_training_time"] == pytest.approx(NOW + 43200, abs=0.1)
+    assert not wild_env.identity["wild_training_last_error"]
+    wild_env.audit.assert_awaited_once()
+    assert wild_env.audit.call_args.kwargs["wild_outcome"] is None
+
+
 def test_completed_worker_result_uses_summary_priority(wild_env):
     asyncio.run(run_worker())
     wild_env.audit.assert_awaited_once()

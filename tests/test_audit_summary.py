@@ -187,6 +187,46 @@ class RuntimeStructuredSummaryTests(IsolatedAsyncioTestCase):
         assert sender.await_count == 2
         assert not runtime._low_priority_audit_bucket
 
+    async def test_wild_receipts_reload_without_multiplying_duplicates_or_losing_renames(self):
+        from tests.test_wild_summary import row
+
+        sender = AsyncMock(return_value=True)
+        outcome = row()["wild_outcome"]
+        with patch.object(runtime, "_send_log_group_message", sender):
+            for _ in range(3):
+                await runtime.send_audit_log("野外 修为+12000", priority="low", send_as_id=1, wild_outcome=outcome)
+            with patch.object(runtime, "get_send_as_label", return_value="renamed"):
+                await runtime.send_audit_log("野外 修为+12000", priority="low", send_as_id=1, wild_outcome=outcome)
+            await runtime.send_audit_log("野外 修为-1260", priority="low", send_as_id=1,
+                                         wild_outcome=row(run=2, cultivation=-1260)["wild_outcome"])
+            outcome["gains"]["修为"] = 999999
+            reloaded = AuditSummaryStore(self.store.path, {}, [], clock=lambda: 1000)
+            async with reloaded.lock:
+                assert await reloaded._load()
+            assert len(reloaded.bucket) == 2
+            assert {r["summary_kind"] for r in reloaded.bucket.values()} == {""}
+            assert all(isinstance(key, str) for key in reloaded.bucket)
+            assert any(r["wild_actor"] == "[renamed]" for r in reloaded.bucket.values())
+            with patch.object(runtime, "_audit_summary_store", reloaded):
+                reloaded.next_at = 0
+                await runtime.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        text = sender.call_args.args[0]
+        assert "野外：1 个身份，2 次结算" in text
+        assert "修为+12000/-1260" in text and "999999" not in text
+
+    async def test_wild_hint_preserves_other_routes_and_rejects_wrong_owner(self):
+        from tests.test_wild_summary import row
+
+        outcome = row()["wild_outcome"]
+        sender = AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", sender):
+            await runtime.send_audit_log("请核查", priority="high", send_as_id=1, wild_outcome=outcome)
+            await runtime.send_audit_log("请处理", priority="normal", send_as_id=1, buttons=[["x"]], wild_outcome=outcome)
+            await runtime.send_audit_log("未迁移", priority="low", send_as_id=2, wild_outcome=outcome)
+        assert sender.await_count == 2
+        assert all("wild_outcome" not in value for value in runtime._low_priority_audit_bucket.values())
+
     async def test_legacy_switch_keeps_existing_delivery(self):
         sender = AsyncMock(return_value=True)
         with patch.object(runtime, "LOG_GROUP_STRUCTURED_SUMMARY", False), patch.object(runtime, "_send_log_group_message", sender):

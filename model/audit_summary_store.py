@@ -15,6 +15,7 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
+from .audit_wild import validate_wild_outcome
 
 MAX_ROWS = 256
 MAX_HELD = 48
@@ -63,6 +64,11 @@ def _validate_row(row):
     if (not isinstance(presentation, str) or presentation not in {"", "fishing_skip"}
             or (presentation and row.get("summary_kind", ""))):
         raise ValueError("invalid summary presentation")
+    if "wild_outcome" in row:
+        validate_wild_outcome(row["wild_outcome"], row.get("identity_id"))
+        if (presentation or row.get("summary_kind") or not isinstance(row.get("wild_actor"), str)
+                or len(row["wild_actor"]) > 120):
+            raise ValueError("invalid wild summary presentation")
     for field in ("html", "plain", "first_ts", "last_ts"):
         if not isinstance(row.get(field), str) or len(row[field]) > 32768:
             raise ValueError("invalid summary text")

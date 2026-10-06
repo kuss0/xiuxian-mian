@@ -133,6 +133,27 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_MINIAPP_ENTRY_RETRY_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("等待动态采集", state_module.state["wild_training_last_result"])
 
+    async def test_completed_worker_passes_only_confirmed_outcome_to_summary(self):
+        from tests.test_wild_summary import response
+
+        now = 1_700_000_000.0
+        self._enable(now=now)
+        result = response()
+        urls = ["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=urls), \
+                patch.object(wild_training, "run_cave_public_wild_training", new=AsyncMock(return_value=result)), \
+                patch.object(wild_training.time, "time", return_value=now), \
+                patch.object(wild_training, "send_game_command", new=AsyncMock()) as game_send, \
+                patch.object(wild_training, "send_audit_log", new=AsyncMock()) as notice, \
+                patch.object(wild_training, "save_state"):
+            await wild_training._run_wild_training_miniapp_worker(991201, urls, now)
+        game_send.assert_not_awaited()
+        notice.assert_awaited_once()
+        self.assertEqual(991201, notice.call_args.kwargs["wild_outcome"]["identity_id"])
+        self.assertEqual(12000, notice.call_args.kwargs["wild_outcome"]["gains"]["修为"])
+        self.assertEqual("low", notice.call_args.kwargs["priority"])
+
     async def test_server_cooldown_sync_uses_returned_next_time(self):
         now = 1_700_000_000.0
         self._enable(now=now)
