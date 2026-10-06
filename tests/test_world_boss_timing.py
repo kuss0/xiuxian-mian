@@ -162,3 +162,51 @@ def test_charge_extension_never_waits_past_window_or_local_cap(received_ms):
     assert target >= received_ms
     assert target <= max(received_ms, 3110)
     assert target <= max(received_ms, 3250)
+
+
+@pytest.mark.parametrize("planned_hold,charge_delays,hit_delays", [
+    (1142, (0.0462, 0.0388), (0.4735, 0.1128)),
+    (1139, (0.3211, 0.0739), (0.6832, 0.1208)),
+    (1130, (0.6898, 0.2472), (0.4136, 0.1279)),
+], ids=["oct6-window6", "oct6-window8", "oct6-window15"])
+def test_shorter_hold_alone_does_not_fix_center_error(monkeypatch, planned_hold, charge_delays, hit_delays):
+    # These are plausible one-way splits consistent with capture RTTs, not
+    # measured network direction or a replay of unknown server processing.
+    monkeypatch.setattr(boss, "WORLD_BOSS_RELEASE_LEAD_MS", 190)
+    outcomes = []
+    for hold in (planned_hold, 800):
+        monkeypatch.setattr(boss, "WORLD_BOSS_OPTIMAL_HOLD_MIN_MS", hold)
+        monkeypatch.setattr(boss, "WORLD_BOSS_OPTIMAL_HOLD_MAX_MS", hold)
+        result, hits, requests, _ = run_battle(charge_delays=charge_delays, hit_delays=hit_delays)
+        assert result["ok"]
+        assert len(hits) == 1
+        assert hits[0]["deltaMs"] > 210
+        assert not hits[0]["perfect"]
+        assert result["data"]["result"]["accepted_perfect_count"] == 0
+        assert requests.count("charge_start") == requests.count("hit") == requests.count("finish") == 1
+        outcomes.append(hits[0])
+    if planned_hold == 1139:
+        # Moving charge later leaves too little time after its slow reply; the
+        # minimum-hold extension offsets part of the nominal shortening.
+        assert outcomes[1]["holdMs"] > 1250
+    else:
+        assert 520 <= outcomes[1]["holdMs"] <= 1250
+    if planned_hold in (1142, 1139):
+        assert outcomes[0]["holdMs"] > 1250
+    else:
+        assert 520 <= outcomes[0]["holdMs"] <= 1250
+
+
+def test_oct6_late_reveal_cannot_be_fixed_by_shorter_planned_hold(monkeypatch):
+    monkeypatch.setattr(boss, "WORLD_BOSS_RELEASE_LEAD_MS", 190)
+    monkeypatch.setattr(boss, "WORLD_BOSS_OPTIMAL_HOLD_MIN_MS", 800)
+    monkeypatch.setattr(boss, "WORLD_BOSS_OPTIMAL_HOLD_MAX_MS", 800)
+    # The real window was received 280ms before center; the release lead leaves
+    # only about 90ms, still below the unchanged 520ms minimum.
+    result, hits, requests, captures = run_battle(reveal_ms=2720)
+    assert not hits and "charge_start" not in requests and "hit" not in requests
+    assert requests.count("finish") == 1
+    assert result["data"]["result"]["skipped_window_count"] == 1
+    skip = next(c["business"] for c in captures if c.get("step_key") == "window_skipped_business")
+    assert skip["reason"] == "insufficient_charge_time"
+    assert 80 <= skip["available_charge_ms"] <= 100

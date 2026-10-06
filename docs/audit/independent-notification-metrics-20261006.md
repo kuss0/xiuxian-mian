@@ -69,7 +69,9 @@ Initial full regression: 16564 passed / 1461 subtests. It predates that last
 reader correction. Final frozen full regression: 16568 passed / 1461 subtests
 in 452.54 seconds. JUnit:
 `/tmp/xiuxian-independent-notification-metrics-final-20261006.xml`.
-All tests use `XIUXIAN_ALLOW_LIVE_TEST_DB=0` and mocked network. Ruff,
+All runs use `XIUXIAN_ALLOW_LIVE_TEST_DB=0`; new tool regressions use mocked
+network. This is not a suite-wide network sandbox: the later
+`boss-latency-replay-20261006.md` records an older Boss test isolation gap. Ruff,
 compileall and diff checks remain green. No real notification was sent for
 verification, and no service was restarted.
 

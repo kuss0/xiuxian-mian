@@ -8,6 +8,24 @@ from model.features import world_boss_miniapp_runtime
 
 
 class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Event tests mock the battle transport, not the optional feed's
+        # independent ticket request. Feed-specific tests inject fake connectors.
+        websocket = patch.object(world_boss_miniapp_runtime, "_websocket_connect", None)
+        websocket.start()
+        self.addCleanup(websocket.stop)
+        http = patch.object(
+            world_boss_miniapp_runtime.requests.sessions.Session, "request",
+            side_effect=AssertionError("Unmocked HTTP is forbidden in Boss runtime tests"),
+        )
+        self.http_guard = http.start()
+        self.addCleanup(http.stop)
+
+    def tearDown(self):
+        # Catch attempted network even when an optional background task swallows
+        # the exception as a recoverable transport failure.
+        self.http_guard.assert_not_called()
+
     async def test_history_refresh_adopts_newer_official_rotating_bot_entry(self):
         official_sender = SimpleNamespace(username="hantianzun23_bot", bot=True)
         newer = SimpleNamespace(
@@ -1064,6 +1082,9 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def inline_to_thread(function, *args, **kwargs):
             return function(*args, **kwargs)
 
+        async def inline_flow(function, *, operation_check=None):
+            return function(SimpleNamespace(check=operation_check, sleep=lambda _seconds: None))
+
         sleep_delays = []
 
         async def record_sleep(delay):
@@ -1073,6 +1094,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
             patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
             patch.object(world_boss_miniapp_runtime, "get_identity_account", side_effect=lambda identity_id: identity_id + 100),
+            patch.object(world_boss_miniapp_runtime, "run_miniapp_blocking_flow", new=inline_flow),
             patch.object(asyncio, "to_thread", new=inline_to_thread),
             patch.object(asyncio, "sleep", new=record_sleep),
         ):
