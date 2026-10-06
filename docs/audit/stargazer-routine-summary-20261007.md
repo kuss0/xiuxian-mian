@@ -9,10 +9,10 @@ notices because `_finish_stargazer_miniapp_result` promoted every changed
 result to `normal`. This conflicts with the current request to batch ordinary
 activity while retaining important independent notices.
 
-Only successful `wait`/`inspect` results with a farm snapshot, no error/unknown
+Only successful `wait` results with a farm snapshot, no error/unknown
 flag and no Retry-After now use the existing `low` summary route. Keep the
 previous notification path for changed nonroutine results (`action_limit`,
-unknown status, partial/error/backoff evidence, missing farm snapshot).
+`inspect`, unknown status, partial/error/backoff evidence, missing farm snapshot).
 The failure branch is untouched. Empty observations were already low priority.
 
 No request, action, inventory delta, timer or game switch changes. No new summary
@@ -40,6 +40,23 @@ apply; historical held batches must not be replayed.
   stargazer lifecycle and summary storage/delivery/health. Not an external review.
 - Ruff, compileall and diff checks passed. No production test messages, manual
   game actions, restarts or live-state corrections were performed.
+
+## Pre-Load Correction
+
+A further pre-maintenance source review found that the planner returns
+`inspect` with `reason=unknown`, not a normal waiting condition. The initial
+test/review selections did not cover this planner-to-notifier meaning. Narrow
+the success summary eligibility to `status=wait` only, preserving the prior
+notice for changed inspect results. No gameplay behavior changes.
+
+A regression using the actual planner failed against `8810b336`, then passed
+after the one-line correction. Focused stargazer/lifecycle/notification/store
+tests: 123 passed / 17 subtests. Updated full regression: **16685 passed /
+1484 subtests**, 444.27 seconds; JUnit
+`/tmp/xiuxian-stargazer-routine-summary-reviewed-20261007.xml`. Subsequent
+protocol/notification/lifecycle/storage review regression: **268 passed /
+17 subtests**. Ruff, compileall and diff checks pass.
+Production worker remains `f7958deb`; neither candidate has been loaded yet.
 
 ## Acceptance Boundary
 

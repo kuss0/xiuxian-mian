@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import passive_inbox, stargazer, storage_bag
+from model.features import passive_inbox, stargazer, stargazer_miniapp, storage_bag
 
 
 class StargazerTests(unittest.IsolatedAsyncioTestCase):
@@ -190,6 +190,22 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
                         patch.object(stargazer, "save_state"):
                     await stargazer._finish_stargazer_miniapp_result(result, 1000, star_choice="天雷星")
                 self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
+
+    async def test_planner_inspect_is_unknown_not_a_routine_success(self):
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        farm = {"total_slots": 1, "max_wait": 0, "plots": []}
+        decision = stargazer_miniapp.choose_stargazer_farm_action(farm)
+        self.assertEqual("unknown", decision["reason"])
+        result = {
+            "ok": True, "status": decision["action"],
+            "data": {"farm_state": farm, "decision": decision, "action_counts": {"collect": 1}},
+        }
+        with state_module.use_identity(identity_id), \
+                patch.object(stargazer, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                patch.object(stargazer, "save_state"):
+            await stargazer._finish_stargazer_miniapp_result(result, 1000)
+        self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
 
     async def test_miniapp_failure_honors_server_retry_after(self):
         now = 1000.0

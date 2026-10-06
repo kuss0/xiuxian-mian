@@ -392,7 +392,7 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice="", updat
         summary = _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_choice, suffix)
         changed = bool(item_deltas) or any(int(count or 0) > 0 for count in action_counts.values())
         routine = (
-            result.get("status") in {"wait", "inspect"} and bool(farm_state)
+            result.get("status") == "wait" and bool(farm_state)
             and not result.get("error") and not result.get("outcome_unknown")
             and miniapp_retry_after_sec(result) <= 0
         )
