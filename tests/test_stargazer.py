@@ -134,7 +134,7 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertEqual(2, audit_mock.await_count)
-            self.assertEqual("normal", audit_mock.await_args_list[-1].kwargs["priority"])
+            self.assertEqual("low", audit_mock.await_args_list[-1].kwargs["priority"])
             self.assertIn("星辰精华x2", audit_mock.await_args_list[-1].args[0])
             flow_mock.assert_awaited_once()
             storage_mock.assert_called_once_with(identity_id, {"星辰精华": 2})
@@ -147,7 +147,7 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state_module.state["stargazer_collect_ready"])
             self.assertNotIn(identity_id, stargazer._MINIAPP_MANUAL_AUTH_UNTIL)
 
-    async def test_miniapp_actions_without_item_delta_are_realtime_audit(self):
+    async def test_miniapp_actions_without_item_delta_are_summary_audit(self):
         now = 1000.0
         identity_id = 3756719391
         state_module.ensure_identity_registered(identity_id)
@@ -167,8 +167,29 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice="天雷星")
 
         self.assertTrue(handled)
-        self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
+        self.assertEqual("low", audit_mock.await_args.kwargs["priority"])
         self.assertIn("安抚 8 座", audit_mock.await_args.args[0])
+
+    async def test_nonroutine_miniapp_outcomes_keep_changed_result_notice(self):
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        for change in (
+            {"status": "action_limit"}, {"status": "unknown"},
+            {"outcome_unknown": True}, {"error": "read not confirmed"},
+            {"events": [{"retry_after_sec": 3600}]},
+            {"data": {"action_counts": {"pull": 1}}},
+        ):
+            with self.subTest(change=change):
+                result = {
+                    "ok": True, "status": "wait",
+                    "data": {"farm_state": {"max_wait": 60}, "action_counts": {"pull": 1}},
+                    **change,
+                }
+                with state_module.use_identity(identity_id), \
+                        patch.object(stargazer, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                        patch.object(stargazer, "save_state"):
+                    await stargazer._finish_stargazer_miniapp_result(result, 1000, star_choice="天雷星")
+                self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
 
     async def test_miniapp_failure_honors_server_retry_after(self):
         now = 1000.0

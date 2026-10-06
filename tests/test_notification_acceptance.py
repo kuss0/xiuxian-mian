@@ -1,14 +1,16 @@
 """Acceptance exercises the real log command and summary path, not Telegram."""
 
 import asyncio
+import copy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 
-from model import control, runtime
+from model import control, runtime, state as state_module
 from model.audit_summary_store import AuditSummaryStore
+from model.features import stargazer
 
 
 class NotificationAcceptanceTests(IsolatedAsyncioTestCase):
@@ -35,6 +37,47 @@ class NotificationAcceptanceTests(IsolatedAsyncioTestCase):
 
     async def add(self):
         await runtime.send_audit_log("元婴状态已确认", scope="global", priority="normal", summary_kind="yuanying")
+
+    async def finish_stargazer(self, *, failed=False):
+        saved = copy.deepcopy(state_module._meta_state)
+        identity_id = 990710001
+        try:
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id), \
+                    patch.object(stargazer, "send_audit_log", runtime.send_audit_log), \
+                    patch.object(stargazer, "apply_storage_bag_item_deltas") as items, \
+                    patch.object(stargazer, "save_state"), \
+                    patch.object(stargazer.random, "uniform", return_value=0):
+                result = {
+                    "ok": not failed, "status": "failed" if failed else "wait",
+                    "error": "HTTP 429" if failed else "",
+                    "data": {"farm_state": {"max_wait": 60}, "action_counts": {"collect": 1},
+                             "item_deltas": {"星辰精华": 2}},
+                }
+                assert await stargazer._finish_stargazer_miniapp_result(result, self.now[0])
+                items.assert_called_once_with(identity_id, {"星辰精华": 2})
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(saved)
+
+    async def test_stargazer_success_queues_then_joins_existing_summary(self):
+        await self.finish_stargazer()
+        self.sender.assert_not_awaited()
+        assert self.store.path.exists()
+        assert len(self.store.bucket) == 1
+        assert "星辰精华x2" in next(iter(self.store.bucket.values()))["plain"]
+        self.now[0] += 1800
+        await runtime.flush_low_priority_audit_summary()
+        self.sender.assert_awaited_once()
+        assert "星辰精华x2" in self.sender.await_args.args[0]
+        assert "<blockquote expandable>" in self.sender.await_args.args[0]
+        assert not self.store.bucket and not self.store.held
+
+    async def test_stargazer_failure_still_notifies_without_waiting_for_summary(self):
+        await self.finish_stargazer(failed=True)
+        self.sender.assert_awaited_once()
+        assert "HTTP 429" in self.sender.await_args.args[0]
+        assert not self.store.bucket
 
     async def manual_summary(self):
         event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=1, raw_text=".发送日志汇总")
