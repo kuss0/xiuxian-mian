@@ -2,6 +2,9 @@
 
 Base: `5cf6ad88`. Lab: `/root/xiuxian-harvest-partial-receipt-20261006`.
 This is a narrow follow-up to the routine harvest notification change.
+Merged and pushed as `40f81876` to `xiuxian-mian/main`. Post-merge isolated
+verification in the production checkout: 370 passed / 5 subtests. Worker
+and monitors remain unchanged; this is disk acceptance, not runtime loading.
 
 ## Natural Evidence
 
@@ -93,3 +96,12 @@ mention link, visible length P50/P95/P99 102/273/273 UTF-16 units. The
 independent watchdog and report senders are outside this scope. Report:
 `/tmp/xiuxian-notification-1647-20261006.json`. This is neither a complete
 business deduplication proof nor acceptance of the not-yet-loaded fix.
+
+At 16:54:36, channel identity xuruode6 naturally completed one YuanYing
+launch. Its persisted record, and WA/Baji's records, say confirmed/launched,
+action_dispatched=true and outcome_unknown=false. The sole enabled online
+duelist Lpprceqei still conservatively waits on no_baseline (5/10, next check
+17:11:04); its staged calibration repair has not been runtime-loaded.
+No switches or timers were manually changed. Foreground session 34354 is
+observing through approximately 17:04; renew it when it expires. WA rift
+preparation remains around 18:45, with the due action at 18:55:26.
