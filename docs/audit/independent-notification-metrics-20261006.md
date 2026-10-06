@@ -85,6 +85,12 @@ handoff or deduplication across cumulative recovery records.
 
 ## Outstanding Acceptance
 
+`6f4a74af` was fast-forwarded into production disk and pushed to
+`xiuxian-mian/main`. Post-merge isolated regression: 214 passed / 11 subtests.
+Service PIDs and restart counters remain unchanged; only runtime quiz
+learning data is dirty. Read-only CLI/report code is usable without restarting
+the service. This is not natural acceptance of watchdog telemetry.
+
 The watchdog is still resident on its old code. Natural schema 2 records must
 be observed after a normal, separately scheduled service reload. The new
 helper must be distributed with the scripts; copying only an entry script is

@@ -1,6 +1,6 @@
 # Evening Live Checkpoint
 
-Observation through October 6, 2026, 19:22 CST. No service restart, account
+Observation through October 6, 2026, 19:26 CST. No service restart, account
 switch, manual game request, reply replay or state correction was performed.
 
 ## WA Rift
@@ -67,3 +67,16 @@ explained / 1 unexplained intervals. Captures total 2474, peak 73/90, the same
 seven earlier error classifications. No new resource operation was triggered
 to explain the residual. The new independent notification metrics candidate
 has completed final full regression, but remains a separate code delivery.
+
+At 19:25:46 the ordinary rift summary also confirmed:
+`b6667e6755c74447ad19484fef49aece`, 105 UTF-16 units, 3 lines, no mention.
+Queue is now empty, held remains 2, next summary timer 19:55:45. The urgent
+and ordinary result are the same business event with different payloads;
+zero identical hashes does not prove business deduplication. No second rift
+command was sent. The existing staged dedup fix still awaits runtime loading.
+
+Independent metrics code `6f4a74af` is now merged and pushed; post-merge
+regression 214 passed / 11 subtests. This is a tools-only change, with no
+service restart or real test notification. The artifact reply was also
+verified directly: official `hantianzun22_bot` message `1286936` replies to
+`1286935`, confirming rapport +4 / experience +12.
