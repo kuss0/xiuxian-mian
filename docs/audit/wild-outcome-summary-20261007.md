@@ -67,3 +67,7 @@ No production loading or natural acceptance is claimed. Worker `f7958deb`
 continues to run. WA's October 7 01:11/01:18/01:25 exploration results are
 natural evidence of the old Tianxing chain, not acceptance of this notification
 candidate. Preserve the loaded-generation distinction after merge/push.
+
+Merged and pushed as `8ba02c80` to `xiuxian-mian/main`. Production-directory
+isolated verification passed 331 tests. Service PIDs and NRestarts are unchanged;
+runtime quiz-bank learning remains the only unrelated production modification.

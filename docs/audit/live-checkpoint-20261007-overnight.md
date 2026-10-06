@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 00:45 CST. This is a checkpoint, not a
+Observations through October 7, 2026, 01:58 CST. This is a checkpoint, not a
 claim that staged runtime fixes have been loaded or naturally accepted.
 
 ## Code And Services
@@ -89,3 +89,48 @@ Next high-risk watch: WA wild training at 01:13:49, preparation around 01:03.
 Its rift is 07:06:07; deep retreat does not block Tianxing. Backup at 04:29:57
 may load staged code and requires explicit post-load validation. Baji voyage
 check is 03:57:45, WA voyage check 05:13:18. Renew follower before 02:49.
+
+## Follow-Up Through 01:58
+
+`72d76453` fishing-skip grouping and `8ba02c80` wild-outcome grouping are now
+merged and pushed to `xiuxian-mian/main`. Production-directory isolated checks
+passed 245 and 331 respectively. Wild final full regression: 16663 passed /
+1478 subtests; see its separate audit for independent review and limitations.
+Supervisor/worker/observer/watchdog PIDs remain unchanged, NRestarts=0; there
+was no restart or state correction. Worker `f7958deb` still has the old renderer.
+Follower 86357 is active. No test or push session remains running.
+
+WA naturally finished all eight deep wild actions between 01:11:21 and
+01:51:05. Server state explicitly shows 8/8, zero remaining, unavailable, and
+the next local run is October 8 00:39:55. Eight distinct prediction sends each
+have exact reply anchors in group -1002083016447:
+`1288684,1288836,1288847,1288911,1288929,1288946,1288954,1288997`.
+Change-fate sends were `1288700,1288839,1288948`, not once per successful run;
+unconsumed protection was reused and both escape outcomes were followed by
+new preparation. After the last action prediction is empty, remaining change
+is Exploration, and timeline `blocked_replan` awaits the next consumption window.
+No rift is due until 07:06:07. Deep retreat did not block Tianxing.
+
+Per-run result logs confirm cultivation **+270000**, no cultivation losses,
+fourth-tier demon cores x2, third-tier cores x2, Yin Ning crystals x2,
+Tian Feng feathers x3, and soul-nurturing wood x1. Two runs were change-fate
+escapes with no cultivation loss. These are result deltas, not an account
+balance or a claim about net Tianji after preparation costs.
+
+Old-format routine summaries confirmed:
+- 01:01:53 `b49d09b220fa44c38c9efb733a56fa82`: 1747 UTF-16 / 23 lines / no mention.
+- 01:32:02 `e3a66a46a08d437cbeecd9c9b810635f`: 1829 / 22 / no mention.
+
+At 01:58 there are 68 queued records, next summary about 02:02:22, and the same
+two historical held batches. Ordinary stargazer successes still use individual
+notices; legacy routing is not fully closed. No notifications were replayed.
+The 01:00 trial batch ended 11/12 successful because dingfengbosushi's public
+entry was busy with wild training; the batch remains incomplete and only its
+failed step is eligible for the existing retry. No manual trial was started.
+
+Health checks at 01:33 and 01:54 report only those held-notification warnings;
+watchdog is healthy. Both small-world identities remain idle, refining off and
+harvest on, with checks still WA 02:27:38 / Baji 03:26:49. Their harvest balances
+remain subject to the unloaded partial-receipt fix described above. Natural
+deep-retreat settlements/restarts and several fate-card rewards continue.
+Observe the next summary, trial retry, and prayer window before extending scope.
