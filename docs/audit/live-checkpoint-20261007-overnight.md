@@ -1,8 +1,56 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 06:01 CST. Runtime code through
-`c3bd8e64` loaded during the scheduled backup recovery at 04:31. Earlier
+Observations through October 7, 2026, 06:58 CST. Runtime code through
+`51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Latest Incident: Daily Duel Reopened
+
+The 06:13 completion did not pass batch acceptance: a late final report raised
+the observed baseline from four to five, reopened progress at 1/10, and pulled
+the October 8 schedule back to October 7. Only Lpprceqei duel was disabled via
+the existing UI at 06:22:06; no sixth attack occurred. Current-day actual
+attacks were five, with five older completions carried in the configured batch.
+
+`51c2e348` fixes durable daily closure and protects WA equipment restoration
+from report projection. Final full tests 16747 / 1486 subtests, focused 547 / 23,
+second review 392 / 5, production-directory isolated checks 224 / 18 all pass.
+See [duel closure evidence](duel-daily-close-20261007.md) for anchors, backup,
+explicit-reset semantics and remaining natural daily-boundary acceptance.
+
+Clean stop 06:52:42; verified one-identity correction 06:53:16; ready 06:53:35.
+Supervisor 2901469 / worker 2901475, NRestarts=0. Lpprceqei switch restored on,
+today closed, next October 8 01:38:41; no extra duel or unequip through 06:54.
+Other identity rows/configuration preserved. Quiz learning remains the sole
+production dirt. The staged trial checkpoint/empty-selection fixes now load,
+but their next natural batch remains unverified. No trial was retriggered.
+
+Observer 2835325 and watchdog 2835315 stayed running. Only two historical held
+notification batches remain; the inactive-service warning was maintenance.
+06:43:18 summary confirmed as 204 UTF-16 units / five lines / no mention,
+receipt `11e1ccd4821a4c7abbfa96e9d186be5c`. Captured MiniApp peak remains 44/90.
+mudamuda0 still returns progress 4 -> 0 (06:53:41), keeps the prior four and
+does not claim. This is unresolved, not suppressed or locally corrected.
+
+Follower 78668 is active until about 07:50. Next watch is WA preparation near
+06:56 and rift at 07:06:07; no further restart through that chain. Harvests
+remain Baji 08:22:25 and WA 08:39:46, with refining disabled for both.
+
+### WA Rift Acceptance At 06:56
+
+WA sent prediction 1290276 at 06:56:11; official hantianzun31_bot replied as
+1290278 at 06:56:15. The existing ready-prerequisite path pulled the local
+07:06 retry deadline forward; actual previous rift-to-rift start gap was more
+than 12 hours. Command 1290282 at 06:56:28 received ack and terminal edits
+1290284 from hantianzun34_bot. The final explicitly confirms prediction hit,
+Tianji +1, contribution +30, and unconsumed change-fate valid another 18h35m.
+Rewards: gold-law fragment x1, water-law fragment x1, Taixu immortal dew x1.
+The reducer clears the pending anchor/error, consumes prediction, preserves
+change-fate and stores the terminal receipt once. No manual release occurred.
+
+The result notification confirmed as `ae4ac3bf7ed342969f4fab9a749e6ead`,
+96 UTF-16 units / three lines / one mention. This high-risk route result remains
+separate from routine wild summaries. No claim is made about all future rifts.
 
 ## Code And Services
 

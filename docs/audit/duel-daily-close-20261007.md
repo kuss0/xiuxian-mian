@@ -67,3 +67,28 @@ The correction is not yet applied in this revision. Do not confuse merged code
 with loaded runtime, or the completed offline replay with tomorrow's natural
 batch acceptance. WA's 06:56 preparation / 07:06 rift window takes precedence
 over deployment timing. Its duel remains independently off.
+
+## Deployment And Initial Observation
+
+Commit `51c2e348` was fast-forwarded into production main and pushed only to
+`xiuxian-mian/main`. Production-directory isolated tests passed 224 / 18 subtests.
+Service stopped cleanly at 06:52:42 with no pending reply tasks and no forced
+worker termination. The checked correction applied at 06:53:16, backed up to
+`/root/xiuxian-live-backups/duel-close-20261007-065316/state-before.db` with its
+private `receipt.json`. Comparison verified all other identity rows unchanged;
+the schema adds the empty marker for other identities.
+
+The service started at 06:53:17 and completed 24-identity bootstrap at 06:53:35.
+Supervisor 2901469 / worker 2901475 now load `51c2e348`, also loading previously
+staged trial commits `514c3a97` and `7f418377`. At 06:54, Lpprceqei's switch is
+on, marker is October 7, progress is zero, observed baseline is five, and next
+duel remains October 8 01:38:41. No additional duel or equipment command exists
+after the five original attacks. This is startup/containment acceptance, not
+tomorrow's natural daily-boundary acceptance.
+
+Watchdog is healthy; observer again reports only the same two historical held
+notification batches. Its one inactive-service warning occurred inside the
+documented maintenance window. Main listener is active, standalone listener
+remains disabled. WA/Baji duel and incense refining remain off; harvest stays on.
+No global pause, Attempt control change or notification replay was performed.
+Foreground observation 78668 continues through WA's preparation/rift window.
