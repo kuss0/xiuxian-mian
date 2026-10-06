@@ -71,6 +71,13 @@ warning. At 09:52, twelve identities have completed natural deep renewals since
 09:32 and there are zero unknown deep/YuanYing records. The remaining due
 windows continue to be watched, not forced.
 
+The full window finished at 10:16:49: all 23 due identities renewed naturally.
+Journal confirmation counts are exactly one settle and one start per identity;
+all 23 latest deep snapshots are identity-verified and active. At 10:18, game
+pending and deep/YuanYing unknown records are zero, and the daemon again reports
+19 `server_running` frozen-channel retreats plus four `local_wait` YuanYing
+modules. WA's separate long retreat remains due October 9 at 17:18:35.
+
 At 09:49:50, a new routine digest was confirmed (receipt
 `2d70fc7302ce4a128ad872326d820658`, 722ms, 1021 UTF-16 units, 23 lines, no
 mentions). This does not resolve the two older held deliveries; both remain

@@ -1,6 +1,8 @@
 # Trial Resave Material Projection
 
 Base: `5cc63561`. Lab: `/root/xiuxian-trial-recovery-materials-20261006`.
+Merged to disk and pushed as `c33170ac`; post-merge regression: 177 passed.
+Main worker remains on `f7958deb`. No main restart or live fault injection.
 
 ## Defect And Scope
 
@@ -49,6 +51,5 @@ handoff. The existing failed-step batch path can still reset its aggregate.
 Do not suppress child notifications or carry old aggregate totals into retries
 on the strength of this patch. Those debts remain open.
 
-Accepted for disk merge and push; do not interrupt the main worker
-solely for this projection change. Natural runtime acceptance remains pending
+Do not interrupt the main worker solely for this projection change. Natural runtime acceptance remains pending
 until a normal maintenance reload and a relevant natural recovery sample.
