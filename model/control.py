@@ -5436,7 +5436,7 @@ async def _send_identity_refresh_read(owner, kind, now):
     return False
 
 
-async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
+async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None, include_auxiliary=True):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, "身份不存在"
@@ -5459,7 +5459,8 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
             if not _refresh.owns(owner):
                 return False, invalidated_message
             return False, identity["identity_info_last_error"] or "角色信息获取未确认，请稍后查看"
-        for extra_command in (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS):
+        extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS) if include_auxiliary else ()
+        for extra_command in extra_commands:
             if not _refresh.owns(owner):
                 return False, invalidated_message
             extra_requested_at = time.time()
@@ -5497,6 +5498,8 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
     )
     if extra_failed:
         return True, f"已开始获取角色信息；附加读取部分发送失败：{'、'.join(extra_failed)}"
+    if not include_auxiliary:
+        return True, "已开始获取角色信息，请等待"
     return True, "已开始获取角色信息、元婴和第二元神信息，请等待"
 
 

@@ -1678,6 +1678,42 @@ def _profile_gate_reason():
     return _duel_resource_gate_reason(get_current_identity_id(), role="发起方")
 
 
+async def _request_missing_cultivation_baseline(now):
+    from .. import identity_refresh
+
+    identity_id = get_current_identity_id()
+    if (identity_refresh.number(now) <= 0
+            or not is_within_duel_exec_window(now)
+            or int(state.get("duel_total_count", 0) or 0) <= int(state.get("duel_completed_count", 0) or 0)
+            or _duel_daily_mind_exhausted(now)
+            or _realm_gate_reason((get_send_as_profile(identity_id) or {}).get("realm"))
+            or cultivation_balance(identity_id)["status"] != "no_baseline"):
+        return False
+    identity = get_identity_state(identity_id)
+    previous = identity_refresh.request_for(identity_id)
+    raw_request = identity.get("identity_info_refresh", {})
+    if not isinstance(raw_request, dict) or (previous is None and raw_request):
+        return False
+    last_requested = identity.get("identity_info_last_requested_at", 0)
+    if (type(last_requested) not in (int, float) or last_requested < 0
+            or identity_refresh.number(last_requested) != last_requested):
+        return False
+    if previous is not None:
+        if previous["status"] == "active" or any(
+            item["status"] in {"sending", "sent", "unknown"} for item in previous["commands"]
+        ):
+            return False
+        last_requested = max(last_requested, previous["requested_at"])
+    if last_requested > 0 and now - last_requested < 24 * 3600:
+        return False
+    from ..control import refresh_identity_info
+
+    ok, _message = await refresh_identity_info(
+        identity_id, source="duel_baseline", include_auxiliary=False,
+    )
+    return ok
+
+
 def _normalize_identity_token(value):
     return str(value or "").strip().lstrip("@").casefold()
 
@@ -3097,10 +3133,13 @@ async def run_duel_scheduler(now):
 
     gate_reason = "" if has_pending else _profile_gate_reason()
     if gate_reason:
-        if not _duel_next_time_blocks(now):
+        due = not _duel_next_time_blocks(now)
+        if due:
             _set_duel_error(gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         _release_all_managed_pair_batches(now, queue_restore=True)
         save_state()
+        if due:
+            await _request_missing_cultivation_baseline(now)
         return
 
     total_count = int(state.get("duel_total_count", 0) or 0)
