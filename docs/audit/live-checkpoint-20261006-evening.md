@@ -1,6 +1,7 @@
 # Evening Live Checkpoint
 
-Observation through October 6, 2026, 19:26 CST. No service restart, account
+Initial observation through October 6, 2026, 19:26 CST; appendices update it
+through 22:04, including the documented observation gap. No service restart, account
 switch, manual game request, reply replay or state correction was performed.
 
 ## WA Rift
@@ -139,3 +140,38 @@ briefly retained the expired 21:41:33 schedule; this alone does not prove the
 scheduler stopped, nor establish when the worker reached that guard. No new
 duel or corrective game query was sent. At 21:48 watchdog is healthy; observer
 still only reports the two retained notification batches.
+
+## Baji Voyage At 21:54
+
+The scheduled check ran at 21:54:23. The capture tail in
+`data/state/miniapp_capture/cave_treasure-2026-10-06.jsonl` records four successful
+requests: initial identity load, one `.远航归来` at 21:54:24 (124ms), another
+identity load, and one `.侍妾远航 月殿寻痕` at 21:54:25 (125ms). All four
+returned 200. Journal success lines were emitted only after the existing
+action parser applied the result; no outgoing group command was found.
+
+The refreshed state has settled-at 21:54:23, phase idle, voyage sailing,
+route 月殿寻痕, return-at October 7 03:54:29, next general check 03:57:45,
+affinity 373, and no current error. Thus the post-settlement `sailing` value
+belongs to the next voyage, not an unclosed return.
+
+The capture stores response digests/shapes rather than the reward message.
+The older group-command `concubine_voyage_actions` receipt is historical and
+must not be used as today's rewards. No exact new cultivation/material gain
+is claimed, and no extra query was sent solely to reconstruct one.
+
+At 22:04 there are two ordinary summary rows (the return and next departure),
+next timer 22:24:24, plus the same two historical held batches. Daily capture
+count is now 2478, peak remains 73/90, error classifications unchanged. Health
+observer only reports held batches; services remain unchanged.
+
+The test/evidence follow-up `1db0e44e` is merged and pushed; production-checkout
+regression passed 194 tests / 2 subtests. Only the runtime quiz bank remains
+dirty. No runtime loading was performed.
+
+Foreground session 87952 started at 22:04 and runs until about 23:04; renew it
+before then because WA's voyage check is 23:04:49 (return expected 22:59:37).
+Earlier follower 91374 expires about 22:09 naturally. Upcoming checkpoints:
+Lpprceqei's held duel check 22:11:34, summary 22:24:24, WA voyage 23:04:49,
+and Tianxing preparation before the 01:13:49 wild action. Backup still runs
+at 04:29:57 and may load staged code; that is not current acceptance.
