@@ -102,6 +102,95 @@ class _StateIsolationMixin:
 
 
 class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
+    def test_fresh_panel_countdown_is_not_rebased_by_stat_updates(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
+            small_world._apply_small_world_panel_snapshot(now, panel)
+            expected = now + 539 + small_world.CD_BUFFER_SEC + 60
+            self.assertEqual(expected, small_world._cached_prayer_check_at())
+            small_world._apply_god_result("信仰提升至 100，稳定提升至 84！", now + 120)
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["next_small_world_time"] = now + 3 * 3600
+            with patch.object(small_world, "mark_dirty"):
+                self.assertTrue(small_world._reconcile_cached_prayer_deadline(now + 120))
+            self.assertEqual(expected, state_module.state["next_small_world_time"])
+
+    def test_newer_backoffs_retire_prayer_hint_without_erasing_panel(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001), patch.object(small_world.random, "uniform", return_value=600):
+            for action in ("retry", "resource", "cycle"):
+                with self.subTest(action=action):
+                    state_module.state["small_world_phase"] = "idle"
+                    state_module.state["small_world_manifest_enabled"] = True
+                    state_module.state["small_world_panel_snapshot"] = {
+                        "prayer_check_at": now + 300,
+                        "has_wait": True, "wait_sec": 240, "updated_at": now, "stock": 10000,
+                    }
+                    if action == "retry":
+                        small_world._schedule_short_retry(now)
+                    elif action == "resource":
+                        small_world._schedule_resource_pause(now, "显灵", "资源不足")
+                    else:
+                        small_world._schedule_next_cycle(now)
+                    expected_next = state_module.state["next_small_world_time"]
+                    self.assertEqual(0, small_world._cached_prayer_check_at())
+                    self.assertFalse(small_world._reconcile_cached_prayer_deadline(now + 1))
+                    self.assertEqual(expected_next, state_module.state["next_small_world_time"])
+                    self.assertEqual(10000, state_module.state["small_world_panel_snapshot"]["stock"])
+
+    def test_malformed_and_legacy_prayer_hints_are_not_reconstructed_from_sermons(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            for value in (0, -1, "bad", float("nan"), float("inf"), {}, []):
+                with self.subTest(value=value):
+                    state_module.state["small_world_panel_snapshot"] = {"prayer_check_at": value}
+                    self.assertEqual(0, small_world._cached_prayer_check_at())
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_wait": True, "wait_sec": 3600, "updated_at": now,
+            }
+            small_world._apply_god_result("信仰提升至 100，稳定提升至 84！", now + 100)
+            self.assertEqual(0, small_world._cached_prayer_check_at())
+            self.assertEqual(0, state_module.state["small_world_panel_snapshot"]["prayer_check_at"])
+
+    def test_prayer_followup_is_identity_local_and_respects_manifest_switch(self):
+        now = 1_700_000_000.0
+        for identity_id in (1001, 1002):
+            state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["small_world_panel_snapshot"] = {"prayer_check_at": now + 300}
+            self.assertEqual(now + 300, small_world._god_followup_with_prayer_check(now, now + 10800))
+        with state_module.use_identity(1002):
+            self.assertEqual(now + 10800, small_world._god_followup_with_prayer_check(now, now + 10800))
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = False
+            self.assertEqual(now + 10800, small_world._god_followup_with_prayer_check(now, now + 10800))
+            state_module.state["next_small_world_time"] = now + 10800
+            self.assertFalse(small_world._reconcile_cached_prayer_deadline(now))
+
+    def test_repeated_cooling_disaster_scheduling_keeps_due_prayer_runnable(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001), patch.object(small_world.random, "uniform", return_value=60):
+            for key, value in {
+                "small_world_phase": "idle",
+                "small_world_manifest_enabled": True,
+                "small_world_pending_god_action": "preach",
+                "small_world_pending_god_priority": small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                "small_world_god_cooldown_until": now + 10800,
+                "small_world_panel_snapshot": {"prayer_check_at": now - 1},
+            }.items():
+                state_module.state[key] = value
+            for elapsed in (0, 30, 60, 90):
+                small_world._schedule_pending_god_action(now + elapsed)
+                self.assertLessEqual(state_module.state["next_small_world_time"], now + elapsed)
+
     def test_cached_refine_stock_shortens_stale_prayer_cycle_timer(self):
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(1002)
@@ -186,6 +275,167 @@ class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
 
 
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_manifest_countdown_survives_two_disaster_sermons(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with (
+            state_module.use_identity(1001),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", return_value=60),
+            patch.object(small_world, "send_game_command", new=AsyncMock()),
+        ):
+            for key, value in {
+                "small_world_enabled": True,
+                "small_world_manifest_enabled": True,
+                "small_world_preach_enabled": True,
+                "small_world_harvest_enabled": False,
+                "small_world_refine_enabled": False,
+                "small_world_barrier_enabled": False,
+                "small_world_phase": "manifest_pending",
+                "small_world_panel_snapshot": {"has_prayer": True, "faith": 88},
+            }.items():
+                state_module.state[key] = value
+            handled = await small_world.handle_small_world_manifest_reply(
+                "显灵成功！\n(信仰 +5, 稳定 +4, 人口 +0)\n"
+                "下一次凡人祈愿感应需等待 360 分钟。",
+                now, SimpleNamespace(id=123, raw_text=".显灵"),
+                matched_family="small_world_manifest",
+            )
+            self.assertTrue(handled)
+            original_check = state_module.state["next_small_world_time"]
+            self.assertEqual(now + 6 * 3600 + small_world.CD_BUFFER_SEC + 60, original_check)
+            for elapsed in (5 * 3600 + 13 * 60, 8 * 3600 + 15 * 60):
+                reply_at = now + elapsed
+                state_module.state["small_world_phase"] = "preach_pending"
+                state_module.state["small_world_preach_reply_to_msg_id"] = 456
+                state_module.state["next_small_world_time"] = reply_at + 45
+                handled = await small_world.handle_small_world_preach_reply(
+                    "【神音浩荡】\n你消耗 12000 点修为！\n"
+                    "凡人狂热膜拜，信仰提升至 100，稳定提升至 84！",
+                    reply_at, SimpleNamespace(id=456), matched_family="small_world_preach",
+                )
+                self.assertTrue(handled)
+                self.assertEqual(
+                    max(original_check, reply_at + 60),
+                    state_module.state["next_small_world_time"],
+                )
+                self.assertEqual(
+                    reply_at + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC,
+                    state_module.state["small_world_god_cooldown_until"],
+                )
+
+    async def test_cooling_disaster_does_not_starve_due_prayer_panel(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with (
+            state_module.use_identity(1001),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world, "_send_query", new=AsyncMock()) as query,
+            patch.object(small_world, "send_game_command", new=AsyncMock()) as send,
+        ):
+            for key, value in {
+                "small_world_enabled": True,
+                "small_world_manifest_enabled": True,
+                "small_world_preach_enabled": True,
+                "small_world_barrier_enabled": False,
+                "small_world_refine_enabled": False,
+                "small_world_harvest_enabled": False,
+                "small_world_phase": "idle",
+                "small_world_god_cooldown_until": now + 2 * 3600,
+                "small_world_pending_god_action": "preach",
+                "small_world_pending_god_priority": small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                "small_world_panel_snapshot": {"prayer_check_at": now - 1},
+                "next_small_world_time": now,
+            }.items():
+                state_module.state[key] = value
+            await small_world._run_small_world_scheduler(now)
+            query.assert_awaited_once_with(now, "周期自查")
+            send.assert_not_awaited()
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+
+    async def test_prayer_deadline_does_not_bypass_pending_reply_or_newer_retry(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        for phase in ("preach_pending", "query_pending", "manifest_pending", "manifest_recovery_wait", "idle"):
+            with (
+                self.subTest(phase=phase), state_module.use_identity(1001),
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send,
+                patch.object(small_world, "_send_query", new=AsyncMock()) as query,
+            ):
+                for key, value in {
+                    "small_world_enabled": True,
+                    "small_world_manifest_enabled": True,
+                    "small_world_preach_enabled": True,
+                    "small_world_barrier_enabled": False,
+                    "small_world_refine_enabled": False,
+                    "small_world_harvest_enabled": False,
+                    "small_world_phase": phase,
+                    "small_world_preach_due_at": now + 120 if phase == "preach_pending" else 0,
+                    "small_world_panel_snapshot": {"prayer_check_at": now - 1},
+                    "next_small_world_time": now + 120,
+                }.items():
+                    state_module.state[key] = value
+                await small_world._run_small_world_scheduler(now)
+                send.assert_not_awaited()
+                query.assert_not_awaited()
+                self.assertEqual(now + 120, state_module.state["next_small_world_time"])
+
+    async def test_unknown_panel_send_retires_prayer_hint_and_does_not_repeat(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with (
+            state_module.use_identity(1001),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.time, "time", return_value=now),
+            patch.object(small_world, "get_action_guard_blocked_until", return_value=(0, "")),
+            patch.object(small_world, "_small_world_definitely_unsent_block", return_value=(False, "send_timeout", "")),
+            patch.object(small_world, "send_game_command", new=AsyncMock(return_value=None)) as send,
+        ):
+            for key, value in {
+                "small_world_enabled": True,
+                "small_world_manifest_enabled": True,
+                "small_world_barrier_enabled": False,
+                "small_world_refine_enabled": False,
+                "small_world_harvest_enabled": False,
+                "small_world_phase": "idle",
+                "small_world_panel_snapshot": {"prayer_check_at": now - 1},
+            }.items():
+                state_module.state[key] = value
+            await small_world._send_query(now, "周期自查")
+            self.assertEqual(0, small_world._cached_prayer_check_at())
+            self.assertEqual("query_pending", state_module.state["small_world_phase"])
+            await small_world._run_small_world_scheduler(now + 1)
+            send.assert_awaited_once()
+
+    async def test_god_cooldown_keeps_earlier_check_with_or_without_queued_action(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        for queued in (False, True):
+            with (
+                self.subTest(queued=queued), state_module.use_identity(1001),
+                patch.object(small_world, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=60),
+            ):
+                for key, value in {
+                    "small_world_enabled": True,
+                    "small_world_manifest_enabled": True,
+                    "small_world_preach_enabled": True,
+                    "small_world_phase": "preach_pending",
+                    "small_world_preach_reply_to_msg_id": 456,
+                    "small_world_pending_god_action": "preach" if queued else "",
+                    "small_world_pending_god_priority": small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                    "small_world_panel_snapshot": {"prayer_check_at": now + 300},
+                }.items():
+                    state_module.state[key] = value
+                handled = await small_world.handle_small_world_preach_reply(
+                    "凡间方才承受神谕，需再等待 2小时14分钟9秒。",
+                    now, SimpleNamespace(id=456), matched_family="small_world_preach",
+                )
+                self.assertTrue(handled)
+                self.assertEqual(now + 300, state_module.state["next_small_world_time"])
+                self.assertGreater(state_module.state["small_world_god_cooldown_until"], now + 300)
+
     async def test_query_timeout_retry_is_not_rewound_by_expired_cached_panel(self):
         now = 1_700_000_000.0
         identity_id = 301299112

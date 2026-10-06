@@ -11,6 +11,7 @@ import pytest
 from model import state as state_module
 from model.features import cave_treasure_miniapp as dwelling
 from model.features import cave_treasure_runtime as cave
+from model.features import small_world
 from model.features.miniapp_common import MiniAppFlowCancelled
 from model.webapp_core import MiniAppRequestAborted, MiniAppRequestPolicy, miniapp_retry_after_sec
 
@@ -322,7 +323,9 @@ def test_partial_manifest_success_does_not_use_stale_prayer_for_immediate_retry(
     response = asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
     assert response["ok"]
     assert h.identity["next_small_world_time"] >= NOW + 21600
-    assert h.identity["small_world_panel_snapshot"] == {**before, "updated_at": 0}
+    assert h.identity["small_world_panel_snapshot"] == {
+        **before, "updated_at": 0, "prayer_check_at": NOW + 21600 + cave.CD_BUFFER_SEC,
+    }
 
 
 def test_runtime_preserves_retry_after_and_does_not_mark_rejected_harvest_completed(world_env):
@@ -554,12 +557,12 @@ def test_toggle_off_during_http_keeps_receipt_but_not_old_scheduling(world_env, 
 def test_post_mutation_without_panel_invalidates_only_unchanged_cached_decisions(world_env, kind):
     h = world_env
     h.identity["small_world_manifest_enabled"] = True
-    h.identity["small_world_panel_snapshot"].update(has_prayer=True, has_wait=False)
+    h.identity["small_world_panel_snapshot"].update(has_prayer=True, has_wait=False, prayer_check_at=NOW + 300)
     before = copy.deepcopy(h.identity["small_world_panel_snapshot"])
     h.flow.return_value = flow_result("manifest", ok=kind == "partial")
     h.flow.return_value["data"]["snapshot_current"] = False
     asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
-    assert h.identity["small_world_panel_snapshot"] == {**before, "updated_at": 0}
+    assert h.identity["small_world_panel_snapshot"] == {**before, "updated_at": 0, "prayer_check_at": 0}
     assert h.identity["small_world_last_panel_at"] == 0
     assert h.identity["small_world_faith_value"] == 70
     assert h.identity["small_world_incense_stock"] == 900
@@ -573,6 +576,43 @@ def test_authoritative_countdown_takes_precedence_over_old_prayer_presence(world
     result = asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
     assert result["ok"]
     assert h.identity["next_small_world_time"] == NOW + 21600 + cave.CD_BUFFER_SEC
+
+
+def test_harvest_panel_preserves_independent_prayer_deadline_across_later_sermon(world_env, monkeypatch):
+    h = world_env
+    h.identity["small_world_manifest_enabled"] = True
+    h.identity["next_small_world_time"] = NOW + 3600
+    world = h.flow.return_value["data"]["overview"]["small_world"]
+    world["prayer_remaining_seconds"] = 3600
+    result = asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW, harvest_only=True))
+    assert result["ok"]
+    monkeypatch.setattr(small_world.random, "uniform", lambda _a, _b: 60)
+    with state_module.use_identity(IDENTITY_ID):
+        expected = NOW + 3600 + cave.CD_BUFFER_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC
+        assert small_world._cached_prayer_check_at() == expected
+        assert h.identity["next_small_world_time"] == NOW + 3600
+        small_world._apply_god_result("信仰提升至 100，稳定提升至 84！", NOW + 600)
+        small_world._schedule_god_followup(NOW + 600)
+        assert h.identity["next_small_world_time"] == expected
+        assert h.identity["small_world_next_public_harvest_at"] == NOW + cave.CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
+
+
+@pytest.mark.parametrize("status", ["resource", "failed", "partial"])
+def test_miniapp_backoff_retires_prayer_hint(world_env, status):
+    h = world_env
+    h.identity.update(small_world_manifest_enabled=True, small_world_harvest_enabled=False)
+    h.flow.return_value = flow_result("manifest", ok=False)
+    if status == "resource":
+        h.flow.return_value["data"]["plan"]["blocked"] = "resource"
+    elif status == "partial":
+        h.flow.return_value["data"]["snapshot_current"] = False
+    h.identity["small_world_panel_snapshot"]["prayer_check_at"] = NOW + 300
+    asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
+    expected_next = h.identity["next_small_world_time"]
+    with state_module.use_identity(IDENTITY_ID):
+        assert small_world._cached_prayer_check_at() == 0
+        assert not small_world._reconcile_cached_prayer_deadline(NOW + 1)
+        assert h.identity["next_small_world_time"] == expected_next
 
 
 def test_explicit_manual_run_still_works_with_automatic_master_switch_off(world_env):

@@ -32,8 +32,11 @@ from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppReq
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tianxing, tree_runtime, yinluo, yuanying
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
+    _apply_small_world_panel_snapshot,
     _calc_refine_amount,
     _parse_wait_from_text,
+    _retire_prayer_check,
+    _update_snapshot_field,
 )
 from .cave_treasure_miniapp import (
     _parse_cave_journey_overview,
@@ -2673,12 +2676,8 @@ def _cave_small_world_high_stock_silence(small_world):
 
 def _apply_cave_small_world_overview(small_world, now):
     snapshot = _cave_small_world_panel_snapshot(small_world, now)
-    state["small_world_last_panel_at"] = float(now)
-    state["small_world_faith_value"] = int(snapshot.get("faith", 0) or 0)
-    state["small_world_pending_incense"] = float(snapshot.get("pending_incense", 0) or 0)
-    state["small_world_incense_stock"] = int(snapshot.get("stock", 0) or 0)
-    state["small_world_panel_snapshot"] = snapshot
-    return snapshot
+    _apply_small_world_panel_snapshot(now, snapshot)
+    return state["small_world_panel_snapshot"]
 
 
 def _cave_small_world_harvest_due(now):
@@ -3418,6 +3417,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 if cached:
                     cached["updated_at"] = 0
                     state["small_world_panel_snapshot"] = cached
+                    _retire_prayer_check()
                 state["small_world_last_panel_at"] = 0
             if harvest_receipt and panel_owned:
                 # Only this balance is confirmed. Do not freshen the full panel
@@ -3465,6 +3465,8 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 result = {**result, "ok": False, "error": result.get("error") or "small_world_action_unconfirmed"}
             retry_after_sec = miniapp_retry_after_sec(result)
             wait_sec, _wait_text = _parse_wait_from_text(action_message)
+            if panel_owned and (resource_blocked or not result.get("ok") or not snapshot_current):
+                _retire_prayer_check()
             harvest_was_due = bool(plan.get("harvest_due")) or _cave_small_world_harvest_due(now)
             harvest_checked = bool(plan.get("harvest_checked") and snapshot_current)
             if not (action == "collect" and confirmed):
@@ -3503,6 +3505,8 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                         _cave_small_world_prayer_due_at(small_world, now) if snapshot_current else 0,
                         now + wait_sec + CD_BUFFER_SEC,
                     )
+                    if panel_owned:
+                        _update_snapshot_field("prayer_check_at", state["next_small_world_time"])
                 state["small_world_last_error"] = ""
                 message = f"洞府小世界已{action_label}：{action_message or plan.get('reason') or '处理完成'}"
             else:

@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import re
 import time
@@ -348,6 +349,7 @@ def _defer_for_action_guard_block(action_key, command, now, label):
     if blocked_until <= float(now or time.time()):
         return False
     _clear_chain_pending()
+    _retire_prayer_check()
     state["next_small_world_time"] = float(blocked_until)
     state["small_world_last_error"] = f"{label}延后至安全窗后复查: {guard_reason or '安全锁短窗'}"
     save_state()
@@ -387,6 +389,7 @@ def _clear_all_runtime_pending():
 
 
 def _schedule_after(now, min_sec, max_sec):
+    _retire_prayer_check()
     state["next_small_world_time"] = float(now + random.uniform(float(min_sec), float(max_sec)))
     return state["next_small_world_time"]
 
@@ -439,12 +442,39 @@ def _schedule_panel_wait(now, wait_sec):
     return state["next_small_world_time"]
 
 
+def _cached_prayer_check_at():
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        return 0.0
+    try:
+        due_at = float(snapshot.get("prayer_check_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return due_at if math.isfinite(due_at) and due_at > 0 else 0.0
+
+
+def _retire_prayer_check():
+    snapshot = state.get("small_world_panel_snapshot")
+    if isinstance(snapshot, dict) and ("prayer_check_at" in snapshot or snapshot.get("has_wait")):
+        # Zero prevents legacy countdown recovery from undoing a newer backoff.
+        snapshot["prayer_check_at"] = 0
+        state["small_world_panel_snapshot"] = snapshot
+
+
+def _god_followup_with_prayer_check(now, due_at, *, after_reply=True):
+    prayer_check = _cached_prayer_check_at()
+    if _phase() == "idle" and state.get("small_world_manifest_enabled") and prayer_check > 0:
+        earliest = float(now) + (SMALL_WORLD_JITTER_MIN_SEC if after_reply else 0)
+        return min(due_at, max(prayer_check, earliest))
+    return due_at
+
+
 def _reconcile_cached_prayer_deadline(now):
     """Shorten a stale timer from an authoritative cached prayer countdown."""
     if _phase() != "idle":
         return False
     snapshot = state.get("small_world_panel_snapshot")
-    if not isinstance(snapshot, dict) or not snapshot.get("has_wait"):
+    if not isinstance(snapshot, dict):
         return False
     try:
         updated_at = float(snapshot.get("updated_at", 0) or 0)
@@ -452,9 +482,19 @@ def _reconcile_cached_prayer_deadline(now):
         current_next = float(state.get("next_small_world_time", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         return False
-    if updated_at <= 0 or wait_sec <= 0 or current_next <= 0:
+    if current_next <= 0:
         return False
-    prayer_due_at = float(updated_at + wait_sec + CD_BUFFER_SEC)
+    if "prayer_check_at" in snapshot:
+        if not state.get("small_world_manifest_enabled"):
+            return False
+        check_at = _cached_prayer_check_at()
+        if check_at <= 0:
+            return False
+        prayer_due_at = check_at - SMALL_WORLD_JITTER_MIN_SEC
+    else:
+        if not snapshot.get("has_wait") or updated_at <= 0 or wait_sec <= 0:
+            return False
+        prayer_due_at = float(updated_at + wait_sec + CD_BUFFER_SEC)
     # An elapsed panel countdown cannot override a newer retry/backoff timer.
     if prayer_due_at <= float(now):
         return False
@@ -492,9 +532,8 @@ def _schedule_god_followup(now):
     state["small_world_god_cooldown_until"] = cooldown_until
     if state.get("small_world_pending_god_action"):
         return _schedule_pending_god_action(now)
-    state["next_small_world_time"] = float(
-        now + SMALL_WORLD_GOD_FOLLOWUP_SEC + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
-    )
+    due_at = now + SMALL_WORLD_GOD_FOLLOWUP_SEC + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+    state["next_small_world_time"] = _god_followup_with_prayer_check(now, due_at)
     state["small_world_refresh_count"] = 0
     return state["next_small_world_time"]
 
@@ -706,6 +745,7 @@ def _schedule_pending_god_action(now):
             state["small_world_last_error"] = "日常神迹维护已让位下一波灾害"
     if due_at > float(now or time.time()):
         due_at += random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+        due_at = _god_followup_with_prayer_check(now, due_at, after_reply=False)
     state["next_small_world_time"] = float(due_at)
     return state["next_small_world_time"]
 
@@ -748,6 +788,7 @@ async def _try_send_pending_god_action(now):
 def _schedule_resource_pause(now, label, raw_text, *, pause_sec=SMALL_WORLD_LONG_PAUSE_SEC):
     due_at = float(now + float(pause_sec) + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC))
     _clear_chain_pending()
+    _retire_prayer_check()
     state["next_small_world_time"] = due_at
     state["small_world_last_error"] = f"{label}资源不足: {_truncate(raw_text)}"
     return due_at
@@ -869,6 +910,11 @@ def _apply_small_world_panel_snapshot(now, panel):
     snapshot = dict(panel)
     snapshot.pop("realm_blocked", None)
     snapshot["updated_at"] = float(now)
+    wait_sec = int(panel.get("wait_sec", 0) or 0)
+    snapshot["prayer_check_at"] = (
+        float(now + wait_sec + CD_BUFFER_SEC + SMALL_WORLD_JITTER_MIN_SEC)
+        if panel.get("has_wait") and wait_sec > 0 else 0
+    )
     state["small_world_panel_snapshot"] = snapshot
 
 
@@ -881,6 +927,10 @@ def _update_snapshot_field(key, value):
 
 
 def _apply_god_result(raw_text, now):
+    snapshot = state.get("small_world_panel_snapshot")
+    if isinstance(snapshot, dict) and "prayer_check_at" not in snapshot:
+        # Legacy updated_at may already reflect a sermon, not a prayer panel.
+        _retire_prayer_check()
     changed = False
     faith_matched = RE_SMALL_WORLD_FAITH_VALUE.search(raw_text)
     if faith_matched:
@@ -978,6 +1028,7 @@ def _cache_manifest_snapshot_prayer(now, raw_text):
     snapshot["has_wait"] = False
     snapshot["wait_sec"] = 0
     snapshot["wait_text"] = ""
+    snapshot["prayer_check_at"] = 0
     snapshot["updated_at"] = float(now or time.time())
     state["small_world_panel_snapshot"] = snapshot
     return True
@@ -1430,6 +1481,7 @@ async def _send_small_world_god_action(now, command, reason):
 
         guard_until = _recent_god_send_guard_until(command, now)
         if guard_until > 0:
+            _retire_prayer_check()
             state["next_small_world_time"] = guard_until
             state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
             _note_small_world_god_remote_block(command, now, guard_until, "神迹短窗重复发送保护", "recent_send")
@@ -1451,6 +1503,7 @@ async def _send_small_world_god_action(now, command, reason):
         if not sent_msg:
             if _phase() != "preach_pending" or int(state.get("small_world_preach_reply_to_msg_id", 0) or 0) > 0:
                 return True
+            _retire_prayer_check()
             definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(command)
             _clear_preach_pending()
             state["small_world_last_god_action"] = prev_last_god_action
@@ -1500,6 +1553,7 @@ async def _send_small_world_relief(now, reason):
 
 
 async def _send_query(now, reason, *, refresh_attempt=None):
+    _retire_prayer_check()
     started_at = float(now or time.time())
     blocked_until, guard_reason = get_action_guard_blocked_until(
         CMD_SMALL_WORLD_QUERY,
@@ -2161,6 +2215,7 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
             _schedule_pending_god_action(now)
         else:
             _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
+            state["next_small_world_time"] = _god_followup_with_prayer_check(now, state["next_small_world_time"])
         save_state()
         return True
 
@@ -2194,6 +2249,7 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
         return False
 
     if not _apply_god_result(raw_text, now):
+        _retire_prayer_check()
         state["small_world_last_error"] = "小世界神迹回复未解析到状态"
         _clear_preach_pending()
         _clear_god_pending_tasks()
@@ -2351,6 +2407,7 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
         return True
 
     if "显灵成功" in raw_text or "显灵失败" in raw_text or "天机已散" in raw_text:
+        _retire_prayer_check()
         if "显灵成功" in raw_text:
             apply_storage_bag_item_text_delta(
                 get_current_identity_id(),
@@ -2382,6 +2439,7 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
             state["next_small_world_time"] = float(now + SMALL_WORLD_SAME_COMMAND_GUARD_SEC)
         elif wait_sec > 0:
             _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
+            _update_snapshot_field("prayer_check_at", state["next_small_world_time"])
         else:
             _schedule_panel_wait(now, SMALL_WORLD_MANIFEST_CD_SEC + CD_BUFFER_SEC)
         save_state()
@@ -2661,7 +2719,13 @@ async def _run_small_world_scheduler(now):
     if next_time > 0 and now < next_time:
         return
 
-    if state.get("small_world_pending_god_action"):
+    prayer_check = _cached_prayer_check_at()
+    prayer_due_while_god_cools = bool(
+        phase == "idle"
+        and state.get("small_world_manifest_enabled")
+        and 0 < prayer_check <= now < _god_cooldown_until()
+    )
+    if state.get("small_world_pending_god_action") and not prayer_due_while_god_cools:
         if await _try_send_pending_god_action(now):
             return
 

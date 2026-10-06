@@ -1,7 +1,7 @@
 # Evening Live Checkpoint
 
 Initial observation through October 6, 2026, 19:26 CST; appendices update it
-through 23:11, including the documented observation gap. No service restart, account
+through October 7 00:00, including the documented observation gap. No service restart, account
 switch, manual game request, reply replay or state correction was performed.
 
 ## WA Rift
@@ -211,3 +211,41 @@ Foreground follower 86357 started at 22:49 and is bounded to about October 7
 the replacement, with no new observation gap. No test or push session is
 outstanding. Production disk is `fa74778a` before this evidence-only update;
 runtime remains unchanged and the only unrelated dirt is the quiz bank.
+
+## WA Disaster And Midnight Checkpoint
+
+At 23:25:19 a new old-group disaster `12636905` explicitly named WA and
+reported faith -11. One new-group sermon `1287912` at 23:25:21 received
+official `hantianzun21_bot` reply `1287913`, locally at 23:25:31 (server
+23:25:24): cultivation -12000, faith to 100, stability to 84. This was a
+distinct event from the 20:23 disaster, not a duplicated send or relief.
+
+State returned to idle with no preach pending. Its god cooldown now ends
+October 7 02:25:31, and next small-world check was replaced with 02:27:38.
+Re-reading `1285947` establishes the earlier manifest success at **15:10:45**,
+with an explicit 360-minute prayer wait. The repeated god follow-up timer can
+therefore defer an independent prayer check. The dedicated Lab and boundaries
+are recorded in [the prayer-deadline audit](small-world-prayer-deadline-20261006.md).
+No inference of a specific lost reward, no threshold/spending change, and no
+live timer correction was made.
+
+WA's two voyage rows were combined and confirmed at 23:34:56, receipt
+`6f2f428372834a45972e395a1fd80ddf`, 126 UTF-16 units / 4 lines / no mention.
+At 23:47 the ordinary queue is empty, next summary 00:04:55, historical held
+still 2. At 23:46:54 the scheduled third (+6h) artifact-drop reminder delivered
+as 80 units / 3 lines / one mention, receipt
+`667d950816654759b7993cbd89ccc48e`; this is an existing reminder policy, not a
+new immediate ordinary summary or a test notification.
+
+At 23:49 both WA and Baji remain idle, incense refining off and harvest on.
+Their next harvest checks are 00:35:39 and 00:22:13, respectively; Baji's
+prayer check remains 03:26:49. At 23:52 the one-day semantic report still has
+2482 captures, peak 73/90, and unchanged earlier error classifications.
+Health observer only reports the two held batches; watchdog was healthy and
+the main/observer/watchdog PIDs and NRestarts remain unchanged.
+
+Upcoming system timers: Attempt shadow checkpoint at 00:15:35 and backup at
+04:29:57. WA's wild training remains 01:13:49, with the preparation window
+around 01:03. No service restart or manual request is being used to load the
+already staged runtime changes. Foreground follower 86357 continues until
+about 02:49; the midnight log rollover did not stop it.
