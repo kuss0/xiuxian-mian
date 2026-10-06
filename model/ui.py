@@ -785,7 +785,7 @@ def normalize_miniapp_auto_config(config=None):
                 steps.append({"identity_id": identity_id, "action": action})
         result[key] = steps
     for key in ("trial_daily_wave1_last_outcomes", "trial_daily_wave2_last_outcomes"):
-        result[key] = result.get(key) if isinstance(result.get(key), dict) else {}
+        result[key] = deepcopy(result[key]) if isinstance(result.get(key), dict) else {}
     legacy_run_day = result["trial_daily_last_run_day"]
     had_wave1_day = bool(result["trial_daily_wave1_last_run_day"])
     had_wave2_day = bool(result["trial_daily_wave2_last_run_day"])
@@ -8295,8 +8295,8 @@ def _persist_trial_daily_batch_state(
             {"identity_id": int(identity_id), "action": str(action)}
             for identity_id, action in steps
         ]
-    if outcomes is not None:
-        config[f"{prefix}outcomes"] = dict(outcomes or {})
+    if outcomes is not None or completed:
+        config[f"{prefix}outcomes"] = deepcopy(dict(outcomes or {}))
     config["trial_daily_last_batch_id"] = str(batch_id or "")
     config["trial_daily_last_run_at"] = changed_at
     config["trial_daily_last_result"] = str(result or "")[:500]
@@ -8309,7 +8309,7 @@ def _persist_trial_daily_batch_state(
         config[f"{prefix}succeeded"] = 0
         config[f"{prefix}failed"] = 0
         config[f"{prefix}steps"] = []
-        config[f"{prefix}outcomes"] = {}
+        # Keep the final reward snapshot; completed status prevents a work replay.
     set_miniapp_auto_config(config)
     save_state()
     return True
@@ -8406,7 +8406,7 @@ async def _run_cave_public_entry_batch(
     completed = max(0, min(total, int(initial_completed or resume_cursor)))
     succeeded = max(0, int(initial_succeeded or 0))
     failed = max(0, int(initial_failed or 0))
-    outcomes = dict(initial_outcomes or {}) if isinstance(initial_outcomes, dict) else {}
+    outcomes = deepcopy(initial_outcomes) if isinstance(initial_outcomes, dict) else {}
     next_cursor = resume_cursor
     _set_cave_public_batch_state(
         running=True,
