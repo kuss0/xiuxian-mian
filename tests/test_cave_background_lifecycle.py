@@ -187,6 +187,52 @@ def test_background_failure_cannot_shorten_a_newer_retry_deadline(background):
     assert ui._cave_public_background_retry_at[key] == h.now[0] + 7200
 
 
+@pytest.mark.parametrize("ok, retry", [(True, 1800), (False, 3600), (False, 43200)])
+def test_fate_scheduler_keeps_business_or_server_wait_until_deadline(background, ok, retry):
+    h = background
+    config = {**h.config, "cave_public_stargazer_enabled": False, "cave_public_fate_cards_enabled": True}
+    state_module.set_miniapp_auto_config(config)
+    h.run.return_value = ok, "fixture wait", {"retry_after_sec": retry}
+    key = ("fate_cards", h.identity_id)
+    start = h.now[0]
+
+    async def run():
+        await (await queue_background(h))
+        assert ui._cave_public_background_retry_at[key] == start + retry
+        h.now[0] = start + retry - 1
+        result = await ui._run_cave_public_background_scheduler(h.now[0], config)
+        assert not result["started"]
+        h.run.assert_awaited_once()
+        h.now[0] = start + retry + 60
+        result = await ui._run_cave_public_background_scheduler(h.now[0], config)
+        assert result["started"]
+        await h.queued[-1]
+
+    asyncio.run(run())
+    assert h.run.await_count == 2
+    assert not ui._cave_public_background_daily_done
+
+
+def test_fate_business_wait_does_not_replace_a_newer_transport_deadline(background):
+    h = background
+    config = {**h.config, "cave_public_stargazer_enabled": False, "cave_public_fate_cards_enabled": True}
+    state_module.set_miniapp_auto_config(config)
+    key = ("fate_cards", h.identity_id)
+
+    async def request(*_args, **_kwargs):
+        ui._cave_public_background_retry_at[key] = h.now[0] + 7200
+        return True, "fixture business wait", {"retry_after_sec": 1800}
+
+    h.run.side_effect = request
+
+    async def run():
+        await (await queue_background(h))
+
+    asyncio.run(run())
+    assert ui._cave_public_background_retry_at[key] == h.now[0] + 7200
+    assert not ui._cave_public_background_daily_done
+
+
 def test_old_background_finally_does_not_release_a_replaced_running_slot(background):
     h = background
     replacement = {

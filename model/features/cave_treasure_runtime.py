@@ -3952,6 +3952,7 @@ class _CaveFateCardsOperation:
         self.reward = {}
         self.meditation = {}
         self.deep_summary = {}
+        self.read_failure_extra = {}
         self.budget = MiniAppRequestBudget({"max_requests_per_run": 16, "max_attempts_per_request": 1})
 
     @staticmethod
@@ -4194,7 +4195,8 @@ async def run_cave_public_fate_cards(identity_id, public_entry_url, *, choice_ke
         }) from None
     except MiniAppRequestAborted as exc:
         return {"ok": False, "message": f"天机命脉链路已停止：{exc}",
-                "extra": {"status": "cancelled" if not operation.can_dispatch() else "unverified",
+                "extra": {**operation.read_failure_extra,
+                          "status": "cancelled" if not operation.can_dispatch() else "unverified",
                           "outcome_unknown": bool(operation.pending)}}
 
 
@@ -4237,7 +4239,10 @@ async def _run_cave_public_fate_cards_owned(
             record = operation.record_state(
                 identity_id, operation.fate_state, now=now, status=status, deep_retreat=deep_summary,
             )
-            retry = _cave_public_deep_retry_after(deep, now=now) if deep else _fate_cards_retry_after_sec(operation.fate_state)
+            # Other activities can complete the quest before deep retreat ends.
+            retry = _fate_cards_retry_after_sec(operation.fate_state)
+            if deep:
+                retry = min(retry, _cave_public_deep_retry_after(deep, now=now))
             console_log(message, scope="identity", send_as_id=identity_id, limit=240)
             return {"ok": True, "message": message, "extra": {
                 "retry_after_sec": retry, "record_key": record.get("record_key", ""),
@@ -4278,6 +4283,7 @@ async def _run_cave_public_fate_cards_owned(
                 capture_source=f"{source}:{suffix}", request_budget=operation.budget,
             )
             if not result.get("ok"):
+                operation.read_failure_extra = _miniapp_result_extra({}, result)
                 detail = result.get("data") if isinstance(result.get("data"), dict) else {}
                 reason = detail.get("contract_error")
                 reason = reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,64}", reason) else ""

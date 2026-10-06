@@ -331,6 +331,103 @@ def run():
     return asyncio.run(cave.run_cave_public_fate_cards(1001, ENTRY, now=NOW))
 
 
+@pytest.mark.parametrize("clock", ["remaining_seconds", "end_ms"])
+@pytest.mark.parametrize("remaining, expected", [(120, 125), (1800, 1800), (28800, 1800), (86400, 1800)])
+def test_fate_progress_recheck_does_not_wait_for_long_deep_retreat(env, monkeypatch, clock, remaining, expected):
+    env.probe.return_value = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=24))}}
+    deep = {"active": True, "can_settle": False, "completed": False}
+    deep[clock] = int((NOW + remaining) * 1000) if clock == "end_ms" else remaining
+    env.session.return_value["result"]["data"]["overview"]["deep_seclusion"] = deep
+    deep_action = AsyncMock()
+    monkeypatch.setattr(cave, "_run_cave_public_deep_action_locked", deep_action)
+
+    result = run()
+
+    assert result["ok"]
+    assert result["extra"]["retry_after_sec"] == expected
+    assert not result["extra"].get("daily_exhausted")
+    assert not result["extra"].get("terminal_skip")
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["status"] == "waiting_deep_retreat"
+    assert row["snapshot"]["quest"]["progress"] == 24
+    env.action.assert_not_awaited()
+    deep_action.assert_not_awaited()
+    cave.send_audit_log.assert_not_awaited()
+
+
+def test_fate_recheck_only_claims_after_fresh_quest_completion(env, monkeypatch):
+    waiting = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=24))}}
+    ready = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=30))}}
+    settled = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=30, status="settled"))}}
+    env.probe.side_effect = [waiting, waiting, ready, settled, settled]
+    env.session.return_value["result"]["data"]["overview"]["deep_seclusion"] = {
+        "active": True, "can_settle": False, "remaining_seconds": 28800,
+    }
+    deep_action = AsyncMock()
+    monkeypatch.setattr(cave, "_run_cave_public_deep_action_locked", deep_action)
+
+    for index in range(2):
+        result = asyncio.run(cave.run_cave_public_fate_cards(1001, ENTRY, now=NOW + index * 1800))
+        assert result["ok"]
+        assert result["extra"]["retry_after_sec"] == 1800
+        env.action.assert_not_awaited()
+    result = asyncio.run(cave.run_cave_public_fate_cards(1001, ENTRY, now=NOW + 3600))
+    assert result["ok"]
+    assert result["extra"]["daily_exhausted"]
+    assert asyncio.run(cave.run_cave_public_fate_cards(1001, ENTRY, now=NOW + 5400))["extra"]["terminal_skip"]
+    env.action.assert_awaited_once()
+    assert env.action.await_args.args[1] == "settle"
+    deep_action.assert_not_awaited()
+    cave.send_audit_log.assert_not_awaited()
+
+
+@pytest.mark.parametrize("retry", [3600, 43200])
+def test_fate_identity_load_retry_after_is_not_capped_as_business_wait(env, retry):
+    env.session.return_value = {"ok": False, "status": "rate_limited", "retry_after_sec": retry}
+    result = run()
+    assert not result["ok"]
+    assert result["extra"]["retry_after_sec"] == retry
+    env.probe.assert_not_awaited()
+    env.action.assert_not_awaited()
+    assert not state_module.get_miniapp_state_records()
+
+
+@pytest.mark.parametrize("retry", [3600, 43200])
+def test_fate_start_failure_retains_server_retry_after(env, retry):
+    env.probe.return_value = {
+        "ok": False, "status": "failed", "error": "http_429",
+        "events": [{"step": "start", "status_code": 429, "retry_after_sec": retry}],
+    }
+    result = run()
+    assert not result["ok"]
+    assert result["extra"].get("retry_after_sec") == retry
+    assert "fate_read_failed" in result["message"]
+    env.probe.assert_awaited_once()
+    env.action.assert_not_awaited()
+    assert not state_module.get_miniapp_state_records()
+
+
+def test_fate_refresh_rate_limit_preserves_completed_meditation(env, monkeypatch):
+    meditation_ready(env)
+    first = copy.deepcopy(env.probe.return_value)
+    env.probe.side_effect = [first, {
+        "ok": False, "error": "external_action_rate_limited",
+        "events": [{"step": "start", "status_code": 429, "retry_after_sec": 7200}],
+    }]
+    meditate = AsyncMock(return_value=meditation_result())
+    monkeypatch.setattr(cave, "run_cave_meditation_settle_production_flow", meditate)
+    result = run()
+    assert not result["ok"]
+    assert result["extra"]["retry_after_sec"] == 7200
+    assert result["extra"]["shared_rate_limit"]
+    assert result["extra"]["shared_retry_after_sec"] == 7200
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["gains"] == {"修为": 18}
+    assert not row.get("pending")
+    meditate.assert_awaited_once()
+    env.action.assert_not_awaited()
+
+
 @pytest.mark.parametrize("change", ["replace", "rebind", "disable", "pause", "record", "deep_schedule"])
 def test_entry_change_cannot_dispatch_or_write_fate(env, change):
     after = {}
