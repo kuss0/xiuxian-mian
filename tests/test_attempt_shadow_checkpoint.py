@@ -2,6 +2,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from tools.attempt_shadow_checkpoint import build_checkpoint
 
 
@@ -49,7 +51,7 @@ def _prepare_db(path):
     conn.close()
 
 
-def test_checkpoint_reports_durable_sent_parity_and_strong_binding(tmp_path):
+def test_checkpoint_reports_id_parity_without_claiming_chat_scope(tmp_path):
     db_path = tmp_path / "state.db"
     messages_dir = tmp_path / "messages"
     messages_dir.mkdir()
@@ -59,6 +61,7 @@ def test_checkpoint_reports_durable_sent_parity_and_strong_binding(tmp_path):
             "ts": "1970-01-01 08:16:41 UTC+8",
             "event_type": "sent",
             "message_id": 101,
+            "chat_id": -1001,
             "text": ".测试",
         }, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -66,10 +69,14 @@ def test_checkpoint_reports_durable_sent_parity_and_strong_binding(tmp_path):
 
     report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)
 
-    assert report["status"] == "ok"
+    assert report["status"] == "warn"
     assert report["sent_log_parity"]["missing_root_count"] == 0
+    assert report["sent_log_parity"]["verification"] == "partial_id_only"
+    assert report["sent_log_parity"]["attempts_without_chat_scope"] == 1
+    assert report["sent_log_parity"]["cross_chat_collision_count"] == 0
     assert report["binding"]["bind_reason"] == {"exact_reply_to_root": 1}
     assert report["binding"]["non_strong_written_bindings"] == 0
+    assert report["binding"]["precision_verified"] is False
     assert report["attempts"]["send_unknown"] == 0
 
 
@@ -114,6 +121,8 @@ def test_checkpoint_excludes_attempts_older_than_retained_message_log_coverage(t
     assert report["sent_log_parity"]["excluded_before_log_coverage"] == 1
     assert report["sent_log_parity"]["rooted_attempts"] == 0
     assert report["sent_log_parity"]["missing_root_count"] == 0
+    assert report["sent_log_parity"]["verification"] == "no_retained_root_sample"
+    assert report["binding"]["precision_verified"] is False
 
 
 def test_checkpoint_keeps_old_attempt_anomalies_visible_without_current_warning(tmp_path):
@@ -154,3 +163,79 @@ def test_checkpoint_warns_on_recent_attempt_anomalies(tmp_path):
     assert report["status"] == "warn"
     assert report["attempts"]["recent_stale_transport_over_300s"] == 1
     assert report["attempts"]["recent_last_error_count"] == 1
+
+
+def test_same_message_id_in_two_chats_is_not_verified_parity(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    (messages_dir / "1970-01-01.log").write_text(
+        "\n".join(json.dumps({
+            "ts": "1970-01-01 08:16:41 UTC+8", "event_type": "sent",
+            "message_id": 101, "chat_id": chat, "sender_id": 1, "text": ".测试",
+        }, ensure_ascii=False) for chat in (-1001, -1002)) + "\n", encoding="utf-8",
+    )
+    report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)
+    parity = report["sent_log_parity"]
+    assert report["status"] == "warn"
+    assert parity["missing_root_count"] == 0
+    assert parity["verification"] == "partial_id_only"
+    assert parity["cross_chat_collision_count"] == 1
+    assert parity["cross_chat_collision_samples"] == [{"message_id": 101, "chat_ids": [-1002, -1001]}]
+
+
+def test_duplicate_sent_log_in_same_chat_is_not_cross_chat_collision(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    entry = {"ts": "1970-01-01 08:16:41 UTC+8", "event_type": "sent",
+             "message_id": 101, "chat_id": -1001, "sender_id": 1, "text": ".测试"}
+    (messages_dir / "1970-01-01.log").write_text(
+        (json.dumps(entry, ensure_ascii=False) + "\n") * 2, encoding="utf-8",
+    )
+    parity = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)["sent_log_parity"]
+    assert parity["rooted_attempts"] == 1
+    assert parity["attempts_without_chat_scope"] == 1
+    assert parity["cross_chat_collision_count"] == 0
+    assert parity["cross_chat_collision_samples"] == []
+
+
+@pytest.mark.parametrize("other_chat", [None, 0, True, "-1002"])
+def test_missing_or_invalid_chat_does_not_become_collision_evidence(tmp_path, other_chat):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    before = db_path.read_bytes()
+    (messages_dir / "1970-01-01.log").write_text(
+        "\n".join(json.dumps({
+            "ts": "1970-01-01 08:16:41 UTC+8", "event_type": "sent",
+            "message_id": 101, "chat_id": chat, "text": ".测试",
+        }, ensure_ascii=False) for chat in (-1001, other_chat)) + "\n", encoding="utf-8",
+    )
+    report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)
+    assert report["status"] == "warn"
+    assert report["sent_log_parity"]["cross_chat_collision_count"] == 0
+    assert report["sent_log_parity"]["verification"] == "partial_id_only"
+    assert db_path.read_bytes() == before
+
+
+def test_unrelated_and_non_sent_ids_do_not_contaminate_collision_count(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    (messages_dir / "1970-01-01.log").write_text(
+        "\n".join(json.dumps({
+            "ts": "1970-01-01 08:16:41 UTC+8", "event_type": kind,
+            "message_id": msg, "chat_id": chat, "text": ".测试",
+        }, ensure_ascii=False) for kind, msg, chat in (
+            ("sent", 101, -1001), ("message", 101, -1002),
+            ("sent", 999, -1001), ("sent", 999, -1002),
+        )) + "\n", encoding="utf-8",
+    )
+    parity = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)["sent_log_parity"]
+    assert parity["cross_chat_collision_count"] == 0
+    assert parity["verification"] == "partial_id_only"

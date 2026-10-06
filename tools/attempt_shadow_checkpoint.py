@@ -48,6 +48,7 @@ def _counter_rows(rows, *keys):
 
 def _sent_log_ids(start_at, end_at, messages_dir):
     sent_ids = set()
+    chats_by_id = {}
     files_seen = set()
     coverage_start_at = 0.0
     for entry, entry_at in iter_message_log_entries_between(start_at, end_at, messages_dir=messages_dir):
@@ -61,7 +62,10 @@ def _sent_log_ids(start_at, end_at, messages_dir):
         msg_id = int((entry or {}).get("message_id") or 0)
         if msg_id > 0:
             sent_ids.add(msg_id)
-    return sent_ids, sorted(files_seen), coverage_start_at
+            chat_id = (entry or {}).get("chat_id")
+            if type(chat_id) is int and chat_id != 0:
+                chats_by_id.setdefault(msg_id, set()).add(chat_id)
+    return sent_ids, sorted(files_seen), coverage_start_at, chats_by_id
 
 
 def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
@@ -82,8 +86,7 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
     observation_start = min(created_at) if created_at else now
     observation_hours = max((now - observation_start) / 3600, 1 / 60)
     sent_attempts = [row for row in attempts if str(row["transport"] or "") == "sent"]
-    root_ids = {int(row["root_msg_id"] or 0) for row in sent_attempts if int(row["root_msg_id"] or 0) > 0}
-    sent_log_ids, log_days, log_coverage_start_at = _sent_log_ids(
+    sent_log_ids, log_days, log_coverage_start_at, chats_by_id = _sent_log_ids(
         max(0, observation_start - 60),
         now + 60,
         messages_dir,
@@ -100,6 +103,14 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
         if int(row["root_msg_id"] or 0) > 0
     }
     missing_root_ids = sorted(parity_root_ids - sent_log_ids)
+    # The current ledger has no chat scope. Preserve legacy ID counts, not a
+    # same-chat verification claim, even when just one matching log is retained.
+    unscoped_attempts = sum(1 for row in parity_attempts if int(row["root_msg_id"] or 0) > 0)
+    collisions = [
+        {"message_id": msg_id, "chat_ids": sorted(chats_by_id[msg_id])}
+        for msg_id in sorted(parity_root_ids)
+        if len(chats_by_id.get(msg_id, ())) > 1
+    ]
 
     bind_reasons = Counter()
     bind_anchors = Counter()
@@ -147,6 +158,10 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
     projected_72h_payload_bytes = int(round(projected_72h_attempts * avg_bytes_per_attempt))
 
     reasons = []
+    if unscoped_attempts:
+        reasons.append(f"sent-log parity lacks ledger chat scope for {unscoped_attempts} attempts")
+    if collisions:
+        reasons.append(f"sent-log message IDs occur in multiple chats: {len(collisions)}")
     if missing_root_ids:
         reasons.append(f"sent-log parity missing {len(missing_root_ids)} roots")
     if guessed_evidence:
@@ -179,6 +194,11 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
             "recent_last_error_count": recent_last_errors,
         },
         "sent_log_parity": {
+            "verification": "partial_id_only" if unscoped_attempts else "no_retained_root_sample",
+            "policy": "legacy message-ID presence only; not same-chat, sender, or command verification",
+            "attempts_without_chat_scope": unscoped_attempts,
+            "cross_chat_collision_count": len(collisions),
+            "cross_chat_collision_samples": collisions[:100],
             "sent_attempts": len(sent_attempts),
             "log_coverage_start_at": log_coverage_start_at,
             "log_coverage_start": (
@@ -193,6 +213,8 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
             "missing_root_ids": missing_root_ids[:100],
         },
         "binding": {
+            "precision_verified": False,
+            "policy": "stored reason-label distribution only; not an independent binding-precision audit",
             "evidence_count": len(evidence),
             "bind_reason": dict(sorted(bind_reasons.items())),
             "bind_anchor": dict(sorted(bind_anchors.items())),
