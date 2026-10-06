@@ -85,3 +85,18 @@ No game command was sent by this maintenance session.
 The same reward has a confirmed urgent notification (`ca26034db9d04d60a92dc76e8a17c50e`)
 and a separate ordinary summary row. That newly observed duplicate is a
 separate notification cleanup item, not part of this observer patch.
+
+## Natural Acceptance After Deployment
+
+At 08:00:55 a new unmanaged timeout for `@huanxinshuimeng` appeared in the
+main journal using the exact external/learning-only header. The bounded
+08:00:40-08:02:40 journal contains that console line and no notification
+receipt. Summary pending remains zero; the historical held batch and its
+hash are unchanged.
+
+The deployed observer's 08:02:53 snapshot includes three main journal lines
+inside its ten-minute window and reports hard=0, warn=0. Its sole remaining
+warning is the historical held delivery. Unlike the earlier replay, this
+is a fresh event seen by the running observer after deployment. Natural
+acceptance of the passive external-quiz classification is complete; it does
+not close unrelated notification, quiz-parser or transport debt.
