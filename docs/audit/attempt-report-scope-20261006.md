@@ -35,3 +35,9 @@
 ## 仍需另审
 
 完整群范围持久化、runtime 入站绑定与历史无范围记录的处理须补设计与跨群乱序回放，不能以这次报表修正代替完成。保持既有 Gate 4 禁止控制边界；下一次定时检查点出现范围 warn 是披露已有缺口，不是新业务故障。
+
+## 定时验收
+
+`df64e818` 已合入 main 并推送 `xiuxian-mian/main`，合入复验 46 passed。12:17:39 原定时器自然触发，12:17:40 的报告包含 `partial_id_only` 和 `precision_verified=false`，12:17:50 正常退出（status 0）。统计与前述只读回放一致；Attempt 总数 28119、blocked 4287、send_unknown 32，均未重写。
+
+12:18:57 health 仍只有两份 held 通知告警、游戏 pending=0，watchdog 正常；主服务/observer/watchdog PID 未变。未将报表 warn 接入业务暂停。下一次定时检查为 10 月 7 日 00:15:35。仅检查点口径修正销号，同群事实持久化和完整精度审计仍待办。
