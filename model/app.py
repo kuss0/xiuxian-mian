@@ -1742,6 +1742,36 @@ def _is_game_group_listener_event(event):
     return _get_event_listener_account_id(event) in listener_ids
 
 
+def _note_reply_read_failure(exc, event):
+    try:
+        header = getattr(event, "reply_to", None)
+        fields = {
+            "chat_id": getattr(event, "chat_id", 0),
+            "message_id": getattr(event, "id", 0),
+            "reply_to_msg_id": getattr(header, "reply_to_msg_id", 0),
+            "topic_id": getattr(header, "reply_to_top_id", 0),
+            "sender_id": getattr(event, "sender_id", 0),
+            "listener_account_id": _get_event_listener_account_id(event),
+        }
+        # Header facts aid local lookup; they are not verified command ownership.
+        context = " ".join(
+            f"{key}={value if type(value) is int and -(2**63) < value < 2**63 else 0}"
+            for key, value in fields.items()
+        )
+        if isinstance(event, events.MessageEdited.Event):
+            kind = "edit"
+        elif isinstance(event, events.NewMessage.Event):
+            kind = "message"
+        else:
+            kind = "unknown"
+        note = f"reply_read_context {context} event_kind={kind}"
+        if note not in getattr(exc, "__notes__", ()):
+            exc.add_note(note)
+    except Exception:
+        # Best-effort diagnostics must not replace the original RPC exception.
+        pass
+
+
 async def _resolve_event_reply(event):
     try:
         reply_to = await event.get_reply_message()
@@ -1756,6 +1786,7 @@ async def _resolve_event_reply(event):
                     break
             reply_to = None
         else:
+            _note_reply_read_failure(exc, event)
             raise
     reply_header_msg_id = _get_event_reply_header_msg_id(event)
     reply_context = get_reply_context(
