@@ -1,8 +1,54 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 14:17 CST. Runtime code through
+Observations through October 7, 2026, 14:42 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 14:42
+
+No new runtime deployment or restart. Main and monitor processes remain
+unchanged; pending empty, watchdog healthy, SQLite quick_check=ok. Only
+live quiz learning is an unrelated dirty file. Follower **76892** continues
+through about **16:25**, with Baji's 16:18:23 voyage schedule still in view.
+
+At 14:32:12 the old-group official disaster broadcast **12645004** reported
+Baji's 地脉翻身 / faith -13. The existing scheduler sent exactly one
+`.神迹 布道` as **1292350** at 14:32:14 in -1002083016447. Official
+hantianzun16_bot reply **1292351** at 14:32:17 confirms cultivation -10000,
+faith 100 and stability 95. Pending cleared; incense remains 248269.
+No relief/refinement or extra probe occurred. Next small-world check is
+15:37:08, before the god cooldown 17:32:17, not deferred to that cooldown.
+The two earlier unexplained faith deltas remain unresolved and are not
+explained retroactively by this later disaster.
+
+WA remains incense 205913 / faith 100, next check 14:46:13. Both voyages
+remain sailing, retry_count=0, error empty; both duel and refinement switches
+remain off, harvest on. Wwlafe's natural 14:25 concubine check left idle/no
+error and next check October 8 02:36, not a pending timeout. No new captured
+HTTP failures; aggregate still 2501 HTTP rows / peak 71 of 90.
+
+### Current-Main Voyage Reproductions
+
+The next-step Lab is `/root/xiuxian-voyage-durable-boundary-20261007`, branch
+`lab/voyage-durable-boundary-20261007`, base `08863536`. Only the test file
+`tests/test_voyage_unknown_lab.py` and design
+`docs/audit/voyage-durable-boundary-lab-20261007.md` are uncommitted. No old
+broader-candidate runtime changes were imported and no new schema was added.
+The old public-guard Lab remains separate and unmerged.
+
+At 14:39, explicit `--runxfail` on current main reproduced five failures:
+unknown launch re-eligibility, invalidated dispatched result re-entry,
+launch/return exception fallback without unsent evidence, and ignored False
+settlement save. The read-only exception-fallback control passes. Related
+current-main regression: 562 passed / five strict xfails; old Lab regression:
+603 / five. All set `XIUXIAN_ALLOW_LIVE_TEST_DB=0`, no live probes. These are
+design/code failures, not five fresh runtime incidents or accepted recovery.
+
+The design requires durable pre-dispatch ownership, retained result evidence,
+strict writer confirmation, atomic local projection/applied marking, both
+transport holds and non-evictable pending records. Real temp-WAL writer,
+restart/local replay and cross-transport integration are not implemented yet.
+Do not merge the older Lab or call a one-line exception change a full fix.
 
 ## Follow-Up Through 14:17
 
