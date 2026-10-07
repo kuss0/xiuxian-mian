@@ -1,8 +1,40 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 21:50 CST. Runtime code through
+Observations through October 7, 2026, 22:55 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 22:55
+
+Prior documentation checkpoint **3b93fb06** is confirmed pushed. No new code,
+restart, game probe, configuration or live DB correction. Services/runtime
+remain unchanged; preserve quiz learning. The twelve-file voyage Lab is
+still uncommitted/unmerged and not deployed; its five strict integration
+xfails remain open. All test, report and push sessions are finished.
+
+Baji naturally returned **22:23:20**, then relaunched **22:23:21**. Capture
+records show one return and one launch mutation, each HTTP200/attempt1,
+plus one successful login for each. Actual return gains: cultivation+278,
+stones+92, 素女禁纹x1, affinity+9. Affinity **399->408** reconciles. No extra
+companion command chain ran in this interval. Voyage is sailing with no
+error/retry, return October8 **04:23:25**, scheduler **04:26:02**.
+
+Both ordinary records were confirmed in one **22:53:21** notification,
+`5af2d3daf6e0455aa5031a83a10258db`,164 UTF-16/4 lines/no mentions. Queue
+emptied; historical held remains two. Instrumented receipts since13:45 total
+**11 attempts/11 confirmed**,zero repeated confirmed payloads,one explicit
+mention on the earlier rift result. Coverage still excludes other uninstrumented
+senders. Visible size P50/P95=121/759,latency P50/P95=702/1343ms.
+Captures2679 HTTP,peak71/90,same one app/one transient error. Eight world
+panels and their two partially explained/four unexplained intervals unchanged.
+
+New foreground **28105** began22:41 and runs until about October8 **06:41**;
+old **28286** naturally ended with timeout exit124 at22:54 and its final
+output was consumed. The overlap was read-only; it did not duplicate game
+or notification sends. Continue polling28105. Next: WA **23:41:51** return,
+harvests Baji **00:24:18** /WA **00:41:29**,WA wild training **00:39:55**
+with fresh Tianxing preparation. Do not confuse the empty queue's idle
+next_at with a scheduled empty summary.
 
 ## Follow-Up Through 21:50
 
