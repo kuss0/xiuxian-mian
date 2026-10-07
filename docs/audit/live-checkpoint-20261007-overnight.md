@@ -1,10 +1,79 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 10:58 CST. Runtime code through
+Observations through October 7, 2026, 12:18 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
-Latest continuation: `b9a1a4be` voyage reward notification is merged/pushed,
+## Follow-Up Through 12:18
+
+`cbe1dff8` unmanaged routine quiz notification cleanup is merged/pushed:
+16851 tests / 1486 subtests, second review 517 / 35, production-directory
+isolated recheck 242 / 35. It is **not loaded**. Ordinary external outcomes
+and successful learning stay local after loading; owned results, bank
+conflicts and write failures still notify. See
+[the audit](quiz-routine-observation-20261007.md). No queue clearing or
+historical replay was used to manufacture acceptance.
+
+Supervisor 2901469, worker 2901475, observer 2835325 and watchdog 2835315 are
+unchanged, active, NRestarts=0. No restart, game probe, state correction or
+switch change occurred in this continuation. Foreground follower **33330**
+remains active until approximately **13:35**. Renew before expiry.
+
+WA's 11:30 disaster broadcast in the old group triggered one `.神迹 布道`
+1291496 in the new group. Official reply 1291497 at 11:30:43 confirms
+cultivation -12000, faith 100 and stability 84. Pending is cleared,
+incense stock remains 205913 and god CD is 14:30:43. This was not relief or
+incense refinement. The earlier unexplained faith deltas remain unresolved.
+
+WA returned 11:32:41 and relaunched 11:32:42, next return **17:32:46**;
+Baji remains sailing until **16:11:39**. Both voyage errors are empty.
+Ordinary summary `dd578a74a75845d89726b81cc54c5c14` confirmed at 11:33:16,
+276 UTF-16 / six lines / no explicit mentions. Noon Huanglong notice
+`75625d25d102432aadb2521ad807ad33` confirmed, 52 UTF-16 / three lines /
+one mention. The 12:03 routine window had no queued rows and correctly sent
+no empty summary. The same two historical held batches remain; no replay.
+
+The **12:16:30-12:16:41** scheduled CommandAttempt checkpoint succeeded:
+28299 attempts, 4288 blocked, 32 historical send_unknown, no recent 24h
+last-error or stale-transport count. All 3993 roots inside log coverage are
+present, but their ledger rows lack chat scope, so parity remains
+`partial_id_only`; reason labels do not prove bind precision. Gate 4 stays
+closed and no archive, recovery or control is enabled. Report:
+`data/state/command_attempt_checkpoints/checkpoint-20261007-121630.json`.
+
+At 12:17 the captured MiniApp peak is still 44/90, 2390 requests, one
+historical transient error. Read-only six-hour direct-reply latency sees
+three Mulan sends/replies and no missing reply, maximum final local delay
+11 seconds. It contains no duel or command-wild send samples and therefore
+does not validate those paths or MiniApp wild timing.
+
+## Open Trial Handoff Lab
+
+Uncommitted work is in `/root/xiuxian-trial-reward-handoff-20261007`, branch
+`lab/trial-reward-handoff-20261007`, base `cbe1dff8`. The Lab has two pure /
+caller-transaction prototypes under `delivery/`, three test files and its
+audit/backlog updates. They are **not imported by the application**, merged
+or loaded. Existing production child notices stay intact.
+
+Related Lab regression: 439 passed, three strict expected failures. Those
+failures describe unresolved production gaps: failed-step retry drops earlier
+totals, duplicate cumulative recovery double-counts, and shared-limit pause
+skips a confirmed partial prefix. They are not acceptance passes. The
+prototype covers binding, receipt-prefix/idempotence, a unique cross-batch
+operation index, same-transaction commit/rollback, slot replacement and
+capacity rejection. Real writer integration, delivery handoff, retention,
+full acceptance and second review remain outstanding. Do not merge the
+expected-failure scaffolding as a completed fix.
+
+Live role data includes **19 negative channel player IDs / five positive
+personal player IDs**. The Lab's initial positive-only draft was corrected
+to reuse existing signed-player normalization before any runtime integration.
+For exact next steps read the Lab's
+`docs/audit/trial-reward-handoff-lab-20261007.md`.
+
+## Earlier Checkpoint Through 10:58
+
+`b9a1a4be` voyage reward notification is merged/pushed,
 full tests 16824 / 1486 subtests, second review 654, production-directory
 isolated recheck 444. It is **not loaded**; worker and monitor PIDs below are
 unchanged. See [scope and acceptance](voyage-return-notice-20261007.md).
