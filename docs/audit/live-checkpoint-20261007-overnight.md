@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 08:48 CST. Runtime code through
+Observations through October 7, 2026, 09:32 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -169,6 +169,22 @@ have completed. Next due YuanYing is xuruode6 at 08:55:10; keep foreground
 56988 active while waiting for the later mudamuda0 settlement.
 
 ## Code And Services
+
+Latest 09:32 checkpoint: callback polling experienced six transient failures
+between 09:11:32 and 09:14:53, then recovered naturally at 09:16:08. Routine
+summary at 09:15:05 still confirmed (208 UTF-16 / six lines / no mention),
+receipt `260d18842cf64e168afe507733a920a9`. Historical held stays two.
+Read-only sustained-poll observation is code-accepted in a separate Lab;
+see [scope and tests](callback-poll-observation-20261007.md). Full 16810 /
+1486 subtests, second review 330 / 16, actual pre/post-recovery replay passed.
+No poll/send retry policy, gameplay state, runtime or daemon restart changed.
+
+Main remains `51c2e348`, worker 2901475. Return-reward notification `69b36da1`
+is pushed but not loaded. xuruode6's 08:56 YuanYing and four subsequent tower
+results have natural evidence in the callback audit. mudamuda0 remains 4 -> 0
+at 09:26:58. Next broad watch: deep-retreat settlements 09:39-10:23, especially
+mudamuda0 around 09:54, and routine digest around 09:50. Foreground 56988
+continues until approximately 10:43; do not stop after the pending merge.
 
 `536bbdc9` was fast-forwarded to production `main` and pushed to
 `xiuxian-mian/main`. It fixes independent small-world prayer deadlines; final

@@ -44,6 +44,13 @@ WARN_PATTERN = re.compile(
     r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|安全锁|全局锁|锁死|阻断",
     re.I,
 )
+CALLBACK_POLL_PATTERN = re.compile(
+    r"^(?:[A-Z][a-z]{2} +[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} "
+    r"(?P<host>\S+) [A-Za-z0-9_.-]+\[(?P<pid>[0-9]+)\]: )?"
+    r"log bot callback poll (?:failed: .* \| failures=(?P<count>[1-9][0-9]{0,5}) retry=[0-9]+s"
+    r"|recovered after [1-9][0-9]{0,5} failures)$"
+)
+CALLBACK_POLL_WARN_FAILURES = 5
 PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(
     r"红包候选观察(?:｜|\|)"
     r"|(?:^|\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] )"
@@ -579,6 +586,7 @@ def read_journal_matches(
         for index, line in enumerate(lines)
         if not _is_benign_disconnected_traceback_block(lines, index) and is_warn_journal_line(line)
     ]
+    warn.extend(_callback_poll_warnings(lines))
     max_items = max(1, int(limit or 1))
     return {
         "service": service,
@@ -591,6 +599,22 @@ def read_journal_matches(
         "hard": hard[-max_items:],
         "warn": warn[-max_items:],
     }
+
+
+def _callback_poll_warnings(lines: list[str]) -> list[str]:
+    # Use the poller's streak, not repeated observations of the same log line.
+    # A recovery from another process must not clear this process's evidence.
+    latest = {}
+    for line in lines:
+        match = CALLBACK_POLL_PATTERN.fullmatch(line)
+        if match:
+            key = (match["host"] or "", match["pid"] or "")
+            latest[key] = int(match["count"] or 0)
+    return [
+        f"recent log bot callback polling: {count} consecutive failures without recovery "
+        f"in scanned window (pid={pid or 'unavailable'}); delivery is checked separately"
+        for (_host, pid), count in latest.items() if count >= CALLBACK_POLL_WARN_FAILURES
+    ]
 
 
 def service_running(info: dict[str, str] | None) -> bool:
