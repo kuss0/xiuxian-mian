@@ -1,8 +1,41 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 14:42 CST. Runtime code through
+Observations through October 7, 2026, 14:55 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 14:55
+
+Foreground observation renewed as **28286**, started 14:54 and bounded
+through approximately **22:54**. Old **76892** remains until 16:25 and may
+expire normally; no monitor was stopped. Poll 28286 first on continuation.
+All tests, fetches and previous pushes have completed. No new runtime load,
+game probe, switch change or state correction.
+
+WA naturally sent one `.小世界` as **1292454** at 14:46:14; official
+hantianzun32_bot reply **1292455** at 14:46:16 in -1002083016447 reports
+population 420000, faith 98, stability 84, stock 205913, pending incense
+6525.78, no prayer, next prayer in 5h59m59s. The parser cleared pending and
+set next check **20:52:09**; no new preach/relief/refinement was sent. Faith
+decline alone is not attributed to a script action without evidence.
+The semantic report now has five panels, one partially explained delta
+and the same two unexplained deltas. No false causal closure.
+
+14:45's empty summary window produced no delivery. Durable queue remains
+empty, held=2; the old next_at can remain while idle and is not proof of a
+missing send. Runtime journal has no new notification receipt in that window.
+
+Next natural watches: Baji world check **15:37:08**, voyage schedule
+**16:18:23** (return 16:11:39), native harvest **16:23:18**; WA harvest
+**16:40:46**, voyage **17:38:51** (return 17:32:46), rift **19:11:34** with
+ten-minute preparation. Both incense-refine and duel switches remain off,
+harvest on. Current HTTP captures still 2501 requests / peak 71 of 90;
+pending empty, watchdog healthy, services/PIDs unchanged.
+
+SSH fetch at 14:53 found no upstream changes: wxjerry `aa9dba29` and
+`cd2a2e64`, Rust `3c39edc8`. No upstream code or migration was adopted.
+Current-main durable-voyage Lab remains test/design-only and uncommitted,
+with the five failures below unresolved; no broader Lab was deployed.
 
 ## Follow-Up Through 14:42
 
