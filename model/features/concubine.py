@@ -637,17 +637,21 @@ def _format_voyage_reward_line(line):
     return text
 
 
-def _format_voyage_result_audit(parsed):
-    parsed = parsed if isinstance(parsed, dict) else {}
-    partner = str(parsed.get("partner") or state.get("concubine_name") or "侍妾").strip()
-    route = str(parsed.get("route") or state.get("concubine_voyage_route") or CONCUBINE_VOYAGE_DEFAULT_ROUTE).strip()
-    result = str(parsed.get("result") or "").strip()
+def _format_voyage_reward_summary(result):
+    result = str(result or "").strip()
     rewards = []
     for line in result.splitlines():
         reward = _format_voyage_reward_line(line)
         if reward:
             rewards.append(reward)
-    summary = "、".join(rewards[:8]) if rewards else result.replace("\n", " / ").strip()
+    return "、".join(rewards[:8]) if rewards else result.replace("\n", " / ").strip()
+
+
+def _format_voyage_result_audit(parsed):
+    parsed = parsed if isinstance(parsed, dict) else {}
+    partner = str(parsed.get("partner") or state.get("concubine_name") or "侍妾").strip()
+    route = str(parsed.get("route") or state.get("concubine_voyage_route") or CONCUBINE_VOYAGE_DEFAULT_ROUTE).strip()
+    summary = _format_voyage_reward_summary(parsed.get("result"))
     parts = [f"🌸 远航归来：{partner}", route]
     if summary:
         parts.append(summary)

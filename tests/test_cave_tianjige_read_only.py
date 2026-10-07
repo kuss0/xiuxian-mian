@@ -408,7 +408,8 @@ def test_public_tianjige_voyage_status_reconciles_returned_state(runtime):
     assert runtime.identity["concubine_voyage_return_at"] == NOW
 
 
-def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(runtime):
+@pytest.fixture
+def voyage_runtime(runtime):
     runtime.identity.update(
         concubine_name="南宫婉·月影",
         concubine_kind="道心侍妾",
@@ -425,6 +426,11 @@ def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(runtime):
         "- 修为 +423\n- 灵石 +89\n- 素女禁纹 x1\n"
         "此行顺遂，侍妾对你更添信重，情缘增加 6 点。"
     )
+    return runtime
+
+
+def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(voyage_runtime):
+    runtime = voyage_runtime
     response = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
         1001, ENTRY, ".远航归来", now=NOW,
     ))
@@ -433,8 +439,138 @@ def test_public_tianjige_voyage_return_reuses_strict_settlement_parser(runtime):
     assert runtime.identity["concubine_affinity"] == 172
     assert "月殿寻痕" in runtime.identity["concubine_voyage_last_result"]
     runtime.save.assert_called_once_with()
-    assert runtime.audit.await_args.args[0] == "📖 洞府天机阁远航归来已结算"
+    notice = runtime.audit.await_args.args[0]
+    assert notice.startswith("📖 洞府天机阁远航归来已结算｜")
+    for reward in ("修为+423", "灵石+89", "素女禁纹x1"):
+        assert notice.count(reward) == 1
+    runtime.audit.assert_awaited_once()
     assert runtime.audit.await_args.kwargs["priority"] == "low"
+    assert response["message"] == "洞府天机阁远航归来已结算"
+    assert response["extra"]["raw_message"] == runtime.flow.return_value["data"]["actionResult"]["rawMessage"]
+    second = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
+        1001, ENTRY, ".远航归来", now=NOW + 1,
+    ))
+    assert not second["ok"] and second["extra"]["status"] == "not_due"
+    runtime.flow.assert_awaited_once()
+    runtime.audit.assert_awaited_once()
+    runtime.save.assert_called_once_with()
+
+
+def test_voyage_return_notice_escapes_material_markup(voyage_runtime):
+    runtime = voyage_runtime
+    result = runtime.flow.return_value["data"]["actionResult"]
+    result["rawMessage"] = result["rawMessage"].replace("素女禁纹", "<禁纹>&碎片")
+    response = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
+        1001, ENTRY, ".远航归来", now=NOW,
+    ))
+    assert response["ok"]
+    assert "&lt;禁纹&gt;&amp;碎片x1" in runtime.audit.await_args.args[0]
+    assert "<禁纹>" not in runtime.audit.await_args.args[0]
+
+
+@pytest.mark.parametrize("problem", ["wrong_partner", "wrong_player", "unparsed", "timeout"])
+def test_voyage_return_unconfirmed_notice_never_promises_rewards(voyage_runtime, problem):
+    runtime = voyage_runtime
+    result = runtime.flow.return_value
+    if problem == "wrong_partner":
+        result["data"]["actionResult"]["rawMessage"] = result["data"]["actionResult"]["rawMessage"].replace("南宫婉·月影", "他人")
+    elif problem == "wrong_player":
+        result["data"]["account"]["playerId"] = 2002
+    elif problem == "unparsed":
+        result["data"]["actionResult"]["rawMessage"] = "未知回包：修为 +423"
+    else:
+        result.update(ok=False, status="timeout", outcome_unknown=True, action_dispatched=True)
+    before = copy.deepcopy(runtime.identity)
+    response = asyncio.run(cave_treasure_runtime.run_cave_public_tianjige_action(
+        1001, ENTRY, ".远航归来", now=NOW,
+    ))
+    assert not response["ok"]
+    assert runtime.identity == before
+    runtime.save.assert_not_called()
+    runtime.flow.assert_awaited_once()
+    assert all("修为+423" not in call.args[0] and "已结算" not in call.args[0]
+               for call in runtime.audit.await_args_list)
+
+
+def test_voyage_return_rewards_persist_and_join_one_summary(voyage_runtime, monkeypatch, tmp_path):
+    from model import runtime as notifications
+    from model.audit_summary_store import AuditSummaryStore
+
+    runtime = voyage_runtime
+    clock = [NOW]
+    store = AuditSummaryStore(tmp_path / "summary.db", {}, [], clock=lambda: clock[0])
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(notifications, "LOG_GROUP_STRUCTURED_SUMMARY", True)
+    monkeypatch.setattr(notifications, "_audit_summary_store", store)
+    monkeypatch.setattr(notifications, "_low_priority_audit_bucket", store.bucket)
+    monkeypatch.setattr(notifications, "_low_priority_audit_order", store.order)
+    monkeypatch.setattr(notifications, "_schedule_low_priority_audit_flush", Mock())
+    monkeypatch.setattr(notifications, "console_log", Mock())
+    monkeypatch.setattr(notifications, "_send_log_group_message", sender)
+    monkeypatch.setattr(cave_treasure_runtime, "send_audit_log", notifications.send_audit_log)
+
+    async def exercise():
+        response = await cave_treasure_runtime.run_cave_public_tianjige_action(
+            1001, ENTRY, ".远航归来", now=NOW,
+        )
+        assert response["ok"]
+        sender.assert_not_awaited()
+        rows = store._disk()["rows"]
+        assert len(rows) == 1 and rows[0]["count"] == 1
+        assert "素女禁纹x1" in rows[0]["plain"]
+        clock[0] += 1800
+        await notifications.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        notice = sender.await_args.args[0]
+        assert notice.count("素女禁纹x1") == 1
+        assert "<blockquote expandable>" in notice and "tg://user" not in notice
+        assert not store.bucket and not store.held
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("problem", ["format", "send", "cancel"])
+def test_voyage_notice_failure_preserves_settlement(voyage_runtime, monkeypatch, caplog, problem):
+    from model.features.miniapp_common import MiniAppFlowCancelled
+
+    runtime = voyage_runtime
+    if problem == "format":
+        monkeypatch.setattr(concubine, "_format_voyage_reward_summary", Mock(side_effect=ValueError("private-detail")))
+    else:
+        runtime.audit.side_effect = asyncio.CancelledError() if problem == "cancel" else RuntimeError("private-detail")
+    action = cave_treasure_runtime.run_cave_public_tianjige_action(1001, ENTRY, ".远航归来", now=NOW)
+    if problem == "cancel":
+        with pytest.raises(MiniAppFlowCancelled) as caught:
+            asyncio.run(action)
+        response = caught.value.result
+    else:
+        response = asyncio.run(action)
+    assert response["ok"]
+    assert response["extra"]["voyage"]["outcome"] == "returned"
+    assert runtime.identity["concubine_voyage_status"] == "idle"
+    assert runtime.identity["concubine_affinity"] == 172
+    runtime.save.assert_called_once_with()
+    runtime.flow.assert_awaited_once()
+    runtime.audit.assert_awaited_once()
+    assert "private-detail" not in caplog.text
+    if problem == "format":
+        assert runtime.audit.await_args.args[0] == "📖 洞府天机阁远航归来已结算"
+
+
+@pytest.mark.parametrize("result,summary", [
+    (None, ""),
+    ("", ""),
+    ("- 修为 +423\n- 灵石 ＋89\n- 素女禁纹 ×1", "修为+423、灵石+89、素女禁纹x1"),
+    ("此行过于凶险，情缘减少 6 点。", "情缘-6"),
+    ("\n".join(f"- 材料{i} x1" for i in range(10)), "、".join(f"材料{i}x1" for i in range(8))),
+])
+def test_voyage_reward_summary_matches_legacy_format(runtime, result, summary):
+    assert concubine._format_voyage_reward_summary(result) == summary
+    parsed = {"partner": "南宫婉", "route": "月殿寻痕", "result": result}
+    with state_module.use_identity(1001):
+        assert concubine._format_voyage_result_audit(parsed).startswith(
+            "🌸 远航归来：南宫婉｜月殿寻痕" + ("｜" + summary if summary else "")
+        )
 
 
 @pytest.mark.parametrize("outcome", ["started", "transport_failed", "unparsed"])

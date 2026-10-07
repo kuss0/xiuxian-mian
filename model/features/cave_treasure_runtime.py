@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import html
 import logging
 import math
 import re
@@ -5526,7 +5527,13 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
             "message": "洞府天机阁远航归来已结算" if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN else "洞府天机阁月殿寻痕已发起",
             "extra": {**extra, "voyage": applied},
         }
-        await _audit_cave_tianjige_read_only(identity_id, response, priority="low")
+        detail = ""
+        if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN:
+            try:
+                detail = html.escape(concubine._format_voyage_reward_summary(applied["text"]))
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Voyage reward formatting failed (%s); settlement retained", type(exc).__name__)
+        await _audit_cave_tianjige_read_only(identity_id, response, detail=detail, priority="low")
         return response
 
 
