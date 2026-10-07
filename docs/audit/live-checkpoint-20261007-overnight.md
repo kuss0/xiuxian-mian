@@ -1,8 +1,27 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 10:01 CST. Runtime code through
+Observations through October 7, 2026, 10:58 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+Latest continuation: `b9a1a4be` voyage reward notification is merged/pushed,
+full tests 16824 / 1486 subtests, second review 654, production-directory
+isolated recheck 444. It is **not loaded**; worker and monitor PIDs below are
+unchanged. See [scope and acceptance](voyage-return-notice-20261007.md).
+All tests/pushes completed; only runtime quiz learning remains dirty.
+Foreground follower **33330** is active until about **13:35**; former **56988**
+expired normally at 10:43. Continue watching, without an extra restart.
+
+The 09:39-10:26 retreat window completed 23 settles and 23 restarts, one
+successful HTTP capture per action, with no overdue/non-running retreat at
+10:41. Baji's 10:11:34 return and 10:11:35 restart were each sent once;
+next return 16:11:39, fishing still 5/5. Its exact gains were not retained in
+the available captures, so the new notice is not applied retroactively.
+Fate remains 24/24 settled. 10:53:11 ordinary summary confirmed as
+`82d9ed270bae4b8b8b2c430955cf4194`, 355 UTF-16 / eight lines / no mention.
+At 10:58 ordinary queue is empty; two historical held batches remain.
+Next routine window 11:23:10 may stay empty; next owned voyage is WA
+11:27:55. Trial durable handoff and other open debts remain as listed below.
 
 ## Latest Incident: Daily Duel Reopened
 
