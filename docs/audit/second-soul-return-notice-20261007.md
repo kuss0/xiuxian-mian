@@ -1,7 +1,10 @@
 # Second Soul Return Rewards
 
 Base: `b648f257`. Lab: `/root/xiuxian-second-soul-return-notice-20261007`.
-Code and offline acceptance complete; not loaded by the production worker.
+Merged and pushed as `69b36da1`; post-merge isolated checks pass 335 tests /
+7 subtests. Main worker 2901475 still runs `51c2e348`, with no restart. Quiz
+learning remains the only production dirt. Code acceptance does not certify
+runtime loading or a future natural notification.
 
 ## Evidence And Scope
 

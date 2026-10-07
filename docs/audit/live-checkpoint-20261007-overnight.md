@@ -162,6 +162,12 @@ All three services active, worker 2901475 unchanged, daily-close preflight
 healthy, pending queue empty. Historical held batches remain two. Foreground
 follower 56988 continues until approximately 10:43; renew before it expires.
 
+At 08:51, return-notice fix `69b36da1` is merged/pushed; production-directory
+isolated checks pass 335 / 7 subtests. No runtime restart: this executable
+change remains pending load. Only quiz learning is dirty, and all tests/pushes
+have completed. Next due YuanYing is xuruode6 at 08:55:10; keep foreground
+56988 active while waiting for the later mudamuda0 settlement.
+
 ## Code And Services
 
 `536bbdc9` was fast-forwarded to production `main` and pushed to
