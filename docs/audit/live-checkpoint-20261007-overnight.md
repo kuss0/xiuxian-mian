@@ -1,8 +1,73 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 17:17 CST. Runtime code through
+Observations through October 7, 2026, 17:50 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 17:50
+
+Prior documentation checkpoint **3552bbdb** is confirmed pushed. Runtime
+remains `0e5e865a` on worker 3078818, supervisor 3078814, observer 3078817,
+watchdog 2835315; services active / NRestarts=0. No restart, manual probe,
+live DB correction or switch change. Foreground **28286** is active and
+consumed through this checkpoint. All test/push sessions are complete.
+Preserve live quiz learning; neither voyage Lab nor the older Labs were
+merged into production.
+
+WA naturally returned at **17:38:59**, exactly one command-center return,
+HTTP 200 / attempt 1. Confirmed rewards: cultivation **+324**, stones **+97**,
+素女禁纹 x1, affinity **+9**. Before/after affinity **627->636** reconciles.
+The existing companion chain then ran seven Telegram commands, each with
+its own official reply/edit: status **1293431->1293432**; divination
+**1293433->1293434**, cultivation -180; dream **1293437->1293438**, no
+fragment; heart root **1293441->1293443**, steady choices
+**1293445/1293448/1293451**. Final edit observed at **17:40:40** (server
+event **17:40:39**) confirms cultivation **+693**, affinity **+7**, demon
+-5/current 0. Durable heart session complete; no pending phase/error.
+Final affinity **643 = 627+9+7**, not a repeated voyage gain.
+
+One native relaunch at **17:40:44**, HTTP 200 / attempt 1. WA is sailing,
+retry_count=0/error empty, return **23:40:47**, next scheduler **23:41:51**.
+Voyage return and launch notices are separate ordinary rows in the same
+batch, due **18:08:59**. Lpprceqei's **17:41:57** confirmed question result
+(cultivation +760, 一阶妖丹x3, 三级妖丹x1, stones +209) and later retreat
+notices join that batch. Delivery is still pending, not yet accepted.
+Historical held remains two; no forced flush or replay.
+
+WA's earlier **17:21:40** send **1293318** was one named treasure caress,
+not a duel/unequip. Official **1293319** at 17:21:42 reports rapport +2 /
+experience +20; next **19:21:47**. WA/Baji duel and incense refinement
+remain off, harvesting on. No configuration was changed by this continuation.
+
+Natural public-entry retreats: wisemole settled **17:43:30**, restarted
+**17:46:07**, next October 8 **01:46:12**; Lpprceqei settled **17:46:41**,
+restarted **17:49:06**, next **01:49:11**. xianxia9527 settled **17:49:31**,
+Baji **17:50:04**, both in their normal post-summary wait at this checkpoint.
+Do not call those two restarts completed yet. Captures **2555 HTTP**, peak
+**71/90**, same earlier app/transient errors. World report remains six
+panels / two partly explained / two unexplained deltas. Pending empty,
+watchdog ok, SQLite quick_check ok; no new semantic failure identified.
+
+The nine-file voyage Lab additionally retains the original plus first
+conflicting receipt, bounded inside 64 KiB. A conflict cannot overwrite the
+first receipt, be erased by another checkpoint, project resources, or release
+admission. A third receipt is rejected without evicting either retained one.
+Failed pre/post-commit acknowledgments retain evidence and local pending-save;
+later manual affinity changes survive conflict persistence. This is not a
+conflict resolver or transport fix. Four positive regressions failed before
+implementation; seven malformed controls passed. Final targeted **266 / five
+strict xfails**, projection/conflict **57** cases plus record **71**;
+maintainer second review **1611 / 54 subtests**; frozen full **17049 /
+1486 subtests / five strict xfails**, 452.56 seconds, XML
+`/tmp/xiuxian-voyage-conflict-final-20261007.xml`. Ruff/compile/diff passed.
+All use isolated test databases; no code changed after the frozen run.
+The Lab is still uncommitted/unmerged/undeployed. Original five integration
+failures, transport gates, cancellation/replaced-owner evidence, terminal
+admission, notification handoff and read-only reconciliation remain open.
+
+Next watches: finish the **17:50+** retreat restarts, **18:08:59** ordinary
+summary, then WA rift preparation **19:01:34** / release **19:11:34**.
+Deep retreat does not block Tianxing. Keep consuming observer **28286**.
 
 ## Follow-Up Through 17:17
 
