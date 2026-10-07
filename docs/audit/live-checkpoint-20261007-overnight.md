@@ -1,8 +1,69 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 16:47 CST. Runtime code through
+Observations through October 7, 2026, 17:17 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 17:17
+
+Prior checkpoint **eb335a99** is confirmed pushed to `xiuxian-mian/main`.
+The service supervisor/worker/observer/watchdog remain
+3078814/3078818/3078817/2835315, active with NRestarts=0. No production
+restart, manual game probe, live state correction or switch change.
+Preserve `data/quiz/quiz_bank.json` live learning. Foreground observer
+**28286** remains active through approximately 22:54 and its output has
+been consumed through this checkpoint. All test/push sessions are complete.
+
+xuruode6 naturally completed public-entry nascent-soul launch at **16:56:38**.
+WA sent one `.布下剑阵` **1293278** at **17:03:02**; official reply
+**1293279** at **17:03:03** confirms cultivation -2000 and a 720-minute
+formation. State next action is October 8 **05:03:03**, not a stalled send.
+External BambooSwords quiz result at **17:04:13** stayed in local learning
+logs, absent from the queued ordinary notices. No direct quiz notification
+or extra gameplay was manufactured for acceptance.
+
+Ordinary **17:15:36** summary was confirmed as
+`915c98de13e546dfa4d5d410ba424a6c`, 121 UTF-16 / four lines / no mentions.
+It delivered the Baji and xuruode6 nascent-soul rows; ordinary queue is now
+empty, held remains two. Empty-queue next_at **17:45:35** is not a promise
+to send an empty summary. Instrumented runtime delivery receipts between
+13:45 load and this batch total five confirmed; prior four had no repeated
+payload or explicit mention, with visible size P95 463. These receipts do
+not cover other senders or historical uninstrumented notifications.
+
+Captures remain **2539 HTTP**, rolling peak **71/90**, same earlier one
+app/one transient error. World report still has six panels, two partly
+explained and two unexplained faith intervals. No new causal attribution.
+Pending empty, watchdog ok, SQLite quick_check ok. WA/Baji duel and incense
+refinement remain off; harvesting remains on. Stocks **214480/254204**,
+voyages sailing with no retry/error. WA return/schedule **17:32:46/17:38:51**;
+Baji **22:20:14/22:23:13**. Earliest deep-retreat timer **17:43:20**.
+WA rift remains **19:11:34**, ten-minute preparation; no deep-retreat block.
+
+The separate voyage Lab is now **nine files**, uncommitted/unmerged and not
+a release candidate. It adds local receipt projection through the existing
+parser/reducer and a same-transaction applied marker. Failed save ACKs retain
+the proposed projection behind a hold; local flush/restart does not rerun
+the affinity delta. Relevant manual state changes hold for reconciliation;
+unrelated module state is preserved. Extreme SQLite INTEGER affinity overflow
+was reproduced and rejected before save. Projection here means existing
+voyage state/timers/affinity, not a new inventory or total-reward ledger.
+
+Lab final focused **252 passed / 5 strict xfails**, projection **43** cases
+plus record **71**; maintainer second review **1597 / 54 subtests**; final
+frozen full **17035 / 1486 subtests / 5 strict xfails**, 448.53 seconds.
+Ruff/compile/diff passed; every pytest set `XIUXIAN_ALLOW_LIVE_TEST_DB=0`
+and failure injection used temporary WAL databases. Earlier full 17034
+predated the final overflow case and is not substituted for the final run.
+No runtime imports the helper, production still lacks its schema column.
+Both-transport gates, cancellation/owner-change evidence, conflicts,
+terminal admission and read-only reconciliation remain open; original five
+integration reproductions are not closed by local projection tests.
+Do not merge this Lab or its schema independently. See its own audit at
+`/root/xiuxian-voyage-durable-boundary-20261007/docs/audit/voyage-durable-boundary-lab-20261007.md`.
+
+Next watch: WA **17:38:51** natural return chain, the **17:43+** retreat
+window, and **19:01:34** rift preparation. This is a checkpoint, not a stop.
 
 ## Follow-Up Through 16:47
 
