@@ -1,7 +1,10 @@
 # Callback Poll Observation
 
 Base: `dd4005e3`. Lab: `/root/xiuxian-callback-poll-observation-20261007`.
-Code acceptance complete. No service restart or runtime policy change.
+Merged and pushed as `8bcc47bb`. Production-directory isolated checks pass
+207 tests / 16 subtests. The new 09:35 read-only `--once` check correctly
+reports no unresolved callback warning after recovery. No service restart or
+runtime policy change; the resident observer remains on its prior generation.
 
 ## Incident
 

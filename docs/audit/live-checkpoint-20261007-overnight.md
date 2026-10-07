@@ -186,6 +186,15 @@ at 09:26:58. Next broad watch: deep-retreat settlements 09:39-10:23, especially
 mudamuda0 around 09:54, and routine digest around 09:50. Foreground 56988
 continues until approximately 10:43; do not stop after the pending merge.
 
+09:36 follow-up: `8bcc47bb` is pushed and its production-directory isolated
+checks pass 207 / 16 subtests. Updated one-shot observer at 09:35 sees the
+recovery correctly; resident observer PID 2835325 is unchanged and not
+hot-reloaded. Main and watchdog are also unchanged. All tests and pushes
+are complete, quiz learning is the only dirt. tutuerduoxiao and myios17
+towers also completed. Baji's normal small-world query was sent at 09:36:01;
+check its real reply before the first 09:39 deep-retreat window. Summary
+queue has five rows, next approximately 09:50:57, held remains two.
+
 `536bbdc9` was fast-forwarded to production `main` and pushed to
 `xiuxian-mian/main`. It fixes independent small-world prayer deadlines; final
 full regression passed 16603 tests / 1478 subtests, broadened review 557 / 24,
