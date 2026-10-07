@@ -62,3 +62,26 @@ The broader Lab's unknown/cancelled-dispatch cases remain blocked pending
 durable pre-dispatch ownership and evidence-based reconciliation; this
 diagnostic does not resolve or authorize them. See the separate
 [voyage admission audit](voyage-owned-work-admission-20261007.md).
+
+## Natural Acceptance
+
+`71347250` was fast-forwarded and pushed to `xiuxian-mian/main`.
+Production-directory isolated regression passed 73 tests. The existing
+timer first executed the new version at **14:16:52 CST**, naturally reporting
+the single xuruode1 coverage gap while retaining the other checks. The
+14:15:51 execution was still the previous version, not failed deployment.
+No unit changes, manual trigger, restart, game request or database correction
+were used. Supervisor 3078814, worker 3078818, observer 3078817 and watchdog
+2835315 remain unchanged; services active and NRestarts=0.
+
+Adjacent natural notification evidence: the external fenghuabingxin quiz
+result 12644877 was observed at 14:04:16 in -1001680975844 and logged locally
+at 14:04:17, absent from the durable summary queue. At 14:15:49 the queued
+startup-only summary was confirmed as 7a75b9243b354c118314e5eec799dfea,
+66 UTF-16 units / three lines / zero explicit mentions. Queue became empty;
+the same two held batches remain unchanged. This is one natural external
+result and compact-summary sample, not blanket acceptance of every notice.
+
+The foreground follower 76892 remains active through about 16:25. Next
+business watches are WA small-world 14:46:13, Baji 15:39:34 and Baji voyage
+scheduling 16:18:23 after server return 16:11:39. Their settings are unchanged.

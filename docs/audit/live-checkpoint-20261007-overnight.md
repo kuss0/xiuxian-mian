@@ -1,8 +1,43 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 13:52 CST. Runtime code through
+Observations through October 7, 2026, 14:17 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 14:17
+
+Read-only frozen-voyage coverage preflight `71347250` is merged/pushed.
+Full regression 16915 / 1486 subtests; cross-module second review 353 / 16;
+production-directory isolated recheck 73. At 14:16:52 the existing timer
+naturally loaded it and reported only xuruode1's configuration gap. The
+diagnostic uses a coherent read-only SQLite snapshot and reports local
+observations only. It does not authorize return/launch or enable the ordinary
+command recovery scheduler. [Evidence](frozen-voyage-preflight-20261007.md).
+
+No runtime restart: worker remains 3078818 on `0e5e865a`; supervisor,
+observer and watchdog PIDs unchanged, services active, NRestarts=0. Only
+runtime quiz learning is dirty. Pending queue empty and watchdog healthy;
+the observer retains the two historical held batches without replay.
+
+Natural external quiz result 12644877 in -1001680975844 at 14:04:16 was
+logged locally at 14:04:17 and absent from the durable summary queue.
+14:15:49 startup-only ordinary summary was confirmed as
+`7a75b9243b354c118314e5eec799dfea`, 66 UTF-16 / three lines / zero explicit
+mentions; queue then empty. This validates one post-load unmanaged result
+and compact delivery, not every notification path. Next empty/routine
+window is 14:45:48. WA/Baji voyage notification samples remain outstanding.
+
+Current captures: 2501 HTTP requests, peak 71/90, same two earlier errors.
+Small-world report still has two unexplained faith deltas. Balances/faith
+remain Baji 248269/97 and WA 205913/100, phases idle with no error. Duel and
+refinement remain off; voyage/harvest settings unchanged. Next WA world
+check 14:46:13, Baji 15:39:34; Baji return/schedule 16:11:39/16:18:23, WA
+17:32:46/17:38:51. WA rift 19:11:34 remains outside preparation.
+
+Foreground follower **76892** is active through approximately **16:25**;
+renew before expiry. No new live probe or state correction. Broader voyage
+unknown/cancellation recovery and trial reward handoff Labs are still
+unmerged and unresolved; do not promote their earlier green tests to release.
 
 ## Follow-Up Through 13:52
 
