@@ -1,8 +1,92 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 12:18 CST. Runtime code through
-`51c2e348` loaded during the controlled duel repair at 06:53. Earlier
+Observations through October 7, 2026, 13:52 CST. Runtime code through
+`0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 13:52
+
+The six-line public voyage owned-work admission fix `0e5e865a` is pushed
+and loaded. Baseline 18 failed / six controls passed; final 16876 tests /
+1486 subtests, focused 560, second-review regression 453, production isolated
+recheck 321. Details and backup in
+[the admission audit](voyage-owned-work-admission-20261007.md). Status reads
+retain command fallback; only blocked mutations stop. No schema or switch
+change, no artificial game probe. Do not conflate this with durable unknown
+recovery or frozen-channel scheduler support.
+
+Clean stop 13:44:21; main/observer start 13:45:29; 24-identity restore
+13:45:47. Supervisor 3078814 / worker 3078818 / observer 3078817 are active,
+NRestarts=0; watchdog 2835315 unchanged. Module rows and identity enablement
+match the stopped backup, global enabled remains true. Only Baji's already
+overdue pet-formation timer was spread by existing startup behavior. The
+standalone listener remains unauthorised; main listeners cover both groups.
+Follower **76892** is active until approximately **16:25**. Old **33330**
+expired normally at 13:35. Renew before the new follower expires.
+
+Previously staged notification fixes `cbe1dff8`, `b9a1a4be`, `69b36da1`
+and observer change `8bcc47bb` are now loaded. Their natural samples are
+still due; do not call loading a delivery acceptance. The 13:03:23 summary
+`b901bec08a684126b3add65e4372ae6a` was old-worker output, 105 UTF-16 units,
+three lines, no mentions. Queue now empty; held=2 unchanged. 13:33 correctly
+sent no empty summary.
+
+Baji/WA voyages are sailing, no errors, next return 16:11:39 / 17:32:46;
+scheduler clocks 16:18:23 / 17:38:51. Both duel and incense refinement are
+off, harvesting remains on; balances 248269 / 205913, faith 97 / 100. Current
+small-world checks are 15:39:34 / 14:46:13. All 24 deep retreats were running
+with future deadlines; WA rift remains 19:11:34, not inside preparation.
+13:21:20 WA pet command 1292055 has official reply 1292056 at 13:21:22.
+
+### Natural Boss Evidence
+
+Baji's existing MiniApp auto selection ran before maintenance. One `begin`
+returned 403 `turnstile_failed` at 13:41:15; `begin_verified` succeeded at
+13:41:20; one `finish` succeeded at 13:42:50. The native receipt reports
+16 planned/attempted/accepted hits, 11 perfect, no skipped or rejected
+windows, full_window_run=true, score 100 / grade A. This is a complete
+script run, not a claim that the global boss was defeated or that all
+Turnstile failures are fixed.
+
+The five non-perfect windows are 1, 5, 8, 12, 13. Their hit round trips were
+508.5, 656, 675, 556.1, 502.1 ms; server hold times 1360.5, 1633.9, 1663.2,
+1547.6, 1440.5 ms, versus local holds roughly 1.08-1.12 seconds. This is
+new timing-budget evidence, not a reason to change production targeting or
+rerun the boss. Existing boss timing debt remains open.
+
+The 13:42:54 combined result notification was confirmed before restart.
+The global conclusion arrived 13:47:19 after restart and retained the same
+16 hits / 11 perfect; its distinct conclusion notification
+`7052741c9bad494282d8ff3154bd87be` was confirmed, 110 UTF-16 units, three
+lines, no mentions. No new begin/hit/finish after restart. Captured request
+count is now 2501, peak 71/90, with the recovered boss app error and the
+earlier transient. Do not count business capture rows as HTTP requests.
+
+### Labs And Unresolved Work
+
+`/root/xiuxian-voyage-public-guard-20261007` is uncommitted and **not a
+release candidate**. Its broader async snapshot/cancellation guard passed
+16917 / 1486 subtests, then second review reproduced two deeper gaps. The
+two strict xfails in `tests/test_voyage_unknown_lab.py` preserve unknown
+launch re-eligibility after one hour and cancelled dispatched mutation
+re-entry on the next tick. No runtime/schema/intent ledger from this Lab
+was merged. Before expanding it, establish durable pre-dispatch ownership,
+evidence retention and both-transport admission with guarded reconciliation.
+
+Frozen channel xuruode1 has voyage enabled but is excluded from ordinary
+concubine due scans. Its July 19 snapshot, July 25 return and August 14
+schedule are stale local data, not fresh server truth. All 19 frozen channels
+have old concubine snapshots, but only this one has voyage enabled. HTTP-only
+calibration/scheduling and monitoring coverage remain open; never admit the
+entire command-capable concubine recovery chain to frozen identities.
+
+Trial reward handoff remains isolated in the Lab described below. Its latest
+writer experiment adds a fourth test file using a temp WAL DB and real
+CheckpointWriter/save_state: four tests passed; related regression was
+442 passed / three strict xfails before that file. Fatal report-write rollback
+also blocks gameplay, so the test-only writer hook must not ship. Optional
+report degradation, retained child notices, durable incomplete markers,
+cross-database delivery admission and parent integration remain unresolved.
 
 ## Follow-Up Through 12:18
 

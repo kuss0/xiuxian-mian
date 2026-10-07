@@ -73,3 +73,27 @@ are 205913 / 248269. No empty notification was sent at the 13:33 window.
 seconds later. No extra command was sent for testing. Existing notification
 changes remain pending runtime loading; this observation does not certify
 unmanaged-quiz suppression.
+
+## Deployment And Post-Load Check
+
+`0e5e865a` was fast-forwarded to main and pushed to `xiuxian-mian/main`.
+Production-directory isolated recheck passed 321 tests. At 13:44:18 the
+supervisor quiesced sends; the worker exited cleanly by 13:44:21, with no
+forced kill or incomplete-shutdown warning. Private SQLite backup:
+`/root/xiuxian-live-backups/voyage-admission-20261007-1344/state-before.db`.
+
+The main service and observer started at 13:45:29. Supervisor 3078814,
+worker 3078818 and observer 3078817 now load this commit; watchdog 2835315
+was not restarted. Bootstrap restored 24 identities at 13:45:47. All module
+rows and identity enabled flags match the stopped backup; global_enabled=1.
+The only timer difference is Baji's overdue next_pet_formation_time, moved
+by existing startup spreading. No voyage, duel or small-world timer was
+manually changed. Main listener remains responsible for both groups.
+
+This load also activates the previously accepted voyage/second-soul reward
+text, unmanaged-quiz observation and sustained callback-failure diagnostics.
+Natural notification and next-voyage acceptance are still outstanding.
+Through 13:52: service/watchdog healthy, pending queue empty; observer only
+reports the two historical held notification batches. Baji/WA return and
+schedule clocks remain 16:11:39/16:18:23 and 17:32:46/17:38:51. Follower
+76892 remains active. No frozen-channel scheduler was enabled.
