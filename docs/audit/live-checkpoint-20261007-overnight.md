@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 09:32 CST. Runtime code through
+Observations through October 7, 2026, 10:01 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -194,6 +194,55 @@ are complete, quiz learning is the only dirt. tutuerduoxiao and myios17
 towers also completed. Baji's normal small-world query was sent at 09:36:01;
 check its real reply before the first 09:39 deep-retreat window. Summary
 queue has five rows, next approximately 09:50:57, held remains two.
+
+### Natural Fate Completion And Retreats Through 10:01
+
+mudamuda0's independent deep retreat settled at 09:54:22 (journal 09:54:23)
+and restarted at 09:57:01. The next retreat deadline is 17:57:05. The ordinary
+fate task then entered at 09:59:12; its captured selected-player read, details,
+external entry and fate read completed at 09:59:20-09:59:23. There was exactly
+one successful `settle` at 09:59:24, followed by a successful reconciliation
+read at 09:59:25. All seven captured HTTP requests returned 200. No draw,
+interpretation, choice, forced retreat or manual probe was added.
+
+The saved quest is now settled, 30/30, with a settlement receipt and no pending
+action. Its cumulative gains are cultivation +8 and remnants +3; the last
+claim itself awarded remnants +2, not another +3. All 24 fate records are
+settled. The one daily report confirmed at 09:59:25 as
+`40d5353ad4da4036bc854fbff6d630c7`: cultivation +510, remnants +72,
+51 UTF-16 units / three lines / no explicit mention. The report-day marker
+is October 7. This closes today's unfinished task, not the unexplained earlier
+4 -> 0 observation. No progress guard was relaxed and no missing resource
+baseline was invented. The record's `updated_at` is the operation start time,
+not the settlement-response timestamp; use captures for the latter.
+
+Natural retreat restarts have now been seen for wisemole 09:43:16,
+Lpprceqei 09:45:58, xianxia9527 09:48:14, Baji 09:48:50,
+gyurihero 09:51:32, myios17 09:52:04, zhengyuan0213 09:55:56,
+xuruode8 09:56:28, mudamuda0 09:57:01, dingfengbosushi 09:59:55,
+tutuerduoxiao 10:00:31 and xuruode6 10:01:03. Captures since 09:39 have
+one settle and one start for each of these twelve identities, all HTTP 200;
+xuruode4 has settled and still awaits its new start. Other identities' later
+windows remain unaccepted. wisemole also completed a natural tower at
+09:55:57: 19 floors, cultivation +2893, tower seals +45, next October 8.
+
+09:50:58 ordinary summary confirmed as `8f593712f5314bb5a51106303ff52f76`,
+833 UTF-16 units / 17 lines / no explicit mention. At 09:52 watchdog is
+healthy; the updated one-shot observer only reports the same two historical
+held batches. Preflight reports today's duel closure healthy and no pending
+tasks; standalone listener remains inactive, with the main listeners in use.
+At 09:55 the captured MiniApp report counted 2263 HTTP requests, peak 44/90,
+and only the earlier recovered transient error. Its two unexplained faith
+deltas remain open; a successful harvest or manifestation does not explain them.
+
+Worker 2901475 and the resident monitors are unchanged. Return-notice
+`69b36da1` and observer `8bcc47bb` remain pending their respective process
+loads. WA/Baji duel and incense refinement stay off, harvesting stays on;
+Lpprceqei remains closed today with its next decision October 8 01:38:41.
+No service restart, switch/state correction or game request was performed by
+the maintainer in this continuation. Foreground follower 56988 remains active
+until about 10:43. Next watches are Baji's voyage return around 10:09:48 and
+the remaining retreat settlements/restarts through roughly 10:26.
 
 `536bbdc9` was fast-forwarded to production `main` and pushed to
 `xiuxian-mian/main`. It fixes independent small-world prayer deadlines; final
