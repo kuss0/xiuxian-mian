@@ -178,6 +178,42 @@ def _parse_panel(text: str) -> dict[str, int] | None:
     }
 
 
+def _restore_proven_bot_metadata(rows, roots):
+    # Some listeners omit entity metadata. Infer only from an earlier strict
+    # bot reply anchored to our own command; never rewrite the source log.
+    conflicts = {_id(row.get("sender_id")) for row in rows if row.get("sender_is_bot") is False}
+    senders = defaultdict(set)
+    for row in rows:
+        key, sender = _message_key(row), _id(row.get("sender_id"))
+        if key and sender and row.get("event_type") in {"message", "edit"}:
+            senders[key].add(sender)
+    conflicted_messages = {key for key, values in senders.items() if len(values) > 1}
+    known, restored, inferred = {}, [], 0
+    for row in rows:
+        sender = _id(row.get("sender_id"))
+        at = _parse_ts(row.get("ts"))
+        eligible = (sender and sender not in conflicts and at > 0
+                    and row.get("event_type") in {"message", "edit"}
+                    and not row.get("forwarded") and _message_key(row) is not None
+                    and _message_key(row) not in conflicted_messages)
+        if eligible:
+            name = row.get("sender_username")
+            normalized = name.lower() if isinstance(name, str) else ""
+            if sender in known and "sender_username" in row and normalized != known[sender]:
+                known.pop(sender)
+            root = roots.get(_message_key(row, "reply_to_msg_id"))
+            if (row.get("sender_is_bot") is True and re.fullmatch(r"hantianzun[0-9]+_bot", normalized)
+                    and root is not None and 0 < _parse_ts(root.get("ts")) <= at
+                    and row["message_id"] > root["message_id"]):
+                known[sender] = normalized
+            elif ("sender_is_bot" not in row and sender in known
+                  and ("sender_username" not in row or normalized == known[sender])):
+                row = {**row, "sender_is_bot": True}
+                inferred += 1
+        restored.append(row)
+    return restored, inferred
+
+
 def _event_explanations(
     rows: list[dict[str, Any]],
     roots: dict[tuple[int, int], dict[str, Any]],
@@ -319,6 +355,7 @@ def build_small_world_evidence(
     for key in conflicting_roots:
         roots.pop(key, None)
 
+    rows, inferred_bot_rows = _restore_proven_bot_metadata(rows, roots)
     identity_aliases_by_id, ambiguous_aliases = _identity_aliases(rows)
 
     # Build the same reply/broadcast candidate set once. The previous path
@@ -421,6 +458,7 @@ def build_small_world_evidence(
             "invalid_root_owners": invalid_root_owners,
             "conflicting_roots": len(conflicting_roots),
             "ambiguous_aliases": ambiguous_aliases,
+            "inferred_bot_rows": inferred_bot_rows,
         },
         "identities": sorted(grouped),
         "deltas": deltas,
