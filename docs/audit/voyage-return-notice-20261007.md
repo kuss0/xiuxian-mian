@@ -64,3 +64,26 @@ Historical held batches remain two. Foreground follower **33330** replaces
 expired **56988** and runs until approximately 13:35. Next routine summary is
 10:53:10, WA voyage 11:27:55. Trial durable reward handoff, fate regression
 root cause, held notices and unloaded changes remain separate debts.
+
+## Natural Acceptance On October 7
+
+After the 13:45 controlled load, Baji naturally returned at 16:18:28.
+Captured HTTP shows one command-center return, status 200 / attempt 1.
+The accepted notice retains cultivation +286, stones +64, 素女禁纹 x1,
+spirit reserve +5 and affinity -8; exactly one notice row was queued.
+
+Existing enabled companion work ran before the next voyage: one status
+query, divination (cultivation -180), dream (no fragment), then three
+steady heart choices. Official root 1293058 was edited through settlement
+at 16:20:07, with cultivation +711 and affinity +7. Its durable session is
+complete, so affinity reconciles as 390 - 8 + 7 = 389. These are separate
+game results, not additional voyage rewards. New voyage launched once at
+16:20:10, also status 200 / attempt 1; next return 22:20:14.
+
+The return reward notice remained separate from the launch row until the
+ordinary combined batch at 16:45:01, confirmed receipt
+`1cde0b0510344aa0b7a9e375127ae8b8`, 463 UTF-16 units / 11 lines / no
+explicit mentions. All earlier rows were removed after delivery; only a
+new 16:45:35 nascent-soul notice remained. Historical held=2 was untouched.
+This completes natural acceptance of the normal reward-notice path, not
+the unresolved native-voyage durability/recovery design in the other Lab.

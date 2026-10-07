@@ -1,8 +1,67 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 16:03 CST. Runtime code through
+Observations through October 7, 2026, 16:47 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 16:47
+
+Report repair and prior checkpoint were pushed through **e37f9918**.
+Services remain active with the same supervisor/worker/observer/watchdog
+PIDs and NRestarts=0. No restart, manual game probe, state correction or
+switch change. Foreground observer **28286** continues through about 22:54;
+old **76892** completed naturally and its final output has been consumed.
+All test and push sessions completed. Preserve live quiz learning.
+
+Baji naturally returned at **16:18:28**, exactly one command-center request,
+HTTP 200 / attempt 1. The reward notice contains cultivation +286, stones
++64, 素女禁纹 x1, reserve +5, affinity -8. Existing companion work then ran:
+status 1293047->1293048, divination 1293049->1293050 (cultivation -180), dream
+1293053->1293055 (no fragment), and heart root 1293057->1293058 with three
+steady choices 1293061/1293066/1293069. Final edit at 16:20:07 confirms
+cultivation +711, affinity +7, demon -5/current 0. The heart session and
+query/dream/divination records are complete. Affinity **390-8+7=389** is
+fully explained; no estimated correction. The next voyage launched once
+at **16:20:10**, return **22:20:14**, next decision **22:23:13**. Both native
+mutation requests succeeded once; no high-risk retry was manufactured.
+
+Natural harvests: Baji **16:24:19**, +5935, stock **254204**, next harvest
+October 8 **00:24:18**; WA **16:41:30**, +8567, stock **214480**, next
+**00:41:29**. Each has one collect capture, status 200 / attempt 1. Cached
+pending-incense panel values remain old observations, not extra harvested
+stock. Both refinement and duel switches remain off; harvest/voyage on.
+The earlier Baji prayer-deadline case is now documented as a natural
+acceptance in its dedicated audit; faith residuals remain independent.
+
+Public-entry nascent-soul launches also completed naturally for growrdick
+16:15:00, imcanonical_ai 16:20:42, xueuode5 16:25:52, WA 16:43:00 and Baji
+16:45:35. A 16:37 state check found 24 enabled deep retreats running with
+future timers and seven enabled nascent souls running; it does not claim
+all identities had a newly observed request in this interval.
+
+Notification receipts: **16:05:45** `4f5e480ce38c4e018bbb07ca374d4170`,
+103 UTF-16 / three lines / no mentions; **16:45:01**
+`1cde0b0510344aa0b7a9e375127ae8b8`, 463 UTF-16 / 11 lines / no mentions.
+The latter delivered the eight accumulated ordinary records, including the
+single voyage reward and both harvests. Queue now contains only Baji's new
+16:45:35 nascent-soul row, next batch **17:15:35**; held remains two.
+The earlier 16:35:45 value was an idle next_at, not an overdue delivery:
+the first new row at 16:15 started a fresh 30-minute batch at 16:45.
+No separate quiz or routine gameplay alert was sent to force acceptance.
+
+Current captures **2535 HTTP**, rolling-minute peak **71/90**, same earlier
+app/transient errors. Six world panels, two partially explained and two
+unexplained faith intervals. Pending empty, watchdog ok, SQLite quick_check
+ok. Production still has no native-voyage-operation schema column. That
+eight-file Lab remains uncommitted/unmerged. Its design now explicitly
+rejects blind resource rollback on a possibly committed but lost save ACK;
+resource projection, conflict retention and both-transport integration are
+still unimplemented, not accepted by the record-layer tests.
+
+Next concrete watches: ordinary summary **17:15:35**, WA return **17:32:46**
+/ schedule **17:38:51**, earliest deep-retreat timer around **17:43:20**,
+then WA rift **19:11:34** with ten-minute preparation. Deep retreat must
+not be used as a Tianxing block. Continue the observer; no handoff or stop.
 
 ## Follow-Up Through 16:03
 

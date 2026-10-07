@@ -80,3 +80,22 @@ No runtime acceptance claimed. Production worker 2207227 remains the old
 generation. Existing live timers are not repaired by changing disk code; after
 normal loading, the next authoritative panel/wait must establish the hint.
 Do not replay an old countdown into live state or force another manifest.
+
+## Natural Acceptance On October 7
+
+The repair was loaded before this sample. Baji's earlier panel established
+the 15:37:08 check. A disaster at 14:32:12 was followed by one confirmed
+sermon at 14:32:17, setting god cooldown to 17:32:17; the independent check
+remained at 15:37:08 instead of moving to that cooldown.
+
+The scheduler naturally sent query 1292847 at 15:37:17. Reply 1292849 at
+15:37:19 reported no prayer, a 5h59m59s wait, faith 98 and stock 248269.
+Pending cleared and next check became 21:40:41. No manifest, sermon or
+relief was sent in response to this panel. This is a real post-load sample
+of the preserved deadline and normal read-only follow-up, not a forced run.
+
+At 16:24:19 Baji also naturally harvested 5935 incense via one public
+MiniApp collect, stock 254204 and next harvest October 8 00:24:18. Refinement
+remains off. This harvest does not explain historical faith deltas or
+establish a new prayer result. Exceptional backoff/cancellation variants
+remain supported by offline tests, not falsely claimed as live incidents.
