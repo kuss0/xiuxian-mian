@@ -1,7 +1,37 @@
+import pytest
+
 from telethon.extensions import html as telegram_html
 from telethon.tl.types import MessageEntityBlockquote, MessageEntityCode, MessageEntityTextUrl
 
 from model.audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text, text_units
+from model.audit_messages import second_soul_return_reward_text
+
+
+@pytest.mark.parametrize("cultivation,experience", [(77845, 3544), (0, 0), (2**53 - 1, 1)])
+def test_second_soul_return_renders_exact_reward_line(cultivation, experience):
+    text = ("【第二元神归位】\r\n"
+            f"主魂获得了 {cultivation} 点修为，第二元神获得了 {experience} 点经验。\r\n"
+            "五子流转：同心 100→100，魔染 38→46。")
+    assert second_soul_return_reward_text(text) == f"修为 +{cultivation}｜元神经验 +{experience}"
+
+
+@pytest.mark.parametrize("text", [
+    "", None, "第二元神归位，本次修炼无收益。",
+    "五子流转：同心 100→100，魔染 38→46。",
+    "主魂获得了 -1 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 1.5 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 1万 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 １２ 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 1 点修为，第二元神获得了 -10 点经验。",
+    "主魂获得了 1 点修为，第二元神获得了 9007199254740992 点经验。",
+    "主魂获得了 10000000000000000 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 <b>1</b> 点修为，第二元神获得了 10 点经验。",
+    "主魂获得了 1 点修为，第二元神获得了 10 点经验。<b>其他消息</b>",
+    "主魂获得了 1 点修为，第二元神获得了 10 点经验。\n主魂获得了 2 点修为，第二元神获得了 11 点经验。",
+    "主魂获得了 1 点修为，第二元神获得了 10 点经验。\n主魂获得了 未知 点修为。",
+])
+def test_second_soul_return_does_not_guess_missing_or_conflicting_rewards(text):
+    assert second_soul_return_reward_text(text) == ""
 
 
 def test_short_notice_stays_short():

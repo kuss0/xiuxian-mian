@@ -88,6 +88,24 @@ def fold_audit_body(body, *, critical=False):
     return "\n".join(visible) + '\n<blockquote expandable>' + "\n".join(folded) + '</blockquote>'
 
 
+def second_soul_return_reward_text(text):
+    """Render one exact reward line; never infer gains from other numbers."""
+    lines = [line.strip() for line in str(text or "").splitlines()
+             if line.strip().startswith("主魂获得了")]
+    if len(lines) != 1:
+        return ""
+    match = re.fullmatch(
+        r"主魂获得了 ([0-9]{1,16}) 点修为，第二元神获得了 ([0-9]{1,16}) 点经验。",
+        lines[0],
+    )
+    if match is None:
+        return ""
+    cultivation, experience = map(int, match.groups())
+    if max(cultivation, experience) > 2**53 - 1:
+        return ""
+    return f"修为 +{cultivation}｜元神经验 +{experience}"
+
+
 def routine_copy(content):
     """Shorten only known successful templates, never interpret arbitrary errors."""
     text = str(content or "")

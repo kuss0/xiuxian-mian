@@ -33,6 +33,7 @@ import time
 from types import SimpleNamespace
 from uuid import uuid4
 
+from ..audit_messages import second_soul_return_reward_text
 from ..config import (
     CD_BUFFER_SEC,
     CMD_SECOND_SOUL_CHOICE_BREAK,
@@ -1345,14 +1346,16 @@ async def handle_second_soul_return_broadcast(text, now, *, event=None):
         if save_state() is False:
             return False
         expected = _business_snapshot(owner[1])
+        reward = second_soul_return_reward_text(text)
+        suffix = f"｜{reward}" if reward else ""
         if should_purge:
             await send_audit_log(
-                f"🌀 第二元神已归位但魔染 {moran}，先镇魔再恢复修炼队列。",
+                f"🌀 第二元神已归位但魔染 {moran}，先镇魔再恢复修炼队列。{suffix}",
                 scope="identity", send_as_id=target_id, limit=240,
             )
         else:
             await send_audit_log(
-                "🌀 第二元神已归位，修炼指令进入安全队列。",
+                f"🌀 第二元神已归位，修炼指令进入安全队列。{suffix}",
                 scope="identity", send_as_id=target_id,
             )
     if should_purge and _owns_identity(owner, enabled=True) and _business_snapshot(owner[1]) == expected:

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from model import control, runtime, state as state_module
 from model.audit_summary_store import AuditSummaryStore
-from model.features import stargazer
+from model.features import second_soul, stargazer
 
 
 class NotificationAcceptanceTests(IsolatedAsyncioTestCase):
@@ -78,6 +78,44 @@ class NotificationAcceptanceTests(IsolatedAsyncioTestCase):
         self.sender.assert_awaited_once()
         assert "HTTP 429" in self.sender.await_args.args[0]
         assert not self.store.bucket
+
+    async def test_second_soul_return_rewards_persist_and_send_once_in_summary(self):
+        saved = copy.deepcopy(state_module._meta_state)
+        identity_id = 990710002
+        text = (
+            "【第二元神归位】\n"
+            "道友 @RewardSoul 的第二元神已结束修炼，回归窍中温养。\n"
+            "主魂获得了 77845 点修为，第二元神获得了 3544 点经验。\n"
+            "五子流转：同心 100→100，魔染 38→46。"
+        )
+        try:
+            state_module.set_identity_account(identity_id, 7601)
+            state_module.update_send_as_profile(identity_id, username="RewardSoul")
+            with state_module.use_identity(identity_id):
+                state_module.state["second_soul_enabled"] = True
+                state_module.state["second_soul_phase"] = "cultivating"
+            with (
+                patch.object(second_soul, "send_audit_log", runtime.send_audit_log),
+                patch.object(second_soul, "send_game_command", new=AsyncMock()) as game_sender,
+                patch.object(second_soul, "save_state"),
+            ):
+                assert await second_soul.handle_second_soul_return_broadcast(text, self.now[0])
+                assert await second_soul.handle_second_soul_return_broadcast(text, self.now[0] + 1)
+            game_sender.assert_not_awaited()
+            self.sender.assert_not_awaited()
+            disk = self.store._disk()
+            assert len(disk["rows"]) == 1 and disk["rows"][0]["count"] == 1
+            assert "修为 +77845｜元神经验 +3544" in disk["rows"][0]["plain"]
+            self.now[0] += 1800
+            await runtime.flush_low_priority_audit_summary()
+            self.sender.assert_awaited_once()
+            message = self.sender.await_args.args[0]
+            assert message.count("修为 +77845｜元神经验 +3544") == 1
+            assert "<blockquote expandable>" in message and "tg://user" not in message
+            assert not self.store.bucket and not self.store.held
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(saved)
 
     async def manual_summary(self):
         event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=1, raw_text=".发送日志汇总")

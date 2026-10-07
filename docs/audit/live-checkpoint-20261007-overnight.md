@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 08:13 CST. Runtime code through
+Observations through October 7, 2026, 08:48 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -116,6 +116,51 @@ Pre-harvest stored balances are Baji 242283 / WA 197541; faith 98 / 97.
 Both are idle with refining off, harvest on, and the original 08:22:25 /
 08:39:46 due times. Do not treat these pre-action balances as new harvest
 acceptance. No game requests or state calibrations were added for observation.
+
+### Follow-Up Through 08:48
+
+Both harvest windows supplied natural evidence on the loaded worker:
+
+- Baji: one `small_world:collect` at 08:23:18, official response text confirms
+  incense +5986, stock 248269. Last/next timers 08:23:18 / 16:23:18.
+- WA: one collect completed at 08:40:47, incense +8372, stock 205913.
+  Last/next local timers 08:40:46 / 16:40:46. Both are idle, error empty,
+  harvest on and refining off. No manual collect, resource correction or
+  repeat request was added. Due-to-dispatch delays were about one minute.
+- Each harvest produced exactly one ordinary queue row with its explicit
+  amount and balance. Neither produced an independent transport receipt.
+  The 08:44:49 ordinary summary confirmed as
+  `b1d60bdbf1a541638cd407e8484851f9`: 540 UTF-16 units / 12 lines / no mention.
+  Both queued rows disappeared; the subsequent Baji YuanYing row is new.
+  This acceptance uses before/after queue membership and delivery metrics,
+  not an independently fetched copy of the Telegram message body.
+
+WA prayer query 1290648 -> official panel 1290649 at 08:37:29 found drought,
+faith 95 and a 500-stone manifest cost. Manifest 1290650 -> official reply
+1290651 at 08:37:42 confirms faith +10, stability +5 and a 360-minute wait.
+State is idle, faith 100, anchors cleared. No incense refining or miracle
+was added. The earlier panel-to-panel faith 97 -> 95 remains unexplained;
+do not conflate successful manifest recovery with an explanation of that loss.
+
+Natural YuanYing launches: growrdick 08:14:48, imcanonical_ai 08:20:35,
+xueuode5 08:24:53, WA 08:42:35, Baji 08:45:04. The first is a frozen
+channel identity, verified player -1003800619925 under owner 301299112;
+its public-entry phase is running and next time 16:14:49. The channel send-as
+freeze is not preventing that real HTTP lifecycle.
+
+WA's second-soul return in the old group was consumed despite status/training
+commands living in the new group; see the return-notice audit for anchors.
+Its missing reward notice is repaired/tested only in Lab, not loaded or
+retroactively delivered. Current task is preparing that scoped merge, not
+restarting production or suppressing other child notices.
+
+mudamuda0 returned 4 -> 0 again at 08:25:26; previous four remain stored.
+No root cause proved or protection cleared. Observe the independent deep
+retreat around 09:53:58. Captured HTTP report at 08:48: 2160 requests,
+rolling peak 44/90, only the previously recovered transient error.
+All three services active, worker 2901475 unchanged, daily-close preflight
+healthy, pending queue empty. Historical held batches remain two. Foreground
+follower 56988 continues until approximately 10:43; renew before it expires.
 
 ## Code And Services
 

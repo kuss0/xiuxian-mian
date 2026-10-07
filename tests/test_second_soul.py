@@ -403,6 +403,35 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 else:
                     sender.assert_awaited_once()
 
+    async def test_return_broadcast_retains_rewards_without_changing_resources_or_sending(self):
+        send_as_id = 8659059300
+        _register_identity(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="ReturnSoul")
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "cultivating"
+            state_module.state["xiuwei_current"] = 123456
+        text = (
+            "【第二元神归位】\n"
+            "道友 @ReturnSoul 的第二元神已结束修炼，回归窍中温养。\n"
+            "主魂获得了 77845 点修为，第二元神获得了 3544 点经验。\n"
+            "五子流转：同心 100→100，魔染 38→46。"
+        )
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+            patch.object(second_soul, "save_state"),
+        ):
+            self.assertTrue(await second_soul.handle_second_soul_return_broadcast(text, 5000))
+            self.assertTrue(await second_soul.handle_second_soul_return_broadcast(text, 5001))
+        sender.assert_not_awaited()
+        audit.assert_awaited_once()
+        self.assertIn("修为 +77845｜元神经验 +3544", audit.await_args.args[0])
+        self.assertEqual(send_as_id, audit.await_args.kwargs["send_as_id"])
+        identity = state_module.get_identity_state(send_as_id)
+        self.assertEqual("ready_to_train", identity["second_soul_phase"])
+        self.assertEqual(123456, identity["xiuwei_current"])
+
     async def test_return_broadcast_high_moran_sends_single_purge_and_dedupes(self):
         send_as_id = 8659059195
         now = 5000.0
@@ -421,7 +450,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=61, chat_id=-1002, sent_at=now + 1))) as send_mock,
-            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
             patch.object(second_soul, "save_state"),
         ):
             handled = await second_soul.handle_second_soul_return_broadcast(text, now)
@@ -429,6 +458,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertTrue(handled_duplicate)
+        self.assertIn("修为 +43207｜元神经验 +2971", audit.await_args_list[0].args[0])
+        self.assertIn("魔染 91", audit.await_args_list[0].args[0])
         send_mock.assert_awaited_once_with(
             CMD_SECOND_SOUL_PURGE,
             track=False,
