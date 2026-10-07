@@ -1,8 +1,92 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 14:55 CST. Runtime code through
+Observations through October 7, 2026, 16:03 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 16:03
+
+Read-only report repair **4d961c51** has been fast-forward merged. Final
+full regression **16948 passed / 1486 subtests**, focused **288 / 16**,
+second review **244**, production-directory isolated recheck **82 passed**.
+Production invocation now includes six panels, two partially explained
+and two unexplained deltas. HTTP count remains 2507 / rolling peak 71 of 90.
+See [scope and trust evidence](semantic-bot-evidence-20261007.md).
+
+No service restart or game/state/switch change. The running worker is still
+3078818 on `0e5e865a`; this standalone tool does not need runtime loading.
+Only live quiz learning is unrelated to the documentation checkpoint.
+All test sessions are complete. Foreground observer **28286** remains active
+and only reports the same historical held=2. Ordinary queue has one tower
+row due 16:05:45. Baji return/schedule 16:11:39/16:18:23 and harvest 16:23:18
+remain the next natural acceptance windows. The voyage record Lab stays
+uncommitted/unmerged; none of its schema or helper code was included.
+
+## Follow-Up Through 15:49
+
+Baji naturally sent one `.小世界` **1292847** at 15:37:17, official sender
+8735907987 returned **1292849** at 15:37:19. State now reports population
+320000, faith 98, stability 95, stock **248269**, pending incense 5358.73,
+no prayer and a six-hour wait. Pending cleared; next check **21:40:41**.
+No preach, relief or refinement followed. mudamuda0 naturally finished the
+public tower at 15:35:45: 19 floors, cultivation **+6217**, tower seals **+42**;
+next run October 8 15:21:30. Neither run was manually triggered.
+
+The semantic report missed Baji's new panel because its log row lacks
+sender_is_bot, although the same sender has an earlier explicit official
+reply **1292455** to our command **1292454** at 14:46:16. This is a read-only
+reporting omission, not a failed business reducer. Separate Lab
+`/root/xiuxian-semantic-bot-evidence-20261007` restores missing metadata only
+from earlier strict official bot replies anchored to script commands. It
+rejects contrary flags/names, future or unanchored seeds, forwarded evidence
+and conflicting senders for the same message. No log is rewritten.
+Current focused review **284 passed / 16 subtests**; full run **67187** is
+still in progress. Not merged or deployed. Read-only replay finds six
+panels, two partly explained deltas and the same two unexplained deltas.
+It does not manufacture an explanation for the remaining faith changes.
+
+The voyage record-layer Lab's final full run is complete: **16992 passed /
+1486 subtests / 5 strict xfails**; second review **1217 / 54**. In addition
+to upgrade compatibility and restart tests, delayed earlier evidence now
+retains its original receipt timestamp without moving updated_at backwards.
+Record suite: 71 cases. Its eight files remain uncommitted/unmerged and
+undeployed; original five integration blockers remain open. Do not wire or
+merge this incomplete record layer or its schema independently.
+
+At 15:39 the ordinary summary queue holds one tower row, due **16:05:45**;
+held remains two. LuanXingHaii's 15:33 external quiz result is absent from
+the checkpoint. Captured HTTP count **2507**, peak **71/90**, same earlier
+app/transient errors. Observer **28286** remains active, only historical
+held warnings. Next watches: 16:05 summary, Baji 16:18 voyage /16:23 harvest,
+WA 16:40 harvest /17:38 voyage /19:11 rift. Production control unchanged.
+
+## Follow-Up Through 15:30
+
+Foreground observer **28286** remains active through approximately 22:54.
+Worker 3078818 still runs `0e5e865a`, supervisor 3078814, observer 3078817,
+watchdog 2835315. Services active / NRestarts=0. No restart, live database
+correction, switch change or game probe. Preflight at 15:23 finds only the
+known frozen-voyage gap and unavailable standalone listener; Tianxing is
+outside its preparation window. Watchdog at 15:30 is healthy, pending empty.
+Health still reports only the two historical held notices, not new failures.
+
+WA's 15:21:29 treasure send was one ordinary `.抚摸法宝` **1292641**, not a
+duel or unequip. Official hantianzun22_bot **1292642** at 15:21:32 reports
+rapport +2 / experience +12. WA and Baji remain sailing, retry_count=0 and
+voyage error empty. Next watch remains Baji's 15:37:08 world check and
+16:18:23 voyage schedule, with 16:23:18 harvest; no forced execution.
+
+The durable-voyage Lab has progressed from design-only to an **unmerged,
+undeployed record-layer prototype**. Its eight files now cover the dedicated
+JSON column/codec, standalone record helper, real-writer and restart tests,
+the original five strict xfails, status-plan compatibility and this Lab's
+audit. Initial full regression finished **16968 passed / 1486 subtests /
+5 strict xfails**. Follow-up review found and fixed five upgrade-plan
+compatibility failures in Lab; 12 additional real-reload/migration cases
+pass. Record/status-query coverage is **201 passed**. Final full regression
+is running as **32963**, not yet accepted. No new helper is imported by a
+runtime entry point. The five integration blockers remain open; schema must
+not ship separately. See the Lab's `docs/audit/voyage-durable-boundary-lab-20261007.md`.
 
 ## Follow-Up Through 14:55
 
@@ -34,7 +118,7 @@ pending empty, watchdog healthy, services/PIDs unchanged.
 
 SSH fetch at 14:53 found no upstream changes: wxjerry `aa9dba29` and
 `cd2a2e64`, Rust `3c39edc8`. No upstream code or migration was adopted.
-Current-main durable-voyage Lab remains test/design-only and uncommitted,
+At this checkpoint the current-main durable-voyage Lab was test/design-only and uncommitted,
 with the five failures below unresolved; no broader Lab was deployed.
 
 ## Follow-Up Through 14:42

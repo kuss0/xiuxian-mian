@@ -57,3 +57,11 @@ scope, manual commands and unrelated players still cannot become our panel.
 The voyage durability Lab is independent and is not included in this patch.
 After full verification, merge only this tool, its test and this document.
 No service restart is needed for this standalone report.
+
+## Production Recheck
+
+Merged as 4d961c51 on October 7 at about 16:03. Production-directory
+isolated recheck: 82 passed. Read-only invocation now returns six panels,
+two partially explained deltas and two unexplained deltas. No service
+restart, game request, state correction or module switch change occurred.
+The separate voyage record/schema prototype was not included.
