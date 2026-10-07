@@ -1,8 +1,41 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 20:50 CST. Runtime code through
+Observations through October 7, 2026, 21:50 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 21:50
+
+Documentation checkpoint **b2564a38** is pushed. Runtime, services, switches
+and the twelve-file isolated voyage Lab are unchanged; no new code, restart,
+game probe or live correction. Foreground **28286** remains active and polled.
+All test and push sessions have completed. The Lab is not deployed.
+
+WA's 20:52 query **1294501->1294502** showed faith96/stability84/population
+420000. One manifest **1294503->1294504** failed in game: faith-5/stability-5/
+population-100 and explicit 360-minute cooldown. State correctly became
+91/79/419900 with pending cleared, next check October8 **03:12:02**.
+This is a parsed negative outcome, not a send failure or a retry instruction.
+Baji's **21:41:07** query **1294668->1294669** showed faith97/stability95,
+population320000, no prayer and a six-hour wait. It sent no god/manifest
+follow-up and scheduled October8 **03:49:28**. Stocks remain214480/254204,
+both refinement switches off. The eight-panel report has two partially
+explained and four unexplained intervals; no new drift cause is claimed.
+
+WA's caress **21:22:06**, **1294646->1294647**, returned rapport+4/experience+20
+once. The **21:30:05** ordinary summary is confirmed as
+`e9d4f7a824464b928d0dd98b9f507b40`,138 UTF-16/3 lines/no mentions; queue
+emptied, held remains two. The next_at on the empty queue is not a deadline
+for another message. HTTP captures2675, peak71/90, unchanged app/transient
+error counts. Health/watchdog retain only the known held-notification warning.
+
+Pre-return affinity is now Baji399/WA652: Baji's once-daily greeting
+**18:20:49**,**1293605->1293606**, added10; WA's **18:26:01**,
+**1293640->1293641**, added9. These exactly reconcile389+10 and643+9.
+Do not reuse the earlier post-voyage affinities as current values or count
+the greeting gains as another voyage settlement. Both are still sailing,
+with no voyage error/retry; watch Baji22:23:13 and WA23:41:51, then
+WA00:39:55 wild training prep. Renew the foreground observer before22:54.
 
 ## Follow-Up Through 20:50
 
