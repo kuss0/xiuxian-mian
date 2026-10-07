@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 import subprocess
 import time
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -489,10 +491,90 @@ def _listener_status(now: float) -> dict[str, Any]:
     }
 
 
+def _frozen_voyage_checks(conn: sqlite3.Connection, now: float) -> list[dict[str, Any]]:
+    """Report an uncovered route, never infer server readiness from old timers."""
+    required = {
+        "meta": {"key", "value"},
+        "identities": {"send_as_id", "enabled", "label", "username"},
+        "identity_module_state": {"send_as_id", "concubine_voyage_enabled"},
+        "identity_runtime_state": {
+            "send_as_id", "concubine_phase", "concubine_voyage_status",
+            "concubine_voyage_return_at", "concubine_last_snapshot_at",
+        },
+        "identity_timers": {"send_as_id", "next_concubine_time"},
+    }
+    for table, columns in required.items():
+        if not columns <= {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            return []
+    meta = dict(conn.execute(
+        "SELECT key,value FROM meta WHERE key IN "
+        "('global_enabled','channel_send_as_health','miniapp_auto_config')"
+    ))
+    try:
+        enabled = json.loads(meta.get("global_enabled", "null"))
+    except (TypeError, ValueError):
+        return []
+    if enabled is not True and not (type(enabled) is int and enabled == 1):
+        return []
+    channel = _parse_json(meta.get("channel_send_as_health"))
+    config = _parse_json(meta.get("miniapp_auto_config"))
+    restored = channel.get("restore_identity_ids")
+    entries = config.get("cave_public_entry_urls") or config.get("cave_public_entry_url")
+    if isinstance(entries, str):
+        entries = [entries]
+    entry_configured = isinstance(entries, list) and any(
+        isinstance(value, str) and value.strip() for value in entries
+    )
+    if channel.get("status") != "closed" or not isinstance(restored, list) or not entry_configured:
+        return []
+    restore_ids = set()
+    for value in restored:
+        if type(value) is int or (
+            isinstance(value, str) and len(value) <= 19 and value.isdecimal()
+        ):
+            identity_id = int(value)
+            if 0 < identity_id <= 2**63 - 1:
+                restore_ids.add(identity_id)
+    if not restore_ids:
+        return []
+    rows = _fetch_rows(conn, """
+        SELECT i.send_as_id, i.label, i.username, r.concubine_phase,
+            r.concubine_voyage_status, r.concubine_voyage_return_at,
+            r.concubine_last_snapshot_at, t.next_concubine_time
+        FROM identities i JOIN identity_module_state m USING(send_as_id)
+        LEFT JOIN identity_runtime_state r USING(send_as_id)
+        LEFT JOIN identity_timers t USING(send_as_id)
+        WHERE i.enabled=0 AND m.concubine_voyage_enabled=1
+        ORDER BY i.send_as_id
+    """)
+    checks = []
+    for row in rows:
+        if row["send_as_id"] not in restore_ids:
+            continue
+        times = {}
+        for key in ("concubine_voyage_return_at", "concubine_last_snapshot_at", "next_concubine_time"):
+            value = _epoch(row.get(key))
+            times[key] = value if math.isfinite(value) and value < 253402214400 else 0
+        checks.append({
+            "level": "watch", "module": "concubine_public", "send_as_id": row["send_as_id"],
+            "label": str(row.get("label") or row.get("username") or ""),
+            "username": str(row.get("username") or ""), "action": "远航调度覆盖",
+            "local_phase": str(row.get("concubine_phase") or ""),
+            "local_voyage_status": str(row.get("concubine_voyage_status") or ""),
+            "local_times": times, "local_snapshot_only": True,
+            "checked_at": now, "entry_configured": True,
+            "reason": "频道群发冻结；普通侍妾调度未覆盖该远航，需公共入口只读校准；旧计时不证明服务器可执行。",
+        })
+    return checks
+
+
 def snapshot(*, horizon_sec: int) -> dict[str, Any]:
     now = time.time()
     checks: list[dict[str, Any]] = [_listener_status(now)]
-    with sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+        # SELECT alone does not pin a snapshot in sqlite3's legacy transaction mode.
+        conn.execute("BEGIN")
+        checks.extend(_frozen_voyage_checks(conn, now))
         pending = _fetch_rows(
             conn,
             """
