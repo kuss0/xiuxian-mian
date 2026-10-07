@@ -31,8 +31,8 @@ missing path fails instead of silently creating an empty database.
   timeline lifecycle/evidence and preflight: 400 passed / 10 subtests.
 - Temporary SQLite integration verifies unchanged file bytes and legacy schema
   compatibility. Missing-file and UTC+8 midnight tests cover the read boundary.
-- Ruff, compileall and diff checks pass. All tests isolate game state; no full
-  runtime suite is claimed for this tool-only patch.
+- Ruff, compileall and diff checks pass. Initial acceptance used the scoped
+  suites above; all tests isolate game state.
 - A read-only Lab invocation against the actual production paths at 07:08:45
   reports Lpprceqei closure healthy, pending queue empty, and only the existing
   inactive standalone-listener note. No main service restart is required.
@@ -49,3 +49,8 @@ empty pending queue, with exit success. Follow-up CLI checks remain healthy
 for this invariant. Main supervisor/worker and observer/watchdog PIDs did not
 change. This helper adds no Telegram delivery and no automatic response to an
 invariant violation. Tomorrow's natural batch boundary remains to be observed.
+
+After both patches were integrated, the full isolated regression completed:
+**16764 passed / 1486 subtests**, 457.09 seconds. JUnit:
+`/tmp/xiuxian-duel-and-preflight-integrated-20261007.xml`.
+No service restart or game action was performed for this verification.

@@ -1,6 +1,6 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 07:43 CST. Runtime code through
+Observations through October 7, 2026, 08:13 CST. Runtime code through
 `51c2e348` loaded during the controlled duel repair at 06:53. Earlier
 sections describe earlier generations; loading does not certify every feature.
 
@@ -99,6 +99,23 @@ about **10:43**. Old follower 78668 is allowed to expire normally near 07:50.
 Main supervisor/worker and long-running monitor PIDs remain unchanged;
 watchdog and daily-close invariant remain healthy. Next natural checks remain
 the two harvests and mudamuda0's independent deep-retreat settlement, above.
+
+### Follow-Up Through 08:13
+
+Integrated full regression passes 16764 tests / 1486 subtests; all test processes
+have exited. Worker remains 2901475 with no further restart. Old follower 78668
+expired normally with timeout status 124; replacement 56988 continues.
+
+No empty summary was emitted at 07:53. The external @pplutoo quiz timeout at
+08:06:55 remained local: zero matching queued rows and no new instrumented
+delivery receipt. Ordinary queue is empty, held remains two. At 08:08 the
+MiniApp capture report has 2131 HTTP records, peak 44/90, with only the earlier
+recovered transient error. The 07:54 mudamuda0 progress regression is unchanged.
+
+Pre-harvest stored balances are Baji 242283 / WA 197541; faith 98 / 97.
+Both are idle with refining off, harvest on, and the original 08:22:25 /
+08:39:46 due times. Do not treat these pre-action balances as new harvest
+acceptance. No game requests or state calibrations were added for observation.
 
 ## Code And Services
 
