@@ -1,8 +1,56 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 18:25 CST. Runtime code through
+Observations through October 7, 2026, 20:50 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 20:50
+
+Production remains **b5c12607** on disk, worker runtime **0e5e865a**; service
+supervisor/observer/watchdog PIDs remain 3078814/3078817/2835315, active,
+NRestarts=0. No restart, manual game probe, configuration or live DB change.
+Foreground **28286** was polled after continuation and remains active until
+about 22:54. The 18:46-20:45 output was consumed retrospectively after the
+interaction resumed; do not claim uninterrupted foreground triage of that
+interval. Preserve unrelated live quiz learning.
+
+WA's natural rift chain is confirmed from message logs, not just the timer:
+19:01:37 prediction **1293938**, official **1293939** observed 19:01:41;
+19:11:36 one rift send **1293952**, initial reply and final edits **1293953**.
+The final server edit at 19:11:46, observed 19:11:55, explicitly confirms
+prediction hit, Tianji +1, contribution +30, and one gold/water/fire law
+fragment each. Change remains pending for 6h19m. Pending root/deadline cleared;
+no new prediction is stored after consumption. Deep retreat did not block it.
+Do not describe old blocked_replan as a stuck active step after consumption.
+
+Ordinary summary **18:41:24** confirmed as
+`d45cb9117e354bfbb7868c408b751daa`, 544 UTF-16 /14 lines/no mentions;
+20 queued records emptied into that batch. Ordinary queue is still empty,
+historical held remains two. The rift result **19:11:56** was a separate
+98-unit/3-line notice with one mention; **19:59:30** quiet-period notice was
+82 units/2 lines/no mentions. These are not ordinary summary duplicates.
+External quiz observations at 18:39,18:51,20:17 stayed local. The 20:00
+observer business warning cleared by 20:05; no cause is asserted from the
+single aggregate line. Current health reports only the two historic held
+batches, watchdog ok, pending empty. All 24 enabled retreats are running.
+WA/Baji duel/refinement remain off, harvest on, incense 214480/254204;
+voyages sail without retry/error, return/schedule remains 23:40:47/23:41:51
+and 22:20:14/22:23:13 respectively.
+
+The isolated voyage Lab now has twelve files, still uncommitted/unmerged.
+Seeded retained records block native and command mutations, including checks
+after login and before queued transport; holds survive cleanup and real WAL
+reloads. It now imports the helper from its own runtime entry points, but does
+not automatically create native intent. This partial wiring is not deployed.
+Final full **17125 /1486 subtests /5 strict xfails**,451.85s; final cross-module
+review **3917 /84 subtests /5 xfails**, admission/projection **133**. All tests
+completed, Ruff/compile/diff passed. Original five dispatch integration holes,
+cancellation evidence, terminal release, notification handoff and reconciliation
+remain open. Do not merge the schema alone or count these tests as live fixes.
+
+Next watches: Baji **22:23:13** natural return, WA **23:41:51** return,
+WA wild training **00:39:55** with fresh Tianxing prep. Refresh observer before
+its 22:54 expiry. No new root cause warrants an emergency production patch.
 
 ## Follow-Up Through 18:25
 
