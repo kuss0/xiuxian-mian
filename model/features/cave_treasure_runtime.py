@@ -5452,6 +5452,10 @@ async def run_cave_public_tianjige_action(identity_id, public_entry_url, command
     if error:
         return {"ok": False, "message": error, "extra": {}}
     with use_identity(identity_id):
+        reason = concubine.concubine_miniapp_status_block_reason(now)
+        if reason:
+            return {"ok": False, "message": f"洞府天机阁远航动作暂不可执行：{reason}",
+                    "extra": {"status": "blocked", "reason": reason}}
         due = (
             concubine._is_voyage_return_due(now)
             if normalized_command == CMD_CONCUBINE_VOYAGE_RETURN

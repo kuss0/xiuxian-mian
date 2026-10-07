@@ -3634,6 +3634,8 @@ async def _send_voyage_miniapp_command(kind, now):
         _schedule_voyage_wait(now)
         save_state()
         return False
+    if kind != "status" and extra.get("status") == "blocked":
+        return False
     return None
 
 
