@@ -771,6 +771,7 @@ class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(quiz, "QUIZ_BANK_FILE", str(bank_path)),
                 patch.object(quiz, "save_quiz_learning_watchers_state"),
                 patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(quiz, "console_log") as local_mock,
             ):
                 self.assertTrue(await quiz.handle_quiz_learning_prompt(prompt, 1_700_000_000.0))
                 self.assertIn("outerdao", state_module.get_quiz_learning_watchers())
@@ -783,7 +784,8 @@ class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(items))
             self.assertEqual("韩立在内殿对付玄骨时，最能克制魔修的手段是什么？", items[0]["question"])
             self.assertEqual("B", items[0]["answer"])
-            self.assertIn("已记录新题", audit_mock.await_args.args[0])
+            audit_mock.assert_not_awaited()
+            self.assertIn("已记录新题", local_mock.call_args.args[0])
 
     async def test_external_correct_result_records_answer(self):
         prompt = (
@@ -805,6 +807,7 @@ class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(quiz, "QUIZ_BANK_FILE", str(bank_path)),
                 patch.object(quiz, "save_quiz_learning_watchers_state"),
                 patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(quiz, "console_log") as local_mock,
             ):
                 self.assertTrue(await quiz.handle_quiz_learning_prompt(prompt, 1_700_000_000.0))
                 handled = await quiz.handle_quiz_result_broadcast(result, now=1_700_000_020.0)
@@ -813,7 +816,8 @@ class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):
             items = json.loads(bank_path.read_text(encoding="utf-8"))
             self.assertEqual(1, len(items))
             self.assertEqual("C", items[0]["answer"])
-            self.assertIn("已记录新题", audit_mock.await_args.args[0])
+            audit_mock.assert_not_awaited()
+            self.assertIn("已记录新题", local_mock.call_args.args[0])
 
 
 if __name__ == "__main__":

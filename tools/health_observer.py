@@ -54,7 +54,8 @@ CALLBACK_POLL_WARN_FAILURES = 5
 PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(
     r"红包候选观察(?:｜|\|)"
     r"|(?:^|\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] )"
-    r"🦴 <code>@[A-Za-z0-9_]+</code>｜外部题目超时｜未托管，仅学习观察｜题目：",
+    r"🦴 <code>@[A-Za-z0-9_]+</code>｜外部题目(?:超时｜未托管，仅学习观察｜题目："
+    r"|结果｜未托管，仅学习观察｜记录：)",
     re.I,
 )
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(

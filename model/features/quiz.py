@@ -986,11 +986,23 @@ async def handle_quiz_result_broadcast(text, now=None):
         )
         return True
 
+    async def report_routine(message, **kwargs):
+        if identity_id is not None or (in_bank and correct_answer and bank_answer != correct_answer):
+            await send_audit_log(message, **kwargs)
+            return
+        console_log(
+            _format_quiz_brief_log(
+                "外部题目结果｜未托管，仅学习观察｜记录：" + " ".join(message.split()),
+                target_tag=target_tag,
+            ),
+            scope="global", limit=520,
+        )
+
     if in_bank:
         # ---- 题目在题库内 ----
         if result_type == "correct":
             if bank_answer == correct_answer:
-                await send_audit_log(
+                await report_routine(
                     _format_quiz_brief_log(
                         f"题库内答案正确 ✅｜{bank_answer_detail}｜题目：{question}",
                         identity_id=identity_id,
@@ -1010,7 +1022,7 @@ async def handle_quiz_result_broadcast(text, now=None):
                     **log_kwargs,
                 )
         elif result_type == "wrong":
-            await send_audit_log(
+            await report_routine(
                 _format_quiz_brief_log(
                     f"题库内作答错误｜提交 {submitted_answer_detail}｜正确 {correct_answer_detail}｜题目：{question}",
                     identity_id=identity_id,
@@ -1032,7 +1044,7 @@ async def handle_quiz_result_broadcast(text, now=None):
         if result_type == "correct":
             status, payload = _save_quiz_bank_entry(question, options, correct_answer)
             if status == "added":
-                await send_audit_log(
+                await report_routine(
                     _format_quiz_brief_log(
                         f"已记录新题 ✅ 答案：{correct_answer_detail}｜题目：{question}",
                         identity_id=identity_id,
@@ -1041,7 +1053,7 @@ async def handle_quiz_result_broadcast(text, now=None):
                     **_get_quiz_log_kwargs(identity_id, limit=520),
                 )
             elif status == "exists":
-                await send_audit_log(
+                await report_routine(
                     _format_quiz_brief_log(
                         f"题库内答案正确 ✅｜{correct_answer_detail}｜题目：{question}",
                         identity_id=identity_id,
@@ -1073,7 +1085,7 @@ async def handle_quiz_result_broadcast(text, now=None):
         elif result_type == "wrong":
             status, payload = _save_quiz_bank_entry(question, options, correct_answer)
             if status == "added":
-                await send_audit_log(
+                await report_routine(
                     f"🦴 已记录新题 ✅ 答案：{correct_answer}\n"
                     f"- 来源: 群内作答错误\n"
                     f"- 目标: {mono(target_tag)}\n"
@@ -1084,7 +1096,7 @@ async def handle_quiz_result_broadcast(text, now=None):
                     **log_kwargs,
                 )
             elif status == "exists":
-                await send_audit_log(
+                await report_routine(
                     _format_quiz_brief_log(
                         f"题库已收录错误结果中的正确答案｜正确 {correct_answer_detail}｜提交 {submitted_answer_detail}｜题目：{question}",
                         identity_id=identity_id,
