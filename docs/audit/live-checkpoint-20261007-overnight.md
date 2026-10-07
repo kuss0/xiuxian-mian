@@ -1,8 +1,65 @@
 # Overnight Checkpoint
 
-Observations through October 7, 2026, 17:50 CST. Runtime code through
+Observations through October 7, 2026, 18:25 CST. Runtime code through
 `0e5e865a` loaded during controlled maintenance at 13:45. Earlier
 sections describe earlier generations; loading does not certify every feature.
+
+## Follow-Up Through 18:25
+
+Prior checkpoint **55491ac7** is confirmed pushed. No runtime code change,
+restart, manual game probe, switch change or DB correction. Foreground
+**28286** remains active; keep polling it on continuation. All test, fetch,
+report and prior push sessions completed. The native voyage Lab remains the
+same nine uncommitted/unmerged files at its final 17049-test checkpoint;
+do not deploy it or treat the five strict integration xfails as resolved.
+
+The **18:08:59** ordinary batch was confirmed as
+`0a7e122450cd423c913113110517e72c`, 759 UTF-16 / 20 lines / no mentions.
+It contained 30 queued records: 27 retreat settle/start observations from
+14 identities, WA return/launch and Lpprceqei's question rewards. The
+formatter shows latest retreat state by stable identity, not 27 separate
+details. WA's +324 cultivation, +97 stones, 素女禁纹 x1 and +9 affinity
+return notice was therefore delivered with that batch, not separately.
+Queue was empty afterward; historical held remains two. The next first
+row at **18:11:23** started a new batch at **18:41:23**. The idle empty
+queue's earlier 18:38:59 value was not an overdue delivery deadline.
+
+Instrumented runtime receipts since 13:45: **six attempts, six confirmed**,
+zero repeated confirmed payloads / zero explicit mentions; visible size
+P50 110 / P95 759 UTF-16, latency P50 671 / P95 1055 ms. Coverage remains
+instrumented supplied receipts only, not all historic senders.
+
+The 17:40-18:25 capture window contains **43 deep-retreat mutations**:
+22 settles and 21 starts across 22 distinct identities, all HTTP 200 /
+attempt 1. Current 24-enabled state is 23 running plus jihejish's normal
+post-summary wait after **18:24:37**. This is real per-request evidence,
+not an assumption from future timers. It does not yet prove new requests
+for all 24 identities. Total HTTP captures **2664**, rolling peak **71/90**,
+same earlier one app / one transient error. World report remains six panels,
+two partially explained and two unexplained faith intervals.
+
+SSH fetches around **18:13** from the comparison checkouts left wxjerry
+main/xuruodeaiban unchanged at **aa9dba29/cd2a2e64**. Rust origin/main advanced
+**3c39edc8->f18e89ac** (PR 247), but its complete diff is only Cargo.lock:
+clap family to 4.6.7, rand 0.10.2->0.10.3 and thiserror 2.0.20->2.0.21.
+No new MiniApp/Boss/game code or schema was added. No merge, package upgrade
+or migration was adopted; both comparison working trees remain clean.
+Use `/root/xiuxian-wxjerry-main` and `/root/xiuxianbot-rs` for future fetches.
+
+WA's old `blocked_replan` has no active step, no released route and an
+expired blocked_until; its error says the previous release was consumed.
+Existing replan code admits a fresh plan when its window is due. Do not
+clear it manually or call it a new live timeout outside the prep window.
+Current prediction is empty. The retained exploration change has real
+official evidence: final edit **1290284**, replying to **1290282**, at
+**06:56:38** explicitly says prediction hit and change still pending for
+18h35m. That supports the stored change expiry, not a fresh prediction.
+At **19:01:34** require new prep/real response before the **19:11:34** rift;
+deep retreat is not a Tianxing block. Rift pending IDs/deadlines, manual
+required and prepare retry are zero; no state correction was made.
+
+Next watches: remaining retreat renewals, **18:41:23** summary, then WA's
+**19:01:34** prep / **19:11:34** rift. Continue the foreground observer.
 
 ## Follow-Up Through 17:50
 

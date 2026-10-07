@@ -87,3 +87,13 @@ explicit mentions. All earlier rows were removed after delivery; only a
 new 16:45:35 nascent-soul notice remained. Historical held=2 was untouched.
 This completes natural acceptance of the normal reward-notice path, not
 the unresolved native-voyage durability/recovery design in the other Lab.
+
+WA supplies a second normal-path acceptance: one native return at 17:38:59,
+cultivation +324, stones +97, 素女禁纹 x1 and affinity +9. Its following heart
+settlement added affinity +7 independently, so 627+9+7=643; one new voyage
+launched at 17:40:44. Both mutation captures are HTTP 200 / attempt 1.
+The reward row was delivered with the 18:08:59 batch, confirmed receipt
+`0a7e122450cd423c913113110517e72c`, 759 UTF-16 / 20 lines / no mentions.
+Thirty ordinary records became one grouped/folded message, then the queue
+emptied; held=2 stayed untouched. This is production observation of the
+already loaded normal path, not acceptance of the unmerged native ledger.
