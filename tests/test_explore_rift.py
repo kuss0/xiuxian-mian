@@ -1157,6 +1157,146 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
+    async def test_consumed_route_rebuilds_at_rift_lead_despite_future_auto_time(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        due_at = now + 600
+        consumed_at = now - 5 * 3600
+        auto_next_time = due_at + 1200
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = due_at
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now + 10 * 3600
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": consumed_at,
+                "available_stars": ["太阴"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "available_stars_source": "observe",
+                "fixed_star": "太阴",
+                "fixed_star_day": tianxing.get_day_key(now),
+                "current_prediction": "",
+                "current_prediction_set_at": consumed_at - 180,
+                "prediction_consumed_route": "探索",
+                "prediction_consumed_at": consumed_at,
+                "current_change": "探索",
+                "current_change_until": now + 18 * 3600,
+                "current_change_set_at": consumed_at,
+                "effect_evidence": {
+                    "change": {
+                        "at": consumed_at, "chat_id": 0, "msg_id": 0,
+                        "complete": True, "event_type": "message",
+                        "signature": ["命盘偏转", "prediction_hit", None, 23 * 3600],
+                    },
+                    "prediction": {
+                        "at": consumed_at, "chat_id": 0, "msg_id": 0,
+                        "complete": True, "event_type": "message",
+                        "signature": ["命盘偏转", "prediction_hit", None, 0],
+                    },
+                },
+                "tianji_value": 168,
+                "auto_next_time": auto_next_time,
+                "auto_last_action": "craft_farm",
+                "auto_last_plan": "target_reached",
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "auto_predict_enabled": True,
+                "auto_change_fate_enabled": True,
+                "timeline_enabled": True,
+                "timeline_dry_run_enabled": False,
+                "strategy_dry_run_enabled": False,
+                "route_prepare_lead_sec": 300,
+                "craft_farm_enabled": True,
+                "target_tianji_daily": 42,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "consumed-wild-route",
+                "phase": "blocked_replan", "route": "探索",
+                "created_at": consumed_at - 180, "updated_at": consumed_at,
+                "deadline_at": now + 3 * 3600,
+                "blocked_until": consumed_at,
+                "active_step_index": -1, "active_step": {},
+                "released_routes": {},
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+                "craft_farm": {
+                    "phase": "complete", "target_tianji": 42,
+                    "estimated_tianji": 168, "daily_day": tianxing.get_day_key(now),
+                    "last_action": "target_reached",
+                },
+            }
+            state_module.set_identity_account(identity_id, identity_id)
+            with (
+                patch.object(tianxing, "_TIANXING_TIMELINE_LOCKS", {}),
+                patch.object(tianxing, "_TIANXING_AUTO_LOCKS", {}),
+                patch.object(tianxing, "save_state"),
+                patch.object(tianxing, "get_sent_message_chat_id", return_value=-1001680975844),
+                patch.object(explore_rift, "save_state"),
+                patch.object(tianxing, "send_game_command", new=AsyncMock(
+                    return_value=SimpleNamespace(id=9901, sent_at=now, chat_id=-1001680975844),
+                )) as prepare_send,
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as rift_send,
+            ):
+                # Run both schedulers: no planner mock can hide a stale-plan gate.
+                await tianxing.run_tianxing_scheduler(now - 1)
+                await explore_rift.run_explore_rift_scheduler(now - 1)
+                prepare_send.assert_not_awaited()
+                rift_send.assert_not_awaited()
+
+                await explore_rift.run_explore_rift_scheduler(now)
+                prepare_send.assert_awaited_once()
+                self.assertEqual(".推命 探索", prepare_send.await_args.args[0])
+                timeline = state_module.state["tianxing_timeline_state"]
+                self.assertNotEqual("consumed-wild-route", timeline["plan_id"])
+                self.assertEqual("sent_waiting_ack", timeline["phase"])
+                self.assertEqual(9901, timeline["active_step"]["send_msg_id"])
+                self.assertFalse(timeline["released_routes"])
+                self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
+                self.assertEqual(auto_next_time, state_module.state["tianxing_observation"]["auto_next_time"])
+                rift_send.assert_not_awaited()
+
+                await explore_rift.run_explore_rift_scheduler(now + 1)
+                prepare_send.assert_awaited_once()
+                rift_send.assert_not_awaited()
+                self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
+                self.assertEqual("running", state_module.state["deep_retreat_phase"])
+
+                prediction_text = real_text("tianxing.predict.basic").replace("【炼制】", "【探索】")
+                reply_context = {
+                    "send_as_id": identity_id, "chat_id": -1001680975844,
+                    "root_msg_id": 9900, "msg_id": 9902,
+                }
+                self.assertFalse(tianxing.apply_tianxing_passive(
+                    prediction_text, now=now + 2, family="tianxing_predict", reply_context=reply_context,
+                ))
+                self.assertEqual("sent_waiting_ack", state_module.state["tianxing_timeline_state"]["phase"])
+                reply_context["root_msg_id"] = 9901
+                self.assertTrue(tianxing.apply_tianxing_passive(
+                    prediction_text, now=now + 3, family="tianxing_predict", reply_context=reply_context,
+                ))
+                await tianxing.run_tianxing_scheduler(now + 4)
+                await explore_rift.run_explore_rift_scheduler(now + 5)
+                self.assertTrue(tianxing.build_tianxing_route_preflight_plan(
+                    "探索", reason="探寻裂缝", now=now + 5, require_change_fate=True,
+                )["route_allowed"])
+                rift_send.assert_not_awaited()
+                self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
+
+                async def dispatch_rift(command, **kwargs):
+                    self.assertTrue(kwargs["operation_check"]())
+                    return SimpleNamespace(id=9903, sent_at=due_at, chat_id=-1001680975844)
+
+                rift_send.side_effect = dispatch_rift
+                await explore_rift.run_explore_rift_scheduler(due_at)
+                rift_send.assert_awaited_once()
+                self.assertEqual(config.CMD_EXPLORE_RIFT, rift_send.await_args.args[0])
+                self.assertEqual(9903, state_module.state["explore_rift_reply_to_msg_id"])
+                await explore_rift.run_explore_rift_scheduler(due_at + 1)
+                rift_send.assert_awaited_once()
+                prepare_send.assert_awaited_once()
+
     async def test_conflicting_prediction_defers_rift_until_real_prediction_expiry(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
