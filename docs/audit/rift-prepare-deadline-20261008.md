@@ -90,7 +90,31 @@ the separate voyage durability integration. None is closed by this patch.
 
 ## Release
 
-Code validation complete; merging and controlled loading are pending.
-No natural post-fix rift event has been accepted yet. Next WA rift is
-October 9 at 07:19:55; next wild run is 01:22:14, with preparation ten
-minutes earlier. Do not reset either timer to force acceptance.
+`f005d86d` fast-forwarded into main and pushed to `xiuxian-mian/main`.
+Production-checkout isolated verification: 103 passed / 169 subtests.
+Before loading, ordinary summary/pending/module-pending queues were empty;
+read-only SQLite backups were taken under
+`/root/xiuxian-release-backups/20261008-rift/` (directory mode 0700).
+
+One controlled main-service restart ran 22:13:32-35. Supervisor quiesced
+new sends before stopping the worker. New supervisor/worker are
+`3816199/3816200`; all 24 identities restored at 22:13:58. Observer and
+watchdog PIDs remained `3435134/3435106`; no independent listener was enabled.
+Post-load comparison against the backup shows identical module switches and
+unchanged WA rift/wild deadlines. SQLite quick_check is ok.
+
+Through 22:23: no new stuck phases, pending replies, watchdog issue or
+runtime error. The sole ordinary row is the startup record, due in the
+existing batch at 22:43:58; it is not overdue. Two historic held batches
+remain untouched. Both main voyages sail with zero retries/errors.
+
+The five earlier fate-card HTTP429 captures obeyed each recorded Retry-After
+and were followed by HTTP200 for the affected identities. Do not treat the
+global 72/90 rolling peak as proof that endpoint-specific limits cannot apply.
+
+No natural post-fix rift event has been accepted yet. Next WA rift is October
+9 at 07:19:55; next wild run is 01:22:14, with preparation ten minutes earlier.
+Do not reset either timer to force acceptance. Foreground observation `10441`
+remains active (started 21:35 for eight hours); poll and renew before expiry.
+Next earlier watches: startup summary 22:43:58 and Baji return 23:00:35
+(scheduler may add its normal delay), then WA return 00:06:08.
