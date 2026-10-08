@@ -106,8 +106,53 @@ def test_summary_fixed_order_no_false_success_or_reward_accumulation():
     assert not any(isinstance(e, MessageEntityMention) for e in telegram_html.parse(text)[1])
 
 
-def test_bounded_fair_details_and_escaped_html():
-    rows = [{"summary_kind": "deep_retreat", "identity_id": i, "count": 1, "html": "😀" * 500} for i in range(100)]
+@pytest.mark.parametrize("kind", ["", "yuanying", "deep_retreat"])
+def test_grouped_detail_keeps_repeated_observation_count_without_multiplying_rewards(kind):
+    rows = [{"summary_kind": kind, "identity_id": 1, "count": 2,
+             "html": "鱼获x1；修为 +10", "last_ts": "05:21:09"}]
+    before = deepcopy(rows)
+    output = format_grouped_summary(rows, now_text="05:48:36")
+    plain, entities = telegram_html.parse(output)
+    assert "05:21:09 x2 鱼获x1；修为 +10" in plain
+    assert "鱼获x2" not in plain and "修为 +20" not in plain
+    assert "2 条记录" in plain
+    assert any(getattr(e, "collapsed", False) for e in entities)
+    assert rows == before
+
+
+def test_latest_observation_uses_its_own_count_not_the_identity_total():
+    rows = [
+        {"summary_kind": "yuanying", "identity_id": 1, "count": 5,
+         "html": "old reward 10", "last_at": 1, "last_ts": "01:00"},
+        {"summary_kind": "yuanying", "identity_id": 1, "count": 2,
+         "html": "new reward 20", "last_at": 2, "last_ts": "02:00"},
+    ]
+    output = format_grouped_summary(rows, now_text="03:00")
+    assert "7 条记录" in output
+    assert "02:00 x2 new reward 20" in output
+    assert "old reward" not in output and "x7" not in output and "x5" not in output
+
+
+def test_single_observation_does_not_gain_a_repeat_marker():
+    output = format_grouped_summary([{"count": 1, "html": "reward", "last_ts": "01:00"}], now_text="02:00")
+    assert "01:00 reward" in output and " x1 " not in output
+
+
+def test_same_reward_from_distinct_identities_retains_separate_row_counts():
+    rows = [
+        {"identity_id": 1, "count": 2, "html": "actor1 reward 10", "last_ts": "01:00"},
+        {"identity_id": 2, "count": 3, "html": "actor2 reward 10", "last_ts": "02:00"},
+    ]
+    output = format_grouped_summary(rows, now_text="03:00")
+    assert "2 个身份，5 条记录" in output
+    assert "01:00 x2 actor1 reward 10" in output
+    assert "02:00 x3 actor2 reward 10" in output
+    assert "x5" not in output
+
+
+@pytest.mark.parametrize("count", [1, 10000])
+def test_bounded_fair_details_and_escaped_html(count):
+    rows = [{"summary_kind": "deep_retreat", "identity_id": i, "count": count, "html": "😀" * 500} for i in range(100)]
     rows += [{"summary_kind": "yuanying", "identity_id": 777, "count": 1, "html": "safe &lt;b&gt;"}]
     output = format_grouped_summary(rows, now_text="12:00", max_details=20)
     plain, entities = telegram_html.parse(output)
@@ -159,6 +204,24 @@ class RuntimeStructuredSummaryTests(IsolatedAsyncioTestCase):
         assert "元婴：24 个身份，24 条记录" in text
         assert "全部完成" not in text and "tg://user" not in text
         assert runtime._audit_summary_interval() == 1800
+
+    async def test_repeated_detail_survives_durable_reload_and_single_delivery(self):
+        sender = AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", sender):
+            for _ in range(2):
+                await runtime.send_audit_log("鱼获x1", priority="low", send_as_id=1)
+            sender.assert_not_awaited()
+            reloaded = AuditSummaryStore(self.store.path, {}, [], clock=lambda: 1000)
+            async with reloaded.lock:
+                assert await reloaded._load()
+            assert [row["count"] for row in reloaded.bucket.values()] == [2]
+            with patch.object(runtime, "_audit_summary_store", reloaded):
+                reloaded.next_at = 0
+                assert await runtime.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        plain, _ = telegram_html.parse(sender.call_args.args[0])
+        assert " x2 " in plain and "鱼获x1" in plain and "鱼获x2" not in plain
+        assert not reloaded.bucket and not reloaded.held
 
     async def test_skip_group_survives_checkpoint_and_one_delivery(self):
         sender = AsyncMock(return_value=True)

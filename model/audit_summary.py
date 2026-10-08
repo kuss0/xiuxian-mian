@@ -111,7 +111,9 @@ def format_grouped_summary(rows, *, now_text, max_details=20):
         group_details = []
         for row in sorted(latest.values(), key=lambda r: (str(r.get("identity_id", "")), int(r.get("seq") or 0))):
             body = row.get("html") or str(row.get("plain") or "-")
-            group_details.append(f"{title} / {row.get('last_ts') or '?'} {short_html_text(body, 140)}")
+            count = int(row.get("count") or 0)
+            repeated = f" x{count}" if count > 1 else ""
+            group_details.append(f"{title} / {row.get('last_ts') or '?'}{repeated} {short_html_text(body, 140)}")
         details.append(group_details)
     # Round-robin details keep a large channel group from hiding other modules.
     interleaved = [group[i] for i in range(max(map(len, details), default=0)) for group in details if i < len(group)]
