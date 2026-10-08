@@ -89,3 +89,53 @@ uses `XIUXIAN_ALLOW_LIVE_TEST_DB=0`.
 
 Foreground monitor 18303 remains active. Continue through the next ordinary
 summary and the natural 07:09:55/07:19:55 preparation/release windows.
+
+## Natural Acceptance At 07:24
+
+Test/documentation commit `9a1a4052` was merged and pushed without restarting.
+Production-directory isolated regression passed 72 tests / 5 subtests. The
+runtime remains loaded through `b686012b`; this is acceptance of that existing
+runtime path, not a newly deployed behavior fix.
+
+The outer scan admitted WA at 07:10:10. Exactly one `.推命 探索` was sent at
+07:10:11 as 1306921 in group -1002083016447. Official bot 8980154525
+(`hantianzun23_bot`) replied with 1306923, rooted at 1306921, server time
+07:10:14, received 07:10:16. The effect record and active step are confirmed;
+the route released at 07:10:17.865. At 07:17:13 the read-only preflight still
+confirmed both protections, and no additional WA command had been sent since
+the prediction. The original rift deadline stayed 07:19:55 throughout.
+
+One `.探寻裂缝` was sent at 07:19:57 as 1306958. Official bot 8917921351
+(`hantianzun31_bot`) acknowledged on 1306959 at server time 07:19:59 and edited
+that same anchored message to final success at 07:20:07. The receipt records
+gold/wind law fragments x1 each. Prediction hit gives Tianji +1 / contribution
++30; current Tianji is 169, prediction consumed, remaining exploration
+change-fate confirmed for 17h58m and calamity count 0.
+
+All rift pending/reply/manual-required fields are clear, error empty, next
+business time 19:19:59. The consumed timeline returns to `blocked_replan`,
+which is expected after downstream consumption, not a new stuck action.
+The cooldown-preservation/independent-preparation success branch is naturally
+accepted. Unknown transport, missing replies and future cycles retain their
+guards and are not certified by this one successful event.
+
+The rare-result notice `a7b1ae5677ba4ae6906394278a872a9b` is confirmed at
+07:20:08: 89 visible UTF-16 units, three lines, one mention. This is an
+important-result path, not an ordinary wild-summary regression. Earlier,
+the queued return/start/tower summary was confirmed at 07:02:34 as
+`8a72ab018a6941d4a64d186f3fae46b7`, 239 units/five lines/no mentions; rows
+drained. An unrelated player's 07:00:46 quiz timeout was console-only through
+the external-observation branch in `quiz.py`, without a separate TG delivery.
+Two historical unknown batches remain held, never replayed or removed.
+
+At 07:21:51 Baji queried its small world once (1306971 -> 1306972), then
+manifested once (1306973 -> 1306974). Official success at 07:22:07 reports
+faith +5, stability +4 and a 360-minute prayer cooldown; stored faith is 100
+and error empty. Incense refinement remains off for both Baji and WA.
+Lpprceqei's separate 07:22:02 fate read still reports 0 versus accepted 1;
+that pre-existing progress issue remains open, next ordinary read not before
+07:52:02. No game state, recovery timer or module switch was manually changed.
+
+Supervisor/worker/observer/watchdog PIDs remain unchanged. Monitor 18303 is
+still active; continue normal monitoring, including the upcoming harvest and
+nascent-soul windows. This document is a checkpoint, not a monitoring handoff.
