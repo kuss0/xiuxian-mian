@@ -96,3 +96,42 @@ The two held historical notifications remain unknown and are not replayed.
 Lpprceqei's 03:54:50 fate read remains 0 versus old accepted 1; next retry is
 not before 04:24:50. Daily duel closure remains intact. Continue through backup
 recovery and the 07:09:55 preparation / 07:19:55 rift windows.
+
+## Scheduled Loading, October 9 04:49
+
+The existing R2 timer started at 04:45:05. It stopped the active observer,
+watchdog and main service; the main supervisor requested no-new-sends before
+stopping its worker. This is not an application drain acknowledgement or a
+fix for the separately recorded backup-admission debt.
+
+Main started at 04:46:28 on disk revision `b686012b`, supervisor 3981690 and
+worker 3981692. UI and 24-identity startup completed by 04:46:51. Watchdog
+3981709 and observer 3981735 recovered at 04:46:31/04:46:34; the unconfigured
+independent listener remained inactive. No manual restart was issued. This
+loads `750d8561` and command-voyage grouping `638955a6`; the unfinished trial
+and voyage Labs remain absent from production. Natural report/voyage delivery
+is still a separate acceptance step.
+
+Read-only comparison against the 24-identity pre-maintenance snapshot found
+no changed identity enablement or module switches. The sole module-state
+change was xuruode1's `last_tower_day`, matching its actual 04:40:29 completion
+before backup. WA/Baji duel and refinement remain off; harvest and voyage on.
+Lpprceqei retains today's duel closure and October 10 01:38:41 next run; WA's
+rift remains October 9 07:19:55. Pending tasks/actions remain empty.
+
+The two held notification batches have the same before/after SHA-256:
+`060561ca1982bdb9b9a9c34bc2af5a85f37af3c010dac08b2e5a74e274cfc036`.
+The tower reward notice survives and startup adds one ordinary notice; the
+existing summary window is now 05:16:29. No old delivery is replayed.
+
+Lpprceqei's natural 04:25:06 and post-startup 04:46:59 fate reads still report
+0 against the old accepted 1. No settle/draw/choose was released. Restart
+rebuilt an in-memory wait and caused the latter read before the pre-restart
+earliest retry of 04:55:06. This is existing non-durable business-wait behavior, not acceptance
+of persistence across restarts; the next wait now starts at 04:46:59.
+
+Backup snapshot `7c9f0324` saved at 04:48:54; its check found no errors and the
+service completed at 04:49:02 with exit 0. Restic emitted a missing HOME/cache
+warning but completed; no external backup code or environment was changed.
+Post-startup watchdog is healthy. Observer retains the two-held-batch warning;
+the fate discrepancy remains tracked separately by foreground session 18303.
