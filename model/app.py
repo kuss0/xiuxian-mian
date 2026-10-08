@@ -160,7 +160,7 @@ from .features.stargazer import (
 )
 from .features.storage_bag import handle_storage_bag_reply, handle_storage_bag_transfer_reply, is_storage_transfer_waiting_reply, run_storage_bag_transfer_scheduler
 from .features.tower import run_tower_scheduler
-from .features.explore_rift import handle_explore_rift_reply, run_explore_rift_scheduler
+from .features.explore_rift import explore_rift_preparation_retry_blocks, handle_explore_rift_reply, run_explore_rift_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
     handle_tree_exception_prompt,
@@ -2629,6 +2629,8 @@ async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PE
             if next_time <= 0:
                 continue
             if next_time <= scheduler_now:
+                if explore_rift_preparation_retry_blocks(scheduler_now):
+                    continue
                 candidates.append((1, next_time, scan_index, identity_id, scheduler_now, "run"))
                 continue
             if not state.get("tianxing_enabled"):

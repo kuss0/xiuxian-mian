@@ -1050,9 +1050,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
-                state_module.state["next_explore_rift_time"],
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
                 delta=1,
             )
+            self.assertEqual(now - 1, state_module.state["next_explore_rift_time"])
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_waits_when_tianxing_release_lacks_unconsumed_prediction(self):
@@ -1177,8 +1178,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 ready = await explore_rift._prepare_explore_rift_tianxing_route(now, due_at=due_at)
 
             self.assertFalse(ready)
-            self.assertEqual(blocked_until + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
-            self.assertEqual(0, state_module.state["explore_rift_tianxing_prepare_retry_at"])
+            self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
+            self.assertEqual(blocked_until + explore_rift.CD_BUFFER_SEC, state_module.state["explore_rift_tianxing_prepare_retry_at"])
             self.assertIn("斗法推命", state_module.state["explore_rift_last_error"])
 
     async def test_conflicting_prediction_near_rift_deadline_keeps_due_and_wakes_at_expiry(self):
@@ -1283,18 +1284,19 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual(
                 next_wild + explore_rift.EXPLORE_RIFT_TIANJI_WAIT_BUFFER_SEC,
-                state_module.state["next_explore_rift_time"],
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
             )
-            self.assertEqual(0, state_module.state["explore_rift_tianxing_prepare_retry_at"])
+            self.assertEqual(now - 1, state_module.state["next_explore_rift_time"])
             self.assertEqual("天星时间线：need_tianji_for_change", state_module.state["explore_rift_last_result"])
 
-    async def test_scheduler_pulls_back_waiting_explore_rift_when_change_fate_becomes_ready(self):
+    async def test_scheduler_wakes_due_explore_rift_when_change_fate_becomes_ready(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.update_send_as_profile(identity_id, sect_name="天星宗")
             state_module.state["explore_rift_enabled"] = True
-            state_module.state["next_explore_rift_time"] = now + 3600
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["explore_rift_tianxing_prepare_retry_at"] = now + 3600
             state_module.state["explore_rift_last_result"] = "天星时间线：need_tianji_for_change"
             state_module.state["tianxing_enabled"] = True
             state_module.state["tianxing_observation"] = {
@@ -1399,7 +1401,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
-            self.assertEqual(now + 1800 + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
+            self.assertEqual(now - 1, state_module.state["next_explore_rift_time"])
+            self.assertEqual(now + 1800 + explore_rift.CD_BUFFER_SEC, state_module.state["explore_rift_tianxing_prepare_retry_at"])
             self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
 
     async def test_scheduler_consumes_craft_prediction_before_explore_rift(self):
@@ -1434,9 +1437,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
-                state_module.state["next_explore_rift_time"],
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
                 delta=1,
             )
+            self.assertEqual(now - 1, state_module.state["next_explore_rift_time"])
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
 
@@ -1581,9 +1585,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("auto模式", state_module.state["explore_rift_last_error"])
             self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
-                state_module.state["next_explore_rift_time"],
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
                 delta=1,
             )
+            self.assertEqual(now - 1, state_module.state["next_explore_rift_time"])
 
     async def test_scheduler_allows_high_xiuwei_when_tianxing_explore_change_ready(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
@@ -2186,13 +2191,13 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
         audit_mock.assert_awaited_once()
 
-    async def test_scheduler_pulls_ready_tianxing_retry_forward_and_sends(self):
+    async def test_scheduler_ready_tianxing_skips_only_preparation_retry_and_sends(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.update_send_as_profile(identity_id, sect_name="天星宗")
             state_module.state["explore_rift_enabled"] = True
-            state_module.state["next_explore_rift_time"] = now + 600
+            state_module.state["next_explore_rift_time"] = now - 1
             state_module.state["explore_rift_last_result"] = "天星时间线：sent_waiting_ack"
             state_module.state["explore_rift_last_error"] = ""
             state_module.state["explore_rift_tianxing_prepare_retry_at"] = now + 600
@@ -2225,7 +2230,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("已发送", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
             self.assertEqual(0, state_module.state["explore_rift_tianxing_prepare_retry_at"])
-            self.assertTrue(any("拉回到期时间" in str(call.args[0]) for call in console_mock.call_args_list))
+            self.assertFalse(any("拉回到期时间" in str(call.args[0]) for call in console_mock.call_args_list))
 
     async def test_scheduler_blocks_missing_current_xiuwei_without_sending(self):
         identity_id = self._prepare_identity(xiuwei_current=0)

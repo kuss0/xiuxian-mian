@@ -728,7 +728,8 @@ def test_rift_preparation_retry_starts_after_child_wait(env, monkeypatch):
             return await explore_rift._prepare_explore_rift_tianxing_route(NOW)
 
     assert not asyncio.run(execute())
-    assert env.identity["next_explore_rift_time"] == NOW + 90 + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC
+    assert env.identity["next_explore_rift_time"] == NOW
+    assert env.identity["explore_rift_tianxing_prepare_retry_at"] == NOW + 90 + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC
 
 
 @pytest.mark.parametrize("kind", KINDS)

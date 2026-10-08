@@ -557,13 +557,11 @@ def _set_explore_rift_error(message, *, next_delay=None, now=None, persist=True)
 
 
 def _schedule_explore_rift_tianxing_prepare_retry(now, due_at, delay_sec=None):
+    now = float(now or 0)
     delay_sec = float(delay_sec or EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC)
-    retry_at = float(now or 0) + max(1.0, delay_sec)
-    due_at = float(due_at or now or 0)
-    if due_at <= float(now or 0):
-        state["next_explore_rift_time"] = retry_at
-    else:
-        state["explore_rift_tianxing_prepare_retry_at"] = min(due_at, retry_at)
+    retry_at = now + max(1.0, delay_sec)
+    due_at = float(due_at or now)
+    state["explore_rift_tianxing_prepare_retry_at"] = min(due_at, retry_at) if due_at > now else retry_at
 
 
 def _next_explore_rift_tianji_retry_at(now):
@@ -587,11 +585,7 @@ def _schedule_explore_rift_tianji_wait(now, due_at):
     retry_at = _next_explore_rift_tianji_retry_at(now)
     now = float(now or 0)
     due_at = float(due_at or now)
-    if due_at <= now + EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC:
-        state["next_explore_rift_time"] = retry_at
-        state["explore_rift_tianxing_prepare_retry_at"] = 0
-    else:
-        state["explore_rift_tianxing_prepare_retry_at"] = min(due_at, retry_at)
+    state["explore_rift_tianxing_prepare_retry_at"] = min(due_at, retry_at) if due_at > now else retry_at
     return retry_at
 
 
@@ -609,32 +603,12 @@ def _tianxing_explore_change_ready(now):
     )
 
 
-def _pull_ready_tianxing_explore_retry(now, next_explore_rift_time):
-    if float(next_explore_rift_time or 0) <= float(now or 0):
-        return False
-    if int(state.get("explore_rift_reply_to_msg_id", 0) or 0) > 0:
-        return False
-    if int(state.get("explore_rift_pending_result_msg_id", 0) or 0) > 0:
-        return False
-    if not _tianxing_explore_change_ready(now):
-        return False
-    last_result = str(state.get("explore_rift_last_result") or "").strip()
-    if not (
-        last_result.startswith("天星时间线：")
-        or last_result.startswith("天星先炼制消费推命：")
-    ):
-        return False
-    if (
-        "need_tianji_for_change" not in last_result
-        and float(next_explore_rift_time or 0) - float(now or 0) > RETRY_MAX_SEC + 60
-    ):
-        return False
-    state["next_explore_rift_time"] = float(now)
-    state["explore_rift_tianxing_prepare_retry_at"] = 0
-    state["explore_rift_last_error"] = ""
-    save_state()
-    console_log("🕳 探寻裂缝天星前置已就绪，拉回到期时间立即消费。", scope="identity")
-    return True
+def explore_rift_preparation_retry_blocks(now):
+    return bool(
+        state.get("tianxing_enabled")
+        and _rift_log_time(state.get("explore_rift_tianxing_prepare_retry_at")) > now
+        and not _tianxing_explore_change_ready(now)
+    )
 
 
 def _is_explore_rift_reply(reply_to=None, matched_family=None):
@@ -2379,10 +2353,7 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             return False
         now = started_now + max(0.0, time.monotonic() - started_at)
         if consume_result.get("active"):
-            if due_at <= now:
-                _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
-            else:
-                _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
+            _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
             state["explore_rift_last_result"] = f"天星先炼制消费推命：{consume_result.get('stage') or 'waiting'}"
             state["explore_rift_last_error"] = "" if consume_result.get("takeover") or consume_result.get("stage") == "waiting_reply" else str(consume_result.get("reason") or "")
             save_state()
@@ -2393,19 +2364,11 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        current_due = float(state.get("next_explore_rift_time", 0) or due_at or now)
-        # A stale route prediction can expire just before the rift cooldown.
-        # Keep the game's rift deadline in that narrow window and wake the
-        # preparation path at the real prediction expiry; otherwise the old
-        # code moved the whole rift timer past its already-ready cooldown and
-        # lost the chance to rebuild the route promptly.
+        # Preparation waiting must not replace the game's cooldown deadline.
         if due_at > now and blocked_until <= due_at:
-            state["next_explore_rift_time"] = max(current_due, due_at)
-            state["explore_rift_tianxing_prepare_retry_at"] = max(now, blocked_until)
+            state["explore_rift_tianxing_prepare_retry_at"] = blocked_until
         else:
-            retry_at = float(blocked_until + CD_BUFFER_SEC)
-            state["next_explore_rift_time"] = max(current_due, retry_at)
-            state["explore_rift_tianxing_prepare_retry_at"] = 0
+            state["explore_rift_tianxing_prepare_retry_at"] = float(blocked_until + CD_BUFFER_SEC)
         state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
         save_state()
         return False
@@ -2443,10 +2406,7 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(followup.get("reason") or preflight.get("reason") or "")
         save_state()
         return False
-    if due_at <= now:
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-    else:
-        state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
+    _schedule_explore_rift_tianxing_prepare_retry(now, due_at, RETRY_MAX_SEC)
     state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
     save_state()
     return False
@@ -2715,8 +2675,6 @@ async def _run_explore_rift_scheduler_unlocked(now):
         return
 
     next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
-    if _pull_ready_tianxing_explore_retry(now, next_explore_rift_time):
-        next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
     if next_explore_rift_time > now:
         windows = build_tianxing_consume_window(
             "探索",
@@ -2735,6 +2693,10 @@ async def _run_explore_rift_scheduler_unlocked(now):
             return
 
     if _explore_rift_next_time_blocks(now):
+        return
+
+    # A ready route may wake preparation early, never the business cooldown.
+    if explore_rift_preparation_retry_blocks(now):
         return
 
     if xiuwei_current >= EXPLORE_RIFT_XIUWEI_LIMIT and not _tianxing_explore_change_ready(now):
@@ -2800,6 +2762,7 @@ __all__ = [
     "choose_safe_rebirth_option",
     "clear_explore_rift_state",
     "classify_rebirth_text",
+    "explore_rift_preparation_retry_blocks",
     "get_explore_rift_status_text",
     "get_rebirth_choice_config",
     "handle_explore_rift_reply",
