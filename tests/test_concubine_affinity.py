@@ -2614,7 +2614,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         audit_mock.assert_awaited_once()
         self.assertIn("远航归来", audit_mock.await_args.args[0])
         self.assertIn("灵石x100", audit_mock.await_args.args[0])
-        self.assertEqual("medium", audit_mock.await_args.kwargs["priority"])
+        self.assertEqual("low", audit_mock.await_args.kwargs["priority"])
 
     async def test_voyage_return_definitely_unsent_keeps_lock_and_clears_false_error(self):
         now = 1_700_000_000.0

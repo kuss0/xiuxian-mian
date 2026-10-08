@@ -770,3 +770,47 @@ def test_voyage_audit_failure_cannot_undo_or_repeat_settlement(env, mode):
     assert not asyncio.run(reply(env, "voyage_return"))
     assert env.identity == before
     env.audit.assert_awaited_once()
+
+
+@pytest.mark.parametrize("delivered", [True, False])
+def test_command_voyage_rewards_join_durable_summary_once(env, monkeypatch, tmp_path, delivered):
+    from model.audit_summary_store import AuditSummaryStore
+
+    prepare(env, "voyage_return")
+    assert asyncio.run(start(env, "voyage_return"))
+    receipt(env, "voyage_return")
+    env.send.reset_mock()
+    store = AuditSummaryStore(tmp_path / "summary.db", {}, [], clock=lambda: env.clock[0])
+    sender = AsyncMock(return_value=delivered)
+    monkeypatch.setattr(runtime, "LOG_GROUP_STRUCTURED_SUMMARY", True)
+    monkeypatch.setattr(runtime, "_audit_summary_store", store)
+    monkeypatch.setattr(runtime, "_low_priority_audit_bucket", store.bucket)
+    monkeypatch.setattr(runtime, "_low_priority_audit_order", store.order)
+    monkeypatch.setattr(runtime, "_schedule_low_priority_audit_flush", Mock())
+    monkeypatch.setattr(runtime, "console_log", Mock())
+    monkeypatch.setattr(runtime, "_send_log_group_message", sender)
+    monkeypatch.setattr(concubine, "send_audit_log", runtime.send_audit_log)
+
+    async def exercise():
+        assert await reply(env, "voyage_return")
+        assert not await reply(env, "voyage_return")
+        sender.assert_not_awaited()
+        rows = store._disk()["rows"]
+        assert len(rows) == 1 and rows[0]["count"] == 1
+        assert "\u517b\u9b42\u6728x4" in rows[0]["plain"]
+        assert "\u60c5\u7f18-32" in rows[0]["plain"]
+        env.clock[0] += 1800
+        await runtime.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        message = sender.await_args.args[0]
+        assert message.count("\u517b\u9b42\u6728x4") == 1
+        assert "<blockquote expandable>" in message and "tg://user" not in message
+        assert not store.bucket
+        assert bool(store.held) is not delivered
+        await runtime.flush_low_priority_audit_summary()
+        sender.assert_awaited_once()
+        assert not await reply(env, "voyage_return")
+        env.send.assert_not_awaited()
+        assert env.identity[FIELD]["voyage_return"]["status"] == "complete"
+
+    asyncio.run(exercise())

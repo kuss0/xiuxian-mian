@@ -670,7 +670,7 @@ async def _send_voyage_result_audit(parsed):
         scope="identity",
         send_as_id=get_current_identity_id(),
         limit=480,
-        priority="medium",
+        priority="low",
     )
     return True
 
