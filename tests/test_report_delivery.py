@@ -198,9 +198,9 @@ def test_report_closes_stream_on_read_failure(sender, monkeypatch, http_error):
 
 def test_daily_main_is_offline_without_explicit_flag(monkeypatch, capsys):
     monkeypatch.setattr(daily, "parse_args", lambda: Namespace(
-        day="2026-10-06", capture_dir="unused", send_log_group=False, env_file="unused",
+        day="2026-10-06", capture_dir="unused", fishing_db=None, send_log_group=False, env_file="unused",
     ))
-    monkeypatch.setattr(daily, "build_report", lambda *_args: REPORT_TEXT)
+    monkeypatch.setattr(daily, "build_report", lambda *_args, **_kwargs: REPORT_TEXT)
     sender = Mock()
     monkeypatch.setattr(daily, "send_log_group", sender)
     daily.main()
@@ -210,9 +210,9 @@ def test_daily_main_is_offline_without_explicit_flag(monkeypatch, capsys):
 
 def test_daily_main_never_prints_success_after_unknown(monkeypatch, capsys):
     monkeypatch.setattr(daily, "parse_args", lambda: Namespace(
-        day="2026-10-06", capture_dir="unused", send_log_group=True, env_file="unused",
+        day="2026-10-06", capture_dir="unused", fishing_db=None, send_log_group=True, env_file="unused",
     ))
-    monkeypatch.setattr(daily, "build_report", lambda *_args: REPORT_TEXT)
+    monkeypatch.setattr(daily, "build_report", lambda *_args, **_kwargs: REPORT_TEXT)
     sender = Mock(side_effect=RuntimeError("unknown; no automatic retry"))
     monkeypatch.setattr(daily, "send_log_group", sender)
     with pytest.raises(RuntimeError, match="unknown"):

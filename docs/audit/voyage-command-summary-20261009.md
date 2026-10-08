@@ -29,8 +29,10 @@ All pytest runs used `XIUXIAN_ALLOW_LIVE_TEST_DB=0` and isolated state:
 - Second maintainer review: 509 passed, covering public callers, owned
   actions, fishing handoff, summary persistence and notification acceptance.
   This is a second review pass, not an independent external audit.
-- Ruff, compilation and diff checks pass. No full-suite run for this
-  single-priority change; the related regressions above are the acceptance.
+- Ruff, compilation and diff checks pass.
+- Before planned loading, the frozen full suite passed: 16975 tests /
+  1486 subtests, 439.39 seconds; XML
+  `/tmp/xiuxian-voyage-command-summary-full-20261009.xml`.
 
 The new test routes an owned official reply through the real handler into a
 temporary durable summary store. Repeated replies leave one row; a later

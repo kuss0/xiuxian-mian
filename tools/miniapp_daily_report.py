@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -329,22 +330,61 @@ def summarize_tree(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     return {"runs": runs, "gains": gains, "rewards": rewards}
 
 
-def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
-    fishing = summarize_fishing(day, capture_dir)
+def summarize_native_fishing(day: str, db_path: Path) -> dict:
+    if __package__:
+        from . import native_fishing_report
+    else:
+        import native_fishing_report
+
+    result = {"native": True, "rods": 0, "fish": Counter(), "rewards": Counter(), "gains": Counter(), "note": ""}
+    try:
+        at = datetime.strptime(day, "%Y-%m-%d").replace(hour=12, tzinfo=TZ_LOCAL).timestamp()
+        snapshot = native_fishing_report.build_report(db_path, now=at)
+    except (sqlite3.Error, ValueError, TypeError, OverflowError, OSError, RecursionError):
+        result["note"] = "原生钓鱼账本不可用，未将缺失证据计为零收益。"
+        return result
+    excluded = 0
+    for row in snapshot["identities"]:
+        summary = row["summary"]
+        if row["warnings"] or summary and (
+            row["fishing_native_operation"] != "accounted" or row.get("latest_native_cast_day") != day
+        ):
+            excluded += 1
+            continue
+        if row["evidence"] != "recorded_settlements" or not summary:
+            continue
+        result["rods"] += summary["rods"]
+        result["fish"].update(summary["fish"])
+        result["rewards"].update(summary["rewards"])
+    if not result["rods"]:
+        result["note"] = "未发现所选日期的原生钓鱼结算记录，不代表未执行。"
+    if excluded:
+        result["note"] += f"另 {excluded} 个身份的钓鱼证据待核，未计入。"
+    return result
+
+
+def build_report(day: str, capture_dir: Path = CAPTURE_DIR, *, fishing_db: Path | None = None) -> str:
+    # Choose one source: legacy captures can overlap the saved daily projection.
+    fishing = (summarize_native_fishing(day, fishing_db) if fishing_db is not None
+               else summarize_fishing(day, capture_dir))
     trial = summarize_trial(day, capture_dir)
     cave = summarize_cave_treasure(day, capture_dir)
     stargazer = summarize_stargazer(day, capture_dir)
     tree = summarize_tree(day, capture_dir)
     lines = [f"🧩 MiniApp今日成果补播｜{day}"]
     if fishing["rods"]:
-        parts = [f"{fishing['rods']}竿", f"中鱼{fishing['caught']}", f"空竿{fishing['empty']}"]
+        parts = [f"已记录{fishing['rods']}竿"] if fishing.get("native") else [
+            f"{fishing['rods']}竿", f"中鱼{fishing['caught']}", f"空竿{fishing['empty']}",
+        ]
         if fishing["fish"]:
             parts.append("鱼获:" + _format_counter(fishing["fish"]))
         if fishing["gains"]:
             parts.append("收益:" + _format_gains(fishing["gains"]))
         if fishing["rewards"]:
             parts.append("伴生:" + _format_counter(fishing["rewards"]))
-        lines.append("🎣 灵溪垂钓：" + "｜".join(parts))
+        lines.append(("🎣 原生钓鱼：" if fishing.get("native") else "🎣 灵溪垂钓：") + "｜".join(parts))
+    if fishing.get("note"):
+        lines.append(fishing["note"])
     if trial["count"] or trial["errors"]:
         parts = [f"{trial['count']}次成功"]
         if trial["errors"]:
@@ -373,8 +413,9 @@ def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
             parts.append("奖励:" + _format_counter(tree["rewards"]))
         lines.append("🌳 灵树：" + "｜".join(parts))
     if len(lines) == 1:
-        lines.append("暂无 MiniApp 结算成果。")
-    lines.append("注：只统计 MiniApp 最终结算中的游戏收益/物资。")
+        lines.append("已支持的结算记录中未发现收益，不代表未执行。")
+    lines.append("注：原生钓鱼使用所选日期的已保存账本，不叠加旧捕获；其他玩法仅统计已支持的结算捕获。"
+                 if fishing_db is not None else "注：仅统计已支持的结算捕获，原生钓鱼账本未纳入。")
     return "\n".join(lines)
 
 
@@ -401,7 +442,8 @@ def send_log_group(message: str, env_file: Path = DEFAULT_ENV_FILE) -> BotDelive
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MiniApp 日结成果汇总/补播")
     parser.add_argument("--day", default=datetime.now(TZ_LOCAL).strftime("%Y-%m-%d"))
-    parser.add_argument("--capture-dir", default=str(CAPTURE_DIR))
+    parser.add_argument("--capture-dir", help="自定义捕获目录；未指定 --fishing-db 时仅离线统计捕获")
+    parser.add_argument("--fishing-db", type=Path, help="原生钓鱼只读状态库；默认使用本地状态库")
     parser.add_argument("--send-log-group", action="store_true")
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
     return parser.parse_args()
@@ -409,7 +451,10 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    report = build_report(args.day, Path(args.capture_dir))
+    fishing_db = args.fishing_db
+    if fishing_db is None and args.capture_dir is None:
+        fishing_db = Path(os.environ.get("XIUXIAN_DB_FILE") or STATE_DIR / "chaogu_state.db")
+    report = build_report(args.day, Path(args.capture_dir) if args.capture_dir else CAPTURE_DIR, fishing_db=fishing_db)
     print(report)
     if args.send_log_group:
         receipt = send_log_group(report, Path(args.env_file))
