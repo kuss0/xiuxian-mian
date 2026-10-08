@@ -20,6 +20,9 @@ def _battle(message_id, attacker, target="ccahen", loss="6.0"):
         "message_id": message_id,
         "chat_id": -1001,
         "event_type": "message",
+        "sender_id": 9001,
+        "sender_is_bot": True,
+        "forwarded": False,
         "text": (
             "【天道战报·文字版】\n"
             f"攻方：@{attacker} · 元婴后期\n"
@@ -31,10 +34,80 @@ def _battle(message_id, attacker, target="ccahen", loss="6.0"):
 
 
 class DuelDailyReportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        for name, value in (("get_game_bot_ids", [9001]), ("get_game_group_ids", [-1001, -1002])):
+            patcher = patch.object(duel_daily_report, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _write_log(self, directory, day, entries):
         with open(os.path.join(directory, f"{day}.log"), "w", encoding="utf-8") as handle:
             for entry in entries:
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _report(self, entries):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_log(tmpdir, "2026-07-11", entries)
+            with patch.object(duel_daily_report, "_identity_username_map", return_value={
+                "growrdick": {"identity_id": 1, "name": "fixture"},
+            }):
+                return duel_daily_report.build_duel_daily_report("2026-07-11", messages_dir=tmpdir)
+
+    def test_untrusted_copied_and_forwarded_reports_are_not_counted(self):
+        for changes in (
+            {"sender_id": 22, "sender_is_bot": False},
+            {"sender_id": 22, "sender_is_bot": True},
+            {"sender_id": 22, "sender_is_bot": True, "sender_username": "hantianzun33_bot"},
+            {"sender_id": None}, {"sender_id": "9001"}, {"sender_id": True},
+            {"sender_is_bot": False}, {"sender_is_bot": None},
+            {"forwarded": True}, {"forwarded": "false"}, {"forwarded": None},
+            {"chat_id": -1003}, {"chat_id": "-1001"}, {"event_type": "sent"},
+        ):
+            with self.subTest(changes=changes):
+                report = self._report([_battle(1, "growrdick"), {**_battle(2, "growrdick"), **changes}])
+                self.assertEqual((1, 60_000), (report["total_count"], report["total_amount"]))
+
+    def test_latest_edit_and_identical_ids_in_distinct_groups_remain_distinct(self):
+        report = self._report([
+            _battle(1, "growrdick"),
+            {**_battle(1, "growrdick", loss="7.0"), "event_type": "edit"},
+            {**_battle(1, "growrdick"), "chat_id": -1002},
+        ])
+        self.assertEqual((2, 130_000), (report["total_count"], report["total_amount"]))
+
+    def test_non_report_edit_does_not_restore_an_old_result(self):
+        report = self._report([
+            _battle(1, "growrdick"),
+            {**_battle(1, "growrdick"), "event_type": "edit", "text": "result withdrawn"},
+        ])
+        self.assertEqual(0, report["total_count"])
+
+    def test_old_logs_without_optional_flags_still_require_configured_bot(self):
+        trusted = _battle(1, "growrdick")
+        trusted.pop("forwarded")
+        trusted.pop("sender_is_bot")
+        unknown = {**trusted, "message_id": 2}
+        unknown.pop("sender_id")
+        self.assertEqual(1, self._report([trusted, unknown])["total_count"])
+
+    def test_malformed_log_rows_do_not_abort_other_confirmed_results(self):
+        for bad in (None, [], 7, "invalid", {"message_id": "bad", "chat_id": -1001},
+                    {**_battle(2, "growrdick"), "message_id": True},
+                    {**_battle(2, "growrdick"), "message_id": 0},
+                    {**_battle(2, "growrdick"), "event_type": []},
+                    {**_battle(2, "growrdick"), "event_type": {}},
+                    _battle(2, "growrdick", loss="6.0.0"),
+                    _battle(2, "growrdick", loss="9" * 400)):
+            with self.subTest(bad=bad):
+                report = self._report([_battle(1, "growrdick"), bad])
+                self.assertEqual((1, 60_000), (report["total_count"], report["total_amount"]))
+
+    def test_invalid_winner_amount_does_not_invent_zero_gain(self):
+        battle = _battle(1, "growrdick")
+        battle["text"] = battle["text"].replace("+6.0万", "+6.0.0万")
+        report = self._report([battle])
+        self.assertEqual((1, 60_000), (report["total_count"], report["total_amount"]))
+        self.assertEqual({}, report["target_gains"])
 
     def test_build_report_counts_only_real_own_battles_and_dedupes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

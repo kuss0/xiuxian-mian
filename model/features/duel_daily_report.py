@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from ..config import MESSAGES_DIR, STATE_DIR, TZ_LOCAL
 from ..runtime import send_audit_log
-from ..state import get_identity_display_name, get_identity_ids, get_send_as_profile
+from ..state import get_game_bot_ids, get_game_group_ids, get_identity_display_name, get_identity_ids, get_send_as_profile
 
 
 REPORT_HOUR = 23
@@ -24,10 +24,13 @@ _next_retry_at = 0.0
 
 
 def _parse_amount(value, unit=""):
-    amount = float(value or 0)
-    if unit:
-        amount *= 10_000
-    return max(0, int(round(amount)))
+    try:
+        amount = float(value or 0)
+        if unit:
+            amount *= 10_000
+        return max(0, int(round(amount)))
+    except (ValueError, TypeError, OverflowError):
+        return 0
 
 
 def _format_amount(amount):
@@ -59,24 +62,34 @@ def _daily_log_entries(day, messages_dir=None):
     if not os.path.exists(path):
         return []
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
-        for seq, line in enumerate(handle, start=1):
+        for line in handle:
             try:
                 payload = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 continue
-            msg_id = int(payload.get("message_id") or 0)
-            chat_id = int(payload.get("chat_id") or 0)
-            latest[(chat_id, msg_id or f"seq:{seq}")] = payload
+            if not isinstance(payload, dict):
+                continue
+            msg_id, chat_id = payload.get("message_id"), payload.get("chat_id")
+            if type(msg_id) is not int or msg_id <= 0 or type(chat_id) is not int or chat_id == 0:
+                continue
+            latest[(chat_id, msg_id)] = payload
     return list(latest.values())
 
 
 def build_duel_daily_report(day=None, messages_dir=None):
     day = str(day or datetime.now(TZ_LOCAL).strftime("%Y-%m-%d"))
     identities = _identity_username_map()
+    bot_ids, group_ids = set(get_game_bot_ids()), set(get_game_group_ids())
     by_identity = Counter()
     by_identity_count = Counter()
     target_gains = Counter()
     for entry in _daily_log_entries(day, messages_dir):
+        if (entry.get("event_type") not in ("message", "edit")
+                or entry["chat_id"] not in group_ids
+                or type(entry.get("sender_id")) is not int or entry["sender_id"] not in bot_ids
+                or entry.get("sender_is_bot", True) is not True
+                or entry.get("forwarded", False) is not False):
+            continue
         text = str(entry.get("text") or "").strip()
         if not text.startswith("【天道战报·文字版】"):
             continue
@@ -97,7 +110,9 @@ def build_duel_daily_report(day=None, messages_dir=None):
         by_identity_count[entry_key] += 1
         winner = RE_WINNER.search(text)
         if winner:
-            target_gains[winner.group("username")] += _parse_amount(winner.group("amount"), winner.group("unit"))
+            gain = _parse_amount(winner.group("amount"), winner.group("unit"))
+            if gain > 0:
+                target_gains[winner.group("username")] += gain
     entries = [
         {"identity_id": int(identity_id), "name": name, "amount": amount, "count": by_identity_count[(identity_id, name)]}
         for (identity_id, name), amount in by_identity.items()
