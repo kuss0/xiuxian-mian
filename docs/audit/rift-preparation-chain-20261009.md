@@ -139,3 +139,31 @@ that pre-existing progress issue remains open, next ordinary read not before
 Supervisor/worker/observer/watchdog PIDs remain unchanged. Monitor 18303 is
 still active; continue normal monitoring, including the upcoming harvest and
 nascent-soul windows. This document is a checkpoint, not a monitoring handoff.
+
+## Read-Only Debt Check Through 07:52
+
+Log-bot callback polling had one connection reset at 07:35:39 and recovered
+at 07:35:57, without intervention. The 8-hour direct-reply report has 6/6
+duel commands, 13/13 Tianxing commands and 1/1 rift with replies. The six duel
+commands include the target-cap rejection, not six completed battles. Local
+first/final latency P95: duel 6s/23s, Tianxing 5s/5s; the single rift is 3s/10s.
+Small samples and direct-root coverage are not universal timeout defaults.
+
+The shadow-only checkpoint at 07:38:14 reports 28639 attempts, 4289 blocked,
+32 historical send_unknown and two queued records from July 14; no last-day
+stale transport/error and no resend_count increment. The primary database is
+69136384 bytes; filesystem availability is 38G. Of retained-log attempts,
+3949/3949 root IDs appear in sent logs, but all 3949 lack ledger chat scope.
+Therefore parity is only `partial_id_only`; stored exact-bind labels are not
+an independent precision audit. Gate 4 stays closed and nothing was archived,
+deleted, recovered or retried from this report.
+
+Today's semantic report counts 1911 captured requests, maximum 46 per minute
+against the configured 90 threshold. This excludes unrecorded clients and
+does not disprove a separate endpoint/hourly limit. Its six transient and one
+application error are the earlier entry429/meditation409 observations, not a
+new active incident. Two faith intervals remain unexplained by logged events:
+Baji 97 to 95 from 01:08:02 to 07:21:53; WA 99 to 98 from 01:09:05 to 03:41:24.
+Do not infer theft, decay or a strategy fault without evidence. The later
+confirmed Baji manifestation restores faith to 100. No added preaching,
+disaster relief or incense refinement was performed.

@@ -170,7 +170,7 @@ authorized by these tests.
 ## Natural Target Cap And Summary At 03:05
 
 Lpprceqei is configured for **10** daily attempts, not five. Its fifth battle
-completed 02:42:51 with official report `1305578 -> 1305576` and remaining mind
+completed 02:42:51 with command 1305576, official report 1305578 and remaining mind
 5/10. At 03:00:31 the next scheduled command `1305644` was sent once; official
 bot `hantianzun33_bot` edited reply `1305645` at 03:00:38 with:
 `天道有则！你与 @ccahen 在24小时内已交锋过多，暂不可再次斗法！`
