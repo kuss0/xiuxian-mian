@@ -135,3 +135,48 @@ service completed at 04:49:02 with exit 0. Restic emitted a missing HOME/cache
 warning but completed; no external backup code or environment was changed.
 Post-startup watchdog is healthy. Observer retains the two-held-batch warning;
 the fate discrepancy remains tracked separately by foreground session 18303.
+
+## Natural Acceptance Through 05:31
+
+Baji sent one `.远航归来` at 05:13:57, message 1306473. Official bot
+8980154525 replied with 1306474 at 05:13:59: cultivation +372, stones +147,
+soul-nourishing wood 1, stored energy +6 and affinity +6. The confirmed
+command-voyage reward entered the ordinary durable summary, accepting the
+newly loaded `638955a6` path rather than only the pre-existing MiniApp path.
+
+Summary receipt `fbdc05bcacff416288e0c5770fa2742a` confirmed at 05:16:29:
+1373 UTF-16 units, 22 lines, no mentions, 645ms. Pending rows drained, held
+batches stayed at two without replay. The next ordinary window is 05:46:29.
+Trial wave 2 completed 12/12 at 05:14:01; its batch receipt
+`0d4b9a65798f4bf0893b48320316972e` confirmed at 05:14:02, 119 units/3 lines,
+no mentions. Child notices are still retained; none of this accepts the
+unmerged trial handoff prototype or proves retry/cancellation reward coverage.
+
+Baji's native fishing handoff completed without an early relaunch: supply
+actions at 05:14:12 and 05:24:53 were separately accounted, not counted as
+casts. Five casts settled at 05:16:17, 05:18:36, 05:21:09, 05:23:25 and
+05:26:49. Saved daily catch: `青鳞小鲫` x3, `赤尾火鲤` x1 and `银须灵鲢` x1.
+Both native journals are accounted;
+quota is 5/5 and next fishing is October 10 00:00:04. A native moon-voyage
+launch followed at 05:26:54; state is sailing, return October 9 11:26:58 and
+next concubine maintenance 11:31:38. No manual game action or state edit was
+used to finish this handoff. The larger durable voyage Lab is still unmerged.
+
+The 05:29 read-only fishing report totals 18 casts across four identities;
+13 no-companion and six no-rod skips account for the other selected identities,
+with no journal warnings. This is retained current-day evidence, not a full
+historical fishing ledger. WA's Mulan collect/publish/support chain also
+completed at 05:10:53, cooldown phase and pending reply zero.
+
+The sole new mention was a real rare Hehuan item notice at 05:20:55, receipt
+`505f75fe267e43d5aa5d1533653b8031`, 82 units/3 lines. Through 05:29 there are
+17 instrumented confirmed deliveries, zero repeated payloads, one mention.
+Other uninstrumented senders are excluded. A log-bot callback connection reset
+at 05:21:43 recovered at 05:21:55 without a patch or restart.
+
+Lpprceqei's 05:19:11 fate read still reports progress 0 against old accepted 1;
+next ordinary read is not before 05:49:11. It remains the only unfinished fate
+record, not a new failed settlement. Main and monitors retain the post-backup
+PIDs. Foreground 18303 remains active. Upcoming observations: 05:46 summary,
+WA voyage maintenance around 06:32, then 07:09:55 preparation and 07:19:55
+rift. Do not advance the business CD or treat deep retreat as a Tianxing block.
