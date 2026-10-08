@@ -125,3 +125,44 @@ reward coverage across retries, parent projection, delivery acknowledgement,
 retention and runtime admission. This old-base Lab run is not current-production
 integration acceptance; no independent review was performed. Do not remove
 child notices or claim this debt resolved.
+
+## Continuation Through 02:35
+
+- Service/worker/observer/watchdog PIDs are unchanged; NRestarts=0. Production
+  HEAD remains `6f1f7f97` before this documentation commit. No restart, game
+  probe, configuration change or live business-state write was performed.
+- Lpprceqei's 02:22:39 natural fate read again reports progress 0 versus the
+  previous accepted 1; the guard stops the chain. The prior stored snapshot is
+  unchanged, not proof that current server progress is 1. Fate remains 23/24.
+  Next ordinary recheck is expected no earlier than 02:52:39.
+- Its fourth duel was sent 02:28:51 and parsed 02:29:08; count/observed count
+  both 4, pending message 0. Target cooldown advances to 02:39:13. No duplicate
+  command or artificial CD reset was observed.
+- Routine summary confirmed at 02:34:06, receipt
+  `54e841f843104a2495a1cd8960bd3309`: 939 UTF-16 units, 24 lines, no mentions,
+  transport 667ms. This is about 71 seconds after the expected 02:32:54 window,
+  not evidence of failed or repeated delivery. Queue rows drained; next_at is
+  03:04:05. The two historical unknown batches remain held, not replayed.
+- Midnight through this receipt: 12 instrumented runtime deliveries confirmed,
+  zero repeated payloads and zero explicit mentions. Uninstrumented senders are
+  excluded, so this does not prove all Telegram traffic was captured.
+- Foreground monitor `10441` remains active; rift preparation 07:09:55 and
+  business CD 07:19:55 are unchanged. Renew observation before approximately
+  05:35. The planned notification-code load remains unevaluated, not executed.
+
+Trial Lab now has a pure `coverage_projection` comparison and 20 focused
+coverage tests. It compares original business step/operation evidence against
+the optional report mirror; missing/older evidence is incomplete, conflicts
+are rejected, and child notices stay enabled even when coverage matches.
+The existing single-record ordering rule is reused without repeatedly scanning
+the whole batch per operation. Final related run: 491 passed / 3 strict expected
+failures; focused second run 83 / 3. Ruff and compile checks pass. No new full
+suite or production integration is claimed.
+
+This helper does not acquire independent business evidence. Durable original
+step/operation coverage is still absent from production, so feeding the report
+mirror back as the expected manifest is invalid. The optional report-health
+write failure still blocks primary saving in the earlier prototype. That
+availability coupling, parent projection, delivery/retention and release
+reviews remain open; this Lab is unmerged and no notification suppression is
+authorized by these tests.
