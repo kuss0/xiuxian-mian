@@ -1,6 +1,6 @@
 # Duel Daily Report Source Evidence
 
-Base: `28bd47e5`. Candidate worktree:
+Base: `28bd47e5`. Worktree:
 `/root/xiuxian-duel-report-evidence-20261009`.
 
 ## Finding
@@ -69,3 +69,30 @@ shared battle key here. Durable delivery acknowledgement and unknown-outcome
 retry behavior are unchanged. These remain separate debts, not silently solved
 by adding a sender filter. This was a second maintainer review, not an independent
 external audit. The unfinished trial/voyage Labs are not part of this release.
+
+## Merged, Pending Scheduled Loading
+
+`750d8561` was fast-forwarded into main and pushed to `xiuxian-mian/main`.
+Production-directory tests used isolated state and passed 73 tests / 25
+subtests. No service restart or test Telegram message was issued.
+
+At 04:03 the agent tool server resumed after an interruption. Xiuxian itself
+remained on worker 3816200/supervisor 3816199, started October 8 22:13:35;
+observer 3435134 and watchdog 3435106 are unchanged. Main and remote tracking
+both point to `750d8561`; the only production dirty file is the unrelated
+learned quiz bank. The full-suite XML remains complete with zero failures,
+errors or skips (18507 JUnit cases including subtests). Completed work was not
+repeated.
+
+Tool sessions 10441/93487 cannot be resumed after that server restart, although
+their bounded journal readers remain as OS processes. New foreground session
+18303 watches main, observer, watchdog and backup logs from 04:00 onward and
+expires around 10:03. The old readers were not stopped. This is a resumed
+observation boundary, not a claim of uninterrupted main-agent attendance.
+
+At 04:05 the actual backup timer still targets 04:45:02. Both this report fix
+and the one-line command-voyage grouping change remain pending runtime loading.
+The two held historical notifications remain unknown and are not replayed.
+Lpprceqei's 03:54:50 fate read remains 0 versus old accepted 1; next retry is
+not before 04:24:50. Daily duel closure remains intact. Continue through backup
+recovery and the 07:09:55 preparation / 07:19:55 rift windows.
