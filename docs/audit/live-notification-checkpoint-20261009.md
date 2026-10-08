@@ -166,3 +166,38 @@ write failure still blocks primary saving in the earlier prototype. That
 availability coupling, parent projection, delivery/retention and release
 reviews remain open; this Lab is unmerged and no notification suppression is
 authorized by these tests.
+
+## Natural Target Cap And Summary At 03:05
+
+Lpprceqei is configured for **10** daily attempts, not five. Its fifth battle
+completed 02:42:51 with official report `1305578 -> 1305576` and remaining mind
+5/10. At 03:00:31 the next scheduled command `1305644` was sent once; official
+bot `hantianzun33_bot` edited reply `1305645` at 03:00:38 with:
+`天道有则！你与 @ccahen 在24小时内已交锋过多，暂不可再次斗法！`
+
+The normal reducer marked that target limited and closed today's batch without
+counting the rejected command as a sixth completed battle. Read-only state at
+03:06: daily_completed_day=2026-10-09, observed count=5, batch count=0, pending
+message=0, limited targets=[@ccahen], enabled=1; next run October 10 01:38:41.
+Preflight reports the daily closure healthy. No reopening or loadout command
+was observed after the cap. This accepts the natural terminal branch, not the
+next day's admission or the upstream rolling-window reset time. No count or
+switch was modified. The assistant's earlier prediction that the fifth battle
+itself must close the batch was corrected after inspecting the actual setting.
+
+The 02:53:46 fate recheck still returned progress 0 versus accepted 1 and stopped
+without another game mutation. Fate remains 23/24; next retry is not before
+03:23:46. All 24 deep-retreat states are running, and the seven enabled
+nascent-soul states are running; the other 17 are disabled, not stuck pending.
+Recent natural settlement/start messages supplement these stored-state checks.
+
+Summary receipt `d466a52ba7ff4a2fa59b05eafbcd26b1` was confirmed at 03:05:06:
+359 UTF-16 units, 10 lines, zero mentions, transport 645ms. Pending rows=0,
+held=2; next_at=03:35:05. No old unknown delivery was replayed.
+
+Foreground observation now also includes focused session `93487`, started
+around 02:44 for six hours, watching fate, duel, notification receipts and
+Tianxing/rift events that the broad `10441` filter omitted. The original
+monitor was not stopped. Consume both; the focused session covers the 07:19
+rift window even after the broad session's planned 05:35 expiry. Services and
+loaded worker revision remain unchanged.
