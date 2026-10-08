@@ -80,3 +80,22 @@ The separate twelve-file voyage durability Lab is unchanged and unmerged.
 This tool can load on its next CLI invocation after merge; it requires no
 service restart. Production default-path read-only verification follows
 merge. Runtime notification loading remains a separate maintenance step.
+
+## Release
+
+`1a94d30b` was fast-forwarded into production and pushed to
+`xiuxian-mian/main`. Production-checkout isolated verification: 166 passed.
+At 00:52 the default CLI, without database/capture overrides, returned the
+expected 13 rods and fish counts 3/1/9. No notification was sent. Main,
+observer and watchdog PIDs remained unchanged with NRestarts zero; only the
+unrelated live quiz-bank file is dirty.
+
+A separate gyurihero meditation attempt at 00:52:10 was explicitly rejected
+with HTTP409 /`meditation_not_ready`. Its saved state is
+`meditation_rejected`, no pending unknown action, retained fate trace +1 and
+active cultivation quest 0/30. Captures preserve shapes, not the numeric
+readiness values needed to distinguish stale overview from concurrent game
+state change. Do not classify this as a lost reply or blindly retry. Subsequent
+wild gains at 00:54/00:55 may satisfy the quest; verify through its next
+ordinary fate read, expected no earlier than about 01:22:10. This watch is
+unrelated to the report-only release and remains open.
