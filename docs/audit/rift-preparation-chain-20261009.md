@@ -113,7 +113,12 @@ gold/wind law fragments x1 each. Prediction hit gives Tianji +1 / contribution
 change-fate confirmed for 17h58m and calamity count 0.
 
 All rift pending/reply/manual-required fields are clear, error empty, next
-business time 19:19:59. The consumed timeline returns to `blocked_replan`,
+scheduled time 19:32:24. The earlier report's 19:19:59 was the pending-stage
+12-hour fallback, not the terminal schedule. The final event at 07:20:07 calls
+the existing 12-hour-plus-5-to-15-minute jitter scheduler; the saved deadline
+1791545544.603147 includes 737.603147 seconds of jitter. This correction was
+verified read-only at 08:34; no timer was changed. The consumed timeline
+returns to `blocked_replan`,
 which is expected after downstream consumption, not a new stuck action.
 The cooldown-preservation/independent-preparation success branch is naturally
 accepted. Unknown transport, missing replies and future cycles retain their
