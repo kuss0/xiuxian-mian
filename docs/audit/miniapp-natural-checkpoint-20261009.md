@@ -1,6 +1,6 @@
 # MiniApp Natural Checkpoint
 
-Latest continuation: 12:38 CST, detailed below. Worker and service start times
+Latest continuation: 13:09 CST, detailed below. Worker and service start times
 remain unchanged; code delivery is not runtime loading.
 
 October 9, 2026, CST. Production base `310477d5`. Through the 08:31 checkpoint,
@@ -299,3 +299,39 @@ preflight separately retains frozen xuruode1 voyage coverage. WA/Baji duel
 and incense refinement remain off, harvest/voyage on; no identity has Boss
 enabled. Next checkpoints: the 12:59+ fate read and 13:06 summary, renewing
 foreground monitor `68402` before its approximate 14:17 expiry.
+
+## Through 13:09
+
+WA's ordinary summary confirmed at 13:06:18, receipt
+`0b0a0458dbd44b128b03fd83f4e83e13`: 176 UTF-16 units, four lines, no mentions.
+The two queued rows drained and held remains 2. Next saved window is 13:36:17;
+an empty queue is not overdue. This accepts this native voyage's reward
+summary, not the unmerged durable-voyage Lab or unloaded calibration fixes.
+
+Lpprceqei's 12:59:36 ordinary read still returns 0 against accepted 1; the
+four read-path requests are HTTP 200 / attempt 1, with no follow-on mutation.
+Next ordinary recheck is not before 13:29:36. The 13:02:15 external-player
+quiz timeout was console-only: no row or receipt was created for it.
+
+Read-only business checks at 12:42-12:44 found 2188 captured HTTP requests
+today, peak 46 in 60 seconds versus the configured 90 threshold. The report
+retains one earlier application error and six transient errors; it is not a
+claim of zero daily failures or coverage of all possible clients. Small-world
+faith deltas remain unexplained: Baji 97->95, WA 99->98 and later 98->96.
+No spending or strategy change follows that incomplete evidence. Four account
+checkin commands and one Yinluo daily offering are each logged as sent once;
+this limited command sample does not prove every daily action family.
+
+Today's six duel commands have six direct bot replies, including a target-cap
+reply, with first-reply P95 6 seconds and final-edit P95 23 seconds. Identity
+7538826434 remains closed for October 9 with pending reply 0 and error empty;
+there are no later duel sends after 03:00:31. Do not interpret six receipts as
+six completed fights or the reset counter as missing accepted fights.
+
+Foreground journal observation `60587` started around 13:08 for eight hours,
+covering tonight's rift preparation at 19:22:24 and release at 19:32:24. Old
+session `68402` is still active until its normal expiry; neither monitor
+controls game sends. Worker/service PIDs remain unchanged. Next nearer
+checks: Baji small-world maintenance 13:31:59, WA small world 15:51:32, then
+their native harvests and soul cycles. Global Boss, WA/Baji duel and incense
+refinement remain off as previously recorded.
