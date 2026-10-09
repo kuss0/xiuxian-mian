@@ -82,3 +82,11 @@ It does not replace the native MiniApp operation ownership checks.
 
 The main monitor remains session `68402`. The 19 channel identities' natural
 retreat cycles completed before loading this code and cannot accept it.
+
+## Delivery
+
+`e326afba` fast-forwarded into main after the full run. Production-directory
+isolated regression: **166 passed** (phaseful, new race cases and early reply
+replay). Worker `3981692` and all service start times remain unchanged; the
+running worker still loads `b686012b`. Code delivery is not deployment or
+natural acceptance. The other pending notification changes remain unloaded.

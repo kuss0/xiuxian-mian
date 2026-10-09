@@ -120,3 +120,109 @@ xuruode6 also launched naturally at 08:58:03, next 16:58:04; entry/selected/
 status/launch each succeeded on attempt 1. This completes the morning sample
 of four channel identities and two account identities, not all identities
 and not Lpprceqei's later nascent-soul window. No live configuration changed.
+
+## Through 10:33
+
+Worker `3981692` is unchanged. Foreground monitor `68402` remains active;
+the earlier `18303` expired normally and its output was consumed. Neither
+notification candidate is loaded. No game probes, state corrections, switch
+changes or manual restarts were performed in this continuation.
+
+Fifteen identities completed a natural deep-retreat settlement and restart
+between 09:59 and 10:31. The table uses feature journal timestamps, not the
+second background-summary line. At 10:33 each listed native record confirms
+`action=start`, `action_dispatched=true`, `identity_verified=true`,
+`outcome_unknown=false`, with the corresponding stored phase `running`.
+
+| Identity | Settlement | Restart | Next Due |
+| --- | --- | --- | --- |
+| wisemole | 09:59:04 | 10:01:54 | 18:01:58 |
+| Lpprceqei | 10:02:21 | 10:05:01 | 18:05:06 |
+| xianxia9527 | 10:05:35 | 10:07:28 | 18:07:33 |
+| jfdffdddd | 10:06:02 | 10:07:53 | 18:07:58 |
+| gyurihero | 10:08:24 | 10:10:28 | 18:10:33 |
+| myios17 | 10:08:49 | 10:11:01 | 18:11:06 |
+| zhengyuan0213 | 10:12:28 | 10:14:28 | 18:14:31 |
+| xuruode8 | 10:12:51 | 10:15:00 | 18:15:05 |
+| mudamuda0 | 10:15:27 | 10:17:49 | 18:17:54 |
+| dingfengbosushi | 10:17:16 | 10:19:33 | 18:19:37 |
+| tutuerduoxiao | 10:18:22 | 10:21:00 | 18:21:05 |
+| xuruode6 | 10:18:56 | 10:21:24 | 18:21:29 |
+| xuruode4 | 10:22:27 | 10:24:19 | 18:24:24 |
+| growrdick | 10:24:46 | 10:26:49 | 18:26:54 |
+| fanb0x | 10:28:31 | 10:31:02 | 18:31:07 |
+
+Myios7, iceeet1 and lalasin1 have settled and are in the normal short
+post-summary wait; five later channel windows remain due through 10:40:50.
+These are not yet completed cycles. WA's native deep record is older and
+does not belong to this acceptance window; a stored future timer alone is
+not evidence of a new native launch.
+
+Lpprceqei's ordinary checkin triggered an official nascent-soul settlement
+at 10:21:56: cultivation +11700 and level-two demon core x1. The subsequent
+10:23:53 public MiniApp status says the soul remains in sect retreat, with
+548 cultivation already accumulated. This read did not dispatch another
+soul launch. The stored timer is now 18:23:51, phase running, probe pending 0.
+Thus the older anticipated 10:28:23 launch is superseded by real status,
+not a missed scheduled action or another accepted launch sample.
+
+Fate reads at 09:25:04, 09:55:27 and 10:26:22 still show progress 0 versus
+accepted 1, target 30. The later read follows both natural settlements but
+still does not authorize claiming completion. There is no new
+draw/interpret/choose/settle or forced exit. Today remains 23/24; earliest
+ordinary recheck is 10:56:22, subject to normal admission. Net cultivation
+and upstream progress semantics remain hypotheses, not established causes.
+
+The log-bot polling disruption (two 502 responses, then three read timeouts
+from 09:12) recovered at 09:15:44 without intervention. Subsequent ordinary
+deliveries confirmed once at 09:18:39 (277 UTF-16 units/7 lines), 09:56:46
+(534/9) and 10:29:05 (823/21), all without mentions. Latest receipt:
+`4fbc1f196d3d4f099f03992fa186824c`. The 31 pre-flush rows drained; two
+historical held batches remain, with no automatic replay. Next ordinary
+summary is 10:59:04. Later arrivals belong to its next batch.
+
+Read-only watchdog is okay; observer retains the two-held-batch warning.
+Preflight retains xuruode1 frozen-voyage coverage and the inactive sidecar,
+with pending queue empty. Today's available capture report has 2098 rows,
+peak 46/90 per minute, one application and six transient failures. These
+are day-window counts, not new failures in the retreat window, nor proof
+against separate endpoint/hourly quotas. Trial/voyage durable handoff Labs,
+backup admission and CommandAttempt Gate 4/retention remain open.
+
+## Remaining Retreats Through 10:49
+
+All eight remaining channel cycles completed once:
+
+| Identity | Settlement | Restart | Next Due |
+| --- | --- | --- | --- |
+| myios7 | 10:31:34 | 10:34:14 | 18:34:19 |
+| iceeet1 | 10:32:19 | 10:34:42 | 18:34:47 |
+| lalasin1 | 10:32:49 | 10:35:14 | 18:35:19 |
+| imcanonical_ai | 10:35:46 | 10:38:30 | 18:38:35 |
+| xuruode1 | 10:39:01 | 10:41:04 | 18:41:09 |
+| xueuode5 | 10:39:34 | 10:41:28 | 18:41:33 |
+| jihejish | 10:41:54 | 10:44:03 | 18:44:08 |
+| boxboxji | 10:42:26 | 10:44:37 | 18:44:41 |
+
+This completes 23 natural settle/restart pairs in this window: all 19 channel
+identities and four account identities. WA is excluded from those pairs.
+The 10:49 database reads 24 running, pending_tasks=0 and quick_check=ok.
+Channel public-entry retreat acceptance does not close xuruode1's separate
+frozen-voyage scheduling gap or prove all other MiniApp modules work.
+
+At 10:56:49 Lpprceqei's next natural fate read still returns 0 versus accepted
+1. Next ordinary read is no earlier than 11:26:49; no extra action is sent.
+WA/Baji duel and refinement remain off, harvest and voyage on.
+
+The upstream refresh discovered wxjerry `d466ae4` (early replies and send-time
+deadlines); Rust remains `f18e89ac`. An isolated phaseful continuation
+candidate is being tested, with no production runtime modification. This
+retreat window cannot count as its natural acceptance.
+
+At 11:01:08 receipt `306929827e204f5582dce28b3d4d7a38` confirms the remaining
+ordinary retreat summary: 338 UTF-16 units, 11 lines, no mentions. The earlier
+10:59:04 expectation was superseded by the persisted 11:01:02 window, not a
+failed delivery. Since 09:58 the available cave capture file has 144 HTTP
+records, including exactly 46 deep-seclusion actions, all HTTP 200; peak 9
+requests per clock minute. This excludes other clients and does not treat
+the fate business rejection as successful quest completion.
