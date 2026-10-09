@@ -8,7 +8,7 @@ from ..config import CD_BUFFER_SEC, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..message_keys import find_message_key, pop_message_record
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_identity_state, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining
 
 
@@ -971,16 +971,35 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
             await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复{suffix}。", priority="low")
             return True
 
+        owner_id = get_current_identity_id()
+        owner = get_identity_state(owner_id)
+        keys = (
+            spec.enabled_key, spec.phase_key, spec.next_time_key, spec.last_command_key,
+            spec.probe_pending_key, spec.summary_sent_at_key, spec.last_summary_msg_id_key,
+        )
+        expected = tuple(owner.get(key) for key in keys)
+
+        def still_owned():
+            return (has_identity(owner_id) and get_current_identity_id() == owner_id
+                    and get_identity_state(owner_id) is owner
+                    and tuple(owner.get(key) for key in keys) == expected)
+
         await delete_summary_trigger_msg(spec)
+        if not still_owned():
+            return False
         begin_queued_launch(spec, now)
         console_log(console_message)
         attempt_started_at = now
+        expected = tuple(owner.get(key) for key in keys)
         msg = await send_game_command(
             launch_command,
             track=False,
             priority="chain",
             source_module=spec.source_module or None,
         )
+        # A reply or operator change during transport owns the newer state.
+        if not still_owned():
+            return bool(msg)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
             send_block = classify_game_send_block(get_current_identity_id(), launch_command)
