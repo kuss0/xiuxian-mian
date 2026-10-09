@@ -607,10 +607,11 @@ async def _send_second_soul_purge(send_as_id, now, *, reason=""):
         if sent and _owns_identity(owner) and _phase() == "purge_pending":
             record = (_command_records() or {}).get("purge", {})
             status = "已发送" if record.get("status") == "sent" else "发送结果待确认"
-            await send_audit_log(
-                f"🌀 第二元神元神镇魔{status}，第 {attempts + 1}/{SECOND_SOUL_PURGE_MAX_ATTEMPTS} 次。{reason}",
-                scope="identity", send_as_id=send_as_id, limit=240,
-            )
+            message = f"🌀 第二元神元神镇魔{status}，第 {attempts + 1}/{SECOND_SOUL_PURGE_MAX_ATTEMPTS} 次。{reason}"
+            if record.get("status") == "sent":
+                console_log(message)
+            else:
+                await send_audit_log(message, scope="identity", send_as_id=send_as_id, limit=240)
         return sent
 
 
@@ -836,7 +837,7 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
             _calibrate_pending_from_panel("train", operation)
         _mark_ready_to_train(now)
         save_state()
-        await send_audit_log("🌀 第二元神已确认窍中温养，修炼指令进入安全队列。")
+        console_log("🌀 第二元神已确认窍中温养，修炼指令进入安全队列。")
         return True
 
     if status == "修炼中":
@@ -851,7 +852,7 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
             # 无剩余字段（比如刚开始或已快结束）：30-60min 后再查
             state["next_second_soul_time"] = now + random.uniform(SECOND_SOUL_RECHECK_MIN, SECOND_SOUL_RECHECK_MAX)
         save_state()
-        await send_audit_log(f"🌀 第二元神修炼中，下次检查→{fmt_abs_ts(state['next_second_soul_time'])}")
+        console_log(f"🌀 第二元神修炼中，下次检查→{fmt_abs_ts(state['next_second_soul_time'])}")
         return True
 
     if status == "受伤":
@@ -924,10 +925,11 @@ async def handle_second_soul_purge_reply(text, now, reply_to, matched_family=Non
             return True
         _finish_purge_ready(now, moran=moran)
         save_state()
-        await send_audit_log(
-            f"🌀 第二元神镇魔回复已收口，当前魔染 {moran}，修炼指令恢复队列。",
-            scope="identity", send_as_id=get_current_identity_id(), limit=220,
-        )
+        message = f"🌀 第二元神镇魔回复已收口，当前魔染 {moran}，修炼指令恢复队列。"
+        if moran < get_second_soul_purge_threshold():
+            console_log(message)
+        else:
+            await send_audit_log(message, scope="identity", send_as_id=get_current_identity_id(), limit=220)
         return True
     return False
 
@@ -984,10 +986,7 @@ async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_fam
             scope="identity", send_as_id=get_current_identity_id(), limit=260,
         )
     else:
-        await send_audit_log(
-            f"🌀 第二元神魔染已低于阈值（{moran}），修炼指令恢复队列。",
-            scope="identity", send_as_id=get_current_identity_id(), limit=220,
-        )
+        console_log(f"🌀 第二元神魔染已低于阈值（{moran}），修炼指令恢复队列。")
     return True
 
 

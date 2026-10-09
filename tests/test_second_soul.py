@@ -460,6 +460,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled_duplicate)
         self.assertIn("修为 +43207｜元神经验 +2971", audit.await_args_list[0].args[0])
         self.assertIn("魔染 91", audit.await_args_list[0].args[0])
+        self.assertEqual(1, audit.await_count)
         send_mock.assert_awaited_once_with(
             CMD_SECOND_SOUL_PURGE,
             track=False,
@@ -895,6 +896,134 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("cultivating", state_module.state["second_soul_phase"])
             self.assertGreater(state_module.state["next_second_soul_time"], now + 23 * 3600)
             self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
+
+
+class SecondSoulProgressNoticeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_return_purge_train_keeps_rewards_and_final_notice(self):
+        identity_id, now = 990959, 5000.0
+        _register_identity(identity_id)
+        state_module.update_send_as_profile(identity_id, username="NoticeSoul")
+        with (
+            state_module.use_identity(identity_id),
+            patch.object(second_soul, "send_game_command", new=AsyncMock(side_effect=[
+                SimpleNamespace(id=61, chat_id=-1002, sent_at=now + 1),
+                SimpleNamespace(id=62, chat_id=-1002, sent_at=now + 5),
+            ])) as send,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+            patch.object(second_soul, "console_log"),
+            patch.object(second_soul, "save_state"),
+        ):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "cultivating"
+            text = ("【第二元神归位】\n道友 @NoticeSoul 的第二元神已结束修炼，回归窍中温养。\n"
+                    "主魂获得了 77840 点修为，第二元神获得了 3544 点经验。\n"
+                    "五子流转：同心 100→100，魔染 54→62。")
+            self.assertTrue(await second_soul.handle_second_soul_return_broadcast(text, now))
+            reply = SimpleNamespace(id=61, chat_id=-1002, raw_text=CMD_SECOND_SOUL_PURGE)
+            self.assertTrue(await second_soul.handle_second_soul_purge_reply(
+                "【元神镇魔】\n魔染度: 62 → 10", now + 3, reply, "second_soul_purge",
+            ))
+            await second_soul.run_second_soul_scheduler(now + 4)
+            reply = SimpleNamespace(id=62, chat_id=-1002, raw_text=CMD_SECOND_SOUL_TRAIN)
+            self.assertTrue(await second_soul.handle_second_soul_train_reply(
+                "你的第二元神已开始闭关修炼，本次修炼将持续24小时。", now + 6, reply, "second_soul_train",
+            ))
+            self.assertEqual([CMD_SECOND_SOUL_PURGE, CMD_SECOND_SOUL_TRAIN],
+                             [call.args[0] for call in send.await_args_list])
+            self.assertEqual(2, audit.await_count)
+            self.assertIn("修为 +77840｜元神经验 +3544", audit.await_args_list[0].args[0])
+            self.assertIn("已修炼", audit.await_args_list[1].args[0])
+            self.assertEqual("cultivating", state_module.state["second_soul_phase"])
+            self.assertEqual(10, state_module.state["second_soul_moran_value"])
+
+    async def test_ready_and_cultivating_panels_are_local_progress(self):
+        for offset, (status, phase) in enumerate((("窍中温养", "ready_to_train"), ("修炼中", "cultivating"))):
+            with self.subTest(status=status):
+                identity_id, now = 990960 + offset, 1000.0
+                _register_identity(identity_id)
+                with (
+                    state_module.use_identity(identity_id),
+                    patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+                    patch.object(second_soul, "console_log") as console,
+                    patch.object(second_soul, "save_state"),
+                    patch.object(second_soul, "send_game_command", new=AsyncMock()) as send,
+                ):
+                    state_module.state["second_soul_enabled"] = True
+                    state_module.state["second_soul_phase"] = "status_pending"
+                    self.assertTrue(await second_soul.handle_second_soul_status_reply(
+                        f"【你的第二元神：金之元神】\n状态: {status}", now,
+                        _command_reply(identity_id, "status", 100, now), matched_family="second_soul_status",
+                    ))
+                    self.assertEqual(phase, state_module.state["second_soul_phase"])
+                    self.assertEqual("complete", state_module.state["second_soul_commands"]["status"]["status"])
+                    audit.assert_not_awaited()
+                    console.assert_called_once()
+                    send.assert_not_awaited()
+
+    async def test_only_low_moran_confirmation_is_local(self):
+        for offset, (kind, moran) in enumerate((("purge", 10), ("demon_status", 10), ("purge", 60), ("demon_status", 60))):
+            with self.subTest(kind=kind, moran=moran):
+                identity_id, now = 990970 + offset, 2000.0
+                _register_identity(identity_id)
+                text = (f"【元神镇魔】\n魔染度: 91 → {moran}" if kind == "purge"
+                        else f"【五子同心魔】\n五子同心魔: 5/5 | 同心 100 | 魔染 {moran}")
+                handler = (second_soul.handle_second_soul_purge_reply if kind == "purge"
+                           else second_soul.handle_second_soul_demon_status_reply)
+                with (
+                    state_module.use_identity(identity_id),
+                    patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+                    patch.object(second_soul, "console_log") as console,
+                    patch.object(second_soul, "save_state"),
+                    patch.object(second_soul, "send_game_command", new=AsyncMock()) as send,
+                ):
+                    state_module.state["second_soul_enabled"] = True
+                    state_module.state["second_soul_phase"] = "purge_pending" if kind == "purge" else "purge_status_pending"
+                    state_module.state["second_soul_purge_attempts"] = second_soul.SECOND_SOUL_PURGE_MAX_ATTEMPTS
+                    self.assertTrue(await handler(text, now, _command_reply(identity_id, kind, 100, now),
+                                                  matched_family=f"second_soul_{kind}"))
+                    self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
+                    self.assertEqual(moran, state_module.state["second_soul_moran_value"])
+                    send.assert_not_awaited()
+                    if moran < 60:
+                        audit.assert_not_awaited()
+                        console.assert_called_once()
+                    else:
+                        audit.assert_awaited_once()
+
+    async def test_purge_unknown_send_still_notifies(self):
+        identity_id, now = 990980, 3000.0
+        _register_identity(identity_id)
+        with (
+            state_module.use_identity(identity_id),
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=0))),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+            patch.object(second_soul, "save_state"),
+        ):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "purge_ready"
+            self.assertTrue(await second_soul._send_second_soul_purge(identity_id, now))
+            self.assertEqual("unknown", state_module.state["second_soul_commands"]["purge"]["status"])
+            self.assertTrue(any("发送状态未知" in call.args[0] for call in audit.await_args_list))
+            self.assertTrue(any("发送结果待确认" in call.args[0] for call in audit.await_args_list))
+
+    async def test_final_training_confirmation_still_notifies_once(self):
+        identity_id, now = 990981, 4000.0
+        _register_identity(identity_id)
+        with (
+            state_module.use_identity(identity_id),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit,
+            patch.object(second_soul, "save_state"),
+        ):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "train_pending"
+            reply = _command_reply(identity_id, "train", 100, now)
+            text = "你的第二元神已开始闭关修炼，本次修炼将持续24小时。"
+            self.assertTrue(await second_soul.handle_second_soul_train_reply(text, now, reply, "second_soul_train"))
+            self.assertTrue(await second_soul.handle_second_soul_train_reply(text, now, reply, "second_soul_train"))
+            self.assertEqual("cultivating", state_module.state["second_soul_phase"])
+            self.assertGreater(state_module.state["next_second_soul_time"], now + 23 * 3600)
+            audit.assert_awaited_once()
+            self.assertIn("已修炼", audit.await_args.args[0])
 
 
 if __name__ == "__main__":
