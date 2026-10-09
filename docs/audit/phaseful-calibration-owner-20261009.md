@@ -44,7 +44,8 @@ does not immediately start another operation in the same scheduler tick.
   regression: **660 passed / 319 subtests**, including Tianxing retreat,
   rift, native retreat/soul lifecycles and send observers/timeouts.
   This is not an independent external audit.
-- Production-directory isolated tests remain required after fast-forward.
+- Production-directory isolated regression: **204 passed**, with
+  `XIUXIAN_ALLOW_LIVE_TEST_DB=0`.
 
 ## Remaining Boundaries
 
@@ -60,3 +61,10 @@ The original launch fix `e326afba` and notification changes remain unloaded.
 Worker `3981692` still loads `b686012b`. No current production incident has
 been attributed to this race. Foreground observation `68402` remains active;
 WA's next natural voyage return is 12:34:18, maintenance 12:36:13.
+
+## Delivery
+
+`acb47f74` fast-forwarded and pushed to `xiuxian-mian/main`. Supervisor,
+worker, watchdog and observer retain their original PIDs and start times.
+The candidate is not loaded and has no natural acceptance yet. The only
+remaining production worktree modification is runtime quiz learning.

@@ -1,5 +1,8 @@
 # MiniApp Natural Checkpoint
 
+Latest continuation: 12:38 CST, detailed below. Worker and service start times
+remain unchanged; code delivery is not runtime loading.
+
 October 9, 2026, CST. Production base `310477d5`. Through the 08:31 checkpoint,
 production edits are documentation only: no game probe, business-state
 correction, switch change, runtime patch or restart. The later isolated
@@ -255,3 +258,44 @@ not validate every MiniApp or waive the frozen-voyage coverage debt.
 Lpprceqei's natural 11:27:59 fate read remains 0/30 versus accepted 1/30;
 next ordinary read is no earlier than 11:57:59. WA's voyage return remains
 12:34:18, maintenance 12:36:13. Foreground observation `68402` remains active.
+
+## Through 12:38
+
+The two calibration-notice await guards in `acb47f74` are merged and pushed,
+not loaded. Full regression 17095 /1517 subtests, focused 251, second review
+660 /319 and production-directory isolated 204 passed. See
+[the bounded fix](phaseful-calibration-owner-20261009.md). No manual restart,
+game probe, live-state correction or configuration change was made.
+
+Lpprceqei, identity `7538826434`, returned progress 0 versus accepted 1 at
+11:58:35 and 12:29:13. The latter read's entry/details/external/start each
+succeeded once with HTTP 200; no draw, interpretation, choice, claim or
+retreat mutation followed. The other record `3943773722:fate_cards` is a
+different identity and is not evidence for this outstanding task. Today is
+still 23/24. Next ordinary read is not before 12:59:13. Progress regression
+and net-cultivation semantics remain unproven; no guard was relaxed.
+
+WA's ordinary maintenance scanned at 12:36:14, then completed one native
+return at 12:36:17: cultivation +509, stones +142, plain-maiden seal pattern
+x1, stored spirit +5 and affinity +5. One moon-voyage launch followed at
+12:36:18. These have four captures total (entry and command for each), each
+HTTP 200 / attempt 1. At 12:38 the stored affinity is 689, phase idle,
+voyage sailing, retry 0 and both errors empty. Return is now 18:36:22,
+ordinary maintenance 18:44:43. Native commands were not repeated in-group.
+
+The return reward and one launch-progress row are queued once each; the
+ordinary summary window is now 13:06:17, not the former empty-window time
+12:11:30. Delivery is not yet confirmed. Historical held batches remain 2.
+Today's instrumented runtime receipts through 12:00:13 contain 31 attempts,
+all confirmed, no duplicate confirmed payloads, five explicit mentions.
+The 12:00 receipt `20cf1ee20f6d4b3fa18bc79dffe691c8` is the Yellow Dragon
+sect rotation notice (52 UTF-16 units/three lines), not an error or Boss.
+This count excludes uninstrumented senders and predates the queued WA reward.
+
+Supervisor `3981690`, worker `3981692`, watchdog `3981709` and observer
+`3981735` are unchanged. Watchdog is okay and pending tasks are empty.
+Observer warning is still only the two old held summaries; defensive
+preflight separately retains frozen xuruode1 voyage coverage. WA/Baji duel
+and incense refinement remain off, harvest/voyage on; no identity has Boss
+enabled. Next checkpoints: the 12:59+ fate read and 13:06 summary, renewing
+foreground monitor `68402` before its approximate 14:17 expiry.
