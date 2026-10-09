@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from model import state as state_module
+from model import runtime, state as state_module
 from model.features import _phaseful, deep_retreat, yuanying
 
 
@@ -157,3 +157,108 @@ def test_actual_deep_success_reducer_wins_over_late_transport_return(env, monkey
     monkeypatch.setattr(_phaseful, "send_game_command", AsyncMock(side_effect=send))
     asyncio.run(_phaseful._send_summary_launch(spec, deep_retreat.CMD_DEEP_RETREAT, "fixture", now=NOW))
     assert env.identity == expected
+
+
+def prepare_calibration(identity, spec, kind):
+    identity.update({spec.enabled_key: True,
+                     spec.phase_key: "waiting_summary" if kind == "probe" else "launching",
+                     spec.next_time_key: NOW + 900,
+                     spec.last_command_key: NOW - spec.launching_timeout_sec - 1,
+                     spec.summary_sent_at_key: NOW - spec.summary_timeout_sec - 1,
+                     spec.probe_pending_key: kind == "probe"})
+
+
+def run_calibration(spec, kind):
+    if kind == "probe":
+        return _phaseful._calibrate_probe_timeout_once(spec, NOW)
+    return _phaseful._calibrate_launching_timeout_once(spec, NOW, ".fixture-launch")
+
+
+@pytest.mark.parametrize("spec", SPECS, ids=("deep", "soul"))
+@pytest.mark.parametrize("kind", ("probe", "launch"))
+@pytest.mark.parametrize("change", (
+    "running", "settled", "disabled", "rescheduled", "probe", "message", "removed", "replaced",
+))
+def test_calibration_notice_wait_cannot_query_over_newer_state(env, monkeypatch, spec, kind, change):
+    prepare_calibration(env.identity, spec, kind)
+    expected = {}
+
+    async def notify(*_args, **_kwargs):
+        if change == "running":
+            _phaseful.mark_success(spec, NOW + 2, next_time=NOW + 12345)
+        elif change == "settled":
+            _phaseful.begin_post_summary_wait(spec, NOW + 2, confirmed=True)
+        elif change == "disabled":
+            env.identity[spec.enabled_key] = False
+        elif change == "rescheduled":
+            env.identity[spec.next_time_key] = NOW + 777
+        elif change == "probe":
+            env.identity[spec.probe_pending_key] = True
+        elif change == "message":
+            env.identity[spec.last_summary_msg_id_key] = 9002
+        elif change == "removed":
+            state_module.remove_identity(ID)
+        else:
+            state_module._meta_state["identity_states"][ID] = copy.deepcopy(env.identity)
+        expected.update(copy.deepcopy(state_module._meta_state))
+
+    query = AsyncMock(return_value=True)
+    monkeypatch.setattr(runtime, "clear_pending_tasks_by_commands", Mock())
+    monkeypatch.setattr(_phaseful, "send_audit_log", AsyncMock(side_effect=notify))
+    monkeypatch.setattr(_phaseful, "_send_active_summary_query", query)
+
+    assert not asyncio.run(run_calibration(spec, kind))
+    query.assert_not_awaited()
+    assert state_module._meta_state == expected
+
+
+@pytest.mark.parametrize("spec", SPECS, ids=("deep", "soul"))
+@pytest.mark.parametrize("kind", ("probe", "launch"))
+def test_calibration_notice_unrelated_change_still_queries_once(env, monkeypatch, spec, kind):
+    prepare_calibration(env.identity, spec, kind)
+
+    async def notify(*_args, **_kwargs):
+        env.identity["identity_name"] = "renamed"
+
+    query = AsyncMock(return_value=True)
+    monkeypatch.setattr(runtime, "clear_pending_tasks_by_commands", Mock())
+    monkeypatch.setattr(_phaseful, "send_audit_log", AsyncMock(side_effect=notify))
+    monkeypatch.setattr(_phaseful, "_send_active_summary_query", query)
+
+    assert asyncio.run(run_calibration(spec, kind))
+    if kind == "probe":
+        query.assert_awaited_once_with(spec, NOW, probe_reserved=True)
+        assert env.identity[spec.summary_sent_at_key] == NOW
+    else:
+        query.assert_awaited_once_with(spec, NOW)
+
+
+@pytest.mark.parametrize("kind", ("probe", "launch"))
+def test_actual_success_during_calibration_notice_prevents_query(env, monkeypatch, kind):
+    spec = deep_retreat.DEEP_RETREAT_SPEC
+    prepare_calibration(env.identity, spec, kind)
+    monkeypatch.setattr(runtime, "clear_pending_tasks_by_commands", Mock())
+    monkeypatch.setattr(deep_retreat, "save_state", Mock())
+    monkeypatch.setattr(deep_retreat, "_record_deep_retreat_event", Mock())
+    monkeypatch.setattr(deep_retreat, "_note_deep_retreat_remote_block", Mock())
+    monkeypatch.setattr(deep_retreat, "send_audit_log", AsyncMock())
+    expected = {}
+
+    async def notify(*_args, **_kwargs):
+        handled = await deep_retreat.handle_deep_retreat_success_reply(
+            "\u4f60\u5df2\u8fdb\u5165\u6df1\u5ea6\u95ed\u5173\u72b6\u6001\uff0c"
+            "\u795e\u9b42\u5c06\u81ea\u884c\u5410\u7eb3\uff0c8\u5c0f\u65f6\u540e\u7ed3\u675f\u3002",
+            NOW + 2, SimpleNamespace(id=9000, raw_text=deep_retreat.CMD_DEEP_RETREAT),
+            matched_family="deep_retreat",
+        )
+        assert handled
+        assert env.identity[spec.phase_key] == "running"
+        expected.update(copy.deepcopy(env.identity))
+
+    send = AsyncMock(return_value=SimpleNamespace(id=9001, sent_at=NOW + 3))
+    monkeypatch.setattr(_phaseful, "send_audit_log", AsyncMock(side_effect=notify))
+    monkeypatch.setattr(_phaseful, "send_game_command", send)
+
+    assert not asyncio.run(run_calibration(spec, kind))
+    assert env.identity == expected
+    send.assert_not_awaited()

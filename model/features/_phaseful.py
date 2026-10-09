@@ -946,6 +946,23 @@ async def _send_passive_summary_trigger(spec, console_message, *, now=None):
         return await _send_passive_summary_trigger_unlocked(spec, console_message, now=now)
 
 
+def _capture_phaseful_owner(spec):
+    owner_id = get_current_identity_id()
+    owner = get_identity_state(owner_id)
+    keys = (
+        spec.enabled_key, spec.phase_key, spec.next_time_key, spec.last_command_key,
+        spec.probe_pending_key, spec.summary_sent_at_key, spec.last_summary_msg_id_key,
+    )
+    expected = tuple(owner.get(key) for key in keys)
+
+    def still_owned():
+        return (has_identity(owner_id) and get_current_identity_id() == owner_id
+                and get_identity_state(owner_id) is owner
+                and tuple(owner.get(key) for key in keys) == expected)
+
+    return still_owned
+
+
 async def _send_summary_launch(spec, launch_command, console_message, now=None):
     async with _get_phaseful_launch_lock(spec):
         now = float(now if now is not None else time.time())
@@ -971,26 +988,14 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
             await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复{suffix}。", priority="low")
             return True
 
-        owner_id = get_current_identity_id()
-        owner = get_identity_state(owner_id)
-        keys = (
-            spec.enabled_key, spec.phase_key, spec.next_time_key, spec.last_command_key,
-            spec.probe_pending_key, spec.summary_sent_at_key, spec.last_summary_msg_id_key,
-        )
-        expected = tuple(owner.get(key) for key in keys)
-
-        def still_owned():
-            return (has_identity(owner_id) and get_current_identity_id() == owner_id
-                    and get_identity_state(owner_id) is owner
-                    and tuple(owner.get(key) for key in keys) == expected)
-
+        still_owned = _capture_phaseful_owner(spec)
         await delete_summary_trigger_msg(spec)
         if not still_owned():
             return False
         begin_queued_launch(spec, now)
         console_log(console_message)
         attempt_started_at = now
-        expected = tuple(owner.get(key) for key in keys)
+        still_owned = _capture_phaseful_owner(spec)
         msg = await send_game_command(
             launch_command,
             track=False,
@@ -1094,7 +1099,10 @@ async def _calibrate_probe_timeout_once(spec, now):
         # fall back to a full normal CD while this status query is in flight.
         state[spec.summary_sent_at_key] = float(now)
         save_state()
+        still_owned = _capture_phaseful_owner(spec)
         await send_audit_log(f"{spec.title} 续轮指令超时无确认，改用状态查询校准。")
+        if not still_owned():
+            return False
         await _send_active_summary_query(spec, now, probe_reserved=True)
         return True
 
@@ -1112,7 +1120,10 @@ async def _calibrate_launching_timeout_once(spec, now, launch_command):
         from ..runtime import clear_pending_tasks_by_commands
 
         clear_pending_tasks_by_commands({launch_command}, send_as_id=get_current_identity_id())
+        still_owned = _capture_phaseful_owner(spec)
         await send_audit_log(f"{spec.title} launching 超时，改用状态查询校准。")
+        if not still_owned():
+            return False
         await _send_active_summary_query(spec, now)
         return True
 
