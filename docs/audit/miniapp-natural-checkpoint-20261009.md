@@ -226,3 +226,32 @@ failed delivery. Since 09:58 the available cave capture file has 144 HTTP
 records, including exactly 46 deep-seclusion actions, all HTTP 200; peak 9
 requests per clock minute. This excludes other clients and does not treat
 the fate business rejection as successful quest completion.
+
+## Voyage And Notification Through 11:42
+
+Baji's normal due scan ran at 11:31:41. Native command-center return completed
+at 11:31:46: cultivation +442, stones +73, seal-soul curse pattern x1 and
+affinity +8. One native moon-voyage launch followed at 11:31:48. The capture
+has one entry and one command request for each action, all HTTP 200 / attempt
+1. The stored voyage is sailing, retry count 0, error empty; next return
+17:31:51 and next ordinary maintenance 17:41:25. No manual query or game
+request was sent. The old command-return operation still describes 05:13;
+it is not used as evidence of this native return.
+
+The queued native reward appeared once. Receipt
+`b3cedaccbb6a40169acec786ae1d184e` confirmed the ordinary summary at 11:41:31:
+303 UTF-16 units, six lines, no mentions. Separately, wisemole's 11:20:58
+rare-diagram reminder was the configured final third reminder, not another
+drop or a routine progress alert. It confirmed once at 11:21:00, receipt
+`5d685630e41b4bd2917189044508bfbc`, 83 units/three lines/one mention.
+
+Read-only cross-checks at 11:16 confirm four fishing identities' 20 rods and
+19 fish, 13 no-companion skips, six no-rod skips, no report warnings. All ten
+enabled stargazers have ten matching October 8 collection captures; the
+thunder-star cycle is 36 hours, due October 10 01:16-02:07. Their absence from
+today's action log is not evidence of a missed cycle. These observations do
+not validate every MiniApp or waive the frozen-voyage coverage debt.
+
+Lpprceqei's natural 11:27:59 fate read remains 0/30 versus accepted 1/30;
+next ordinary read is no earlier than 11:57:59. WA's voyage return remains
+12:34:18, maintenance 12:36:13. Foreground observation `68402` remains active.
