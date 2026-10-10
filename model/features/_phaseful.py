@@ -1051,7 +1051,10 @@ async def _send_active_summary_query(spec, now, *, probe_reserved=False):
     if not probe_reserved:
         state[spec.probe_pending_key] = False
         save_state()
+    still_owned = _capture_phaseful_owner(spec)
     await delete_summary_trigger_msg(spec)
+    if not still_owned():
+        return False
     state[spec.probe_pending_key] = False
     attempt_started_at = time.time()
     msg = await send_game_command(
