@@ -49,10 +49,38 @@ def _fragments():
     return values if _valid_fragments(values, full=True) else None
 
 
+def _phase_projection(kind):
+    return {key: c.state.get(key) for key in (
+        "concubine_phase", f"concubine_{kind}_msg_id", "next_concubine_time",
+    )}
+
+
+def _valid_projection(kind, record):
+    projection = record.get("projection")
+    keys = {"concubine_phase", f"concubine_{kind}_msg_id", "next_concubine_time"}
+    if not isinstance(projection, dict) or projection.keys() != keys:
+        return False
+    anchor = projection[f"concubine_{kind}_msg_id"]
+    return bool(
+        projection["concubine_phase"] == kind + "_pending"
+        and type(anchor) is int and anchor in {0, record["msg_id"]}
+        and c._query_time(projection["next_concubine_time"]) is not None
+        and projection["next_concubine_time"] == (
+            record["sent_at"] if anchor else record["started_at"]
+        ) + c.CONCUBINE_PHASE_TIMEOUT_SEC
+    )
+
+
+def _owns_phase(record):
+    current = _phase_projection(record["kind"])
+    return (type(current[f"concubine_{record['kind']}_msg_id"]) is int
+            and record.get("projection") == current)
+
+
 def _valid_record(kind, record):
     fields = {"op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at", "status", "msg_id",
               "plan_key", "partner", "snapshot_at", "fragments", "dream_due_at", "parent_op_id", "confirmation_key", "confirmed_at"}
-    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result"}
+    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result", "projection"}
     if not isinstance(record, dict) or fields - record.keys() or record.keys() - fields - optional:
         return False
     if (
@@ -74,6 +102,8 @@ def _valid_record(kind, record):
         or (not record["msg_id"] and bool({"sent_at", "dispatch_at"} & record.keys()))
         or (record["msg_id"] and not record["started_at"] - 1 <= record.get("dispatch_at", 0) <= record.get("sent_at", 0))
     ):
+        return False
+    if "projection" in record and not _valid_projection(kind, record):
         return False
     if kind == "dream":
         if (record["parent_op_id"] != "" or record["confirmation_key"] != ""
@@ -145,7 +175,9 @@ def _clear_pending(record):
 
 
 def _release_phase(record, *, unchanged):
-    return c._release_owned_concubine_phase(record, f"concubine_{record['kind']}_msg_id", unchanged=unchanged)
+    return c._release_owned_concubine_phase(
+        record, f"concubine_{record['kind']}_msg_id", unchanged=unchanged or _owns_phase(record),
+    )
 
 
 def _ready_puzzle(now):
@@ -202,6 +234,7 @@ async def send(kind, now):
     identity[f"concubine_{kind}_msg_id"] = 0
     identity["next_concubine_time"] = started_at + c.CONCUBINE_PHASE_TIMEOUT_SEC
     record["plan_key"] = c._status_query_plan(owner)
+    record["projection"] = _phase_projection(kind)
     _store(record)
     _INFLIGHT[identity_id] = record["op_id"]
 
@@ -283,10 +316,12 @@ async def send(kind, now):
         item = dict(record, status="sent" if known else "unknown")
         if known:
             item.update(msg_id=root, sent_at=sent_at, dispatch_at=dispatch_at)
+        # A peer affinity update invalidates the business plan, not this phase.
+        if known and _owns_phase(record):
+            identity[f"concubine_{kind}_msg_id"] = root
+            identity["next_concubine_time"] = sent_at + c.CONCUBINE_PHASE_TIMEOUT_SEC
+            item["projection"] = _phase_projection(kind)
         if unchanged:
-            if known:
-                identity[f"concubine_{kind}_msg_id"] = root
-                identity["next_concubine_time"] = sent_at + c.CONCUBINE_PHASE_TIMEOUT_SEC
             identity["concubine_last_error"] = "" if known else "\u5165\u68a6/\u62fc\u56fe\u53d1\u9001\u72b6\u6001\u672a\u77e5\uff0c\u4fdd\u7559\u539f\u64cd\u4f5c\u7b49\u5f85\u53cd\u9988"
             item["plan_key"] = c._status_query_plan(owner)
         _store(item)
