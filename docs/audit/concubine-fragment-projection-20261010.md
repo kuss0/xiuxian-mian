@@ -53,7 +53,8 @@ All pytest runs use `XIUXIAN_ALLOW_LIVE_TEST_DB=0`.
 - Second cross-module review: all concubine and Wanxin suites, 3,428 passed,
   13 subtests passed. Source review confirmed no changes to common phase release
   or resource projection, and no automatic legacy-record inference. Ruff passed.
-- Production deployment and natural continuation: pending.
+- Production isolated regression: 390 passed. Runtime patch `5745a5d2` merged
+  and pushed to `xiuxian-mian/main`; loaded by worker `460132` at 10:51:13.
 
 ## Existing WA State
 
@@ -70,6 +71,44 @@ The one-off helper `/tmp/xiuxian-wa-dream-reconcile-20261010.py` passed read-onl
 validation of the exact production row and anchored official logs. Apply mode
 requires the service and worker to be stopped, an unused backup path, no pending
 commands, matching operation/resources and a conditional single-row update.
+
+### Applied Correction And Live Acceptance
+
+- At 10:28:09 service stop began; quiesce at 10:28:10, worker stop at 10:28:11,
+  fully inactive at 10:28:14. Startup at 10:51:13. The 22m59s inactive window
+  exceeded the intended maintenance duration. It is not continuous live coverage
+  and must not be described as a brief restart. Future maintenance needs a
+  bounded stop/correct/start operation with guaranteed recovery on interruption.
+- At 10:51:12 the helper verified the stopped service/no remaining worker and
+  original reply evidence, backed up the DB, and changed only WA's
+  `concubine_phase` to `idle`. Backup:
+  `/root/xiuxian-wa-dream-before-reconcile-20261010.db`, permissions 0600.
+  Complete runtime row equality was checked except for that one field. The
+  original action JSON, affinity and cooldown were untouched by the correction.
+- 10:51:49 state query `1318032 -> 1318033` confirmed the partner available and
+  the current dream/heart cooldowns ready. At 10:52:23 the scheduler sent one
+  **new eligible dream**, `1318043 -> 1318045`; it found no fragment, remained
+  Cangkun 2/4, and completed with the new durable phase projection. This is not
+  replay of yesterday's operation or a claim that no new dream was sent.
+- Divination `1318038 -> 1318040` completed. Heart start `1318050 -> 1318052`
+  and three distinct round choices `1318058 / 1318067 / 1318071` completed at
+  10:53:34: cultivation +721, affinity +7, demon value -5/current 0. Each round
+  has its own observed edit in the durable session; these are not duplicate
+  retries of one choice.
+- 10:53:53 one MiniApp command-center voyage launch succeeded. Capture source
+  `cave_public_tianjige_action:8659059191`, step
+  `command_center:.侍妾远航 月殿寻痕`, HTTP 200 with actionResult. Runtime is
+  idle/sailing, affinity 694, return at 16:53:55 and maintenance at 17:01:22.
+- By 10:55:53 the stuck-phase warning disappeared; health warns only about the
+  five held notification batches. Watchdog reports okay. Module-state comparison
+  with backup showed only new tower/check-in completion dates, no switch changes.
+  Native deep-retreat continuation and two tower completions were also observed.
+
+This accepts the resumed normal chain. The affinity-interleaving branch is
+covered by isolated tests, not claimed as naturally reproduced after deployment.
+Next checkpoints: Baji return 12:06:49/maintenance 12:14:38, WA return as above,
+WA rift preparation around 19:36:20 and action around 19:46:20. Monitor session
+`13865` expires around 17:30 and must be renewed before the rift window.
 
 ## Other Boundaries
 
