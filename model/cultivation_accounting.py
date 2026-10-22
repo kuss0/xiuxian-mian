@@ -107,6 +107,11 @@ def apply_cultivation_projection(identity_id, ledger):
 
 
 def has_cultivation_result(identity_id, key, start, end):
+    if not has_identity(identity_id):
+        return False
+    stored = get_identity_state(identity_id).get(STATE_KEY)
+    if not isinstance(stored, dict) or not resource_accounting.may_match_operation(stored.get("ledger"), key, start, end):
+        return False
     stored, _reason = _read(identity_id)
     return bool(stored is not None and resource_accounting.matching_entries(stored["ledger"], key, start, end))
 

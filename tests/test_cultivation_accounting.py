@@ -62,6 +62,49 @@ def test_known_deltas_and_delayed_absolute_profiles_share_one_projection(env):
     assert cultivation.cultivation_balance(IDENTITY) == {"status": "ready", "value": 380000}
 
 
+def test_unrelated_resource_lookup_skips_full_ledger_validation(env, monkeypatch):
+    assert snapshot()
+    assert delta()
+    before = copy.deepcopy(env[cultivation.STATE_KEY])
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("unrelated result copied and validated the entire ledger")
+
+    monkeypatch.setattr(cultivation, "_read", unexpected_read)
+    assert not cultivation.has_cultivation_result(IDENTITY, "duel:other", point(130, 200), point(140, 201))
+    assert env[cultivation.STATE_KEY] == before
+
+
+@pytest.mark.parametrize("key,start,end", [
+    ("duel:100", point(130, 200), point(140, 201)),
+    ("duel:renamed", None, point(120, 101)),
+    ("duel:renamed", point(110, 100), point(125, 102)),
+])
+def test_resource_lookup_retains_key_source_and_command_ownership(env, key, start, end):
+    assert snapshot()
+    assert delta()
+    before = copy.deepcopy(env[cultivation.STATE_KEY])
+    assert cultivation.has_cultivation_result(IDENTITY, key, start, end)
+    assert env[cultivation.STATE_KEY] == before
+
+
+@pytest.mark.parametrize("invalid", ["account", "ledger"])
+def test_possible_resource_match_still_requires_full_validation(env, invalid):
+    assert snapshot()
+    assert delta()
+    if invalid == "account":
+        state_module.set_identity_account(IDENTITY, ACCOUNT + 1)
+    else:
+        env[cultivation.STATE_KEY]["ledger"]["version"] = 99
+    assert not cultivation.has_cultivation_result(IDENTITY, "duel:100", point(110, 100), point(120, 101))
+
+
+@pytest.mark.parametrize("ledger", [None, [], {}, {"entries": [None]}, {"entries": [{"key": 3}]}])
+def test_resource_lookup_rejects_malformed_history(env, ledger):
+    env[cultivation.STATE_KEY] = {"account_id": ACCOUNT, "profile_value": 0, "ledger": ledger}
+    assert not cultivation.has_cultivation_result(IDENTITY, "duel:100", point(110, 100), point(120, 101))
+
+
 def test_newer_profile_includes_late_losses_without_changing_its_clock(env):
     assert snapshot(200000, 130, 200)
     before = copy.deepcopy(env["identity_profile_observed_at"])

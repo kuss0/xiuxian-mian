@@ -174,6 +174,20 @@ def _matches_operation(entry, key, start, end):
     )
 
 
+def may_match_operation(ledger, key, start, end):
+    """Cheap negative filter only; a possible match still needs full validation."""
+    if not isinstance(ledger, dict) or not isinstance(key, str) or not _valid_interval(start, end):
+        return False
+    entries = ledger.get("entries")
+    if not isinstance(entries, list) or len(entries) > MAX_ENTRIES:
+        return False
+    try:
+        return any(_matches_operation(entry, key, start, end) for entry in entries)
+    except (KeyError, TypeError, AttributeError):
+        # Malformed entries cannot belong to a valid ledger.
+        return False
+
+
 def matching_entries(ledger, key, start, end):
     """Find retained owners without treating a changed display key as new work."""
     result = read_ledger(ledger)
