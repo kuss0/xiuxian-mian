@@ -16,8 +16,8 @@ def probe(monkeypatch):
 
 
 def test_probe_has_only_scoped_reads(probe):
-    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", "fishing_context", "fishing_state", "inventory"}
-    assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽"}
+    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态", "fishing_context", "fishing_state", "inventory"}
+    assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态"}
     assert not {".装备", ".卸下法宝", ".斗法"}.intersection(probe["COMMAND_READS"])
 
 

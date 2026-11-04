@@ -18,7 +18,7 @@ from telethon.crypto import AuthKey
 from telethon.sessions import MemorySession
 
 
-COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽")
+COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态")
 READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory")
 BASE = "https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/"
 
