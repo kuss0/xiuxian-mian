@@ -1,4 +1,11 @@
 {
+  "tianxing.panel.wa2000_low_tianji_20261104": {
+    "source": "data/messages/2026-11-04.log:1499334",
+    "module": "tianxing",
+    "family": "tianxing_panel",
+    "event_type": "message",
+    "text": "【天机盘】\n今日可选命星: 【紫微】、【贪狼】、【天府】\n今日已定命星: 【贪狼】\n当前推命: 无\n当前改命: 无\n天机值: 2\n逆命劫: 0\n命中 / 落空 / 改命: 1166 / 8 / 357"
+  },
   "deep_retreat.tagged_summary.jihejish": {
     "source": "data/messages/2026-05-28.log:9491714",
     "module": "deep_retreat",

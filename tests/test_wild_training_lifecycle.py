@@ -4,6 +4,7 @@ import inspect
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -12,6 +13,7 @@ import pytest
 from model import state as state_module
 from model import runtime
 from model.audit_summary_store import AuditSummaryStore
+from model.real_message_replay import get_real_message_text
 from model.features import cave_treasure_miniapp as dwelling
 from model.features import cave_treasure_runtime as cave
 from model.features import tianxing
@@ -514,7 +516,7 @@ def enable_tianxing(h, monkeypatch):
             "current_change_set_at": NOW - 10, "tianji_value": 9,
         },
     )
-    monkeypatch.setattr(tianxing, "is_module_available", lambda _name: True)
+    monkeypatch.setattr(tianxing, "is_module_available", lambda _name, *_args: True)
 
 
 @pytest.mark.parametrize("with_tianxing", [False, True])
@@ -641,6 +643,51 @@ def test_tianji_shortage_allows_cautious_with_fresh_prediction_only(wild_env, mo
         h.identity["tianxing_observation"]["prediction_consumed_at"] = NOW
         h.identity["tianxing_observation"]["prediction_consumed_route"] = "探索"
         assert not wild.wild_training_http_route_is_ready("谨慎", NOW)
+
+
+def test_low_tianji_panel_does_not_repeat_calibration_on_due_scans(wild_env, monkeypatch):
+    h = wild_env
+    enable_tianxing(h, monkeypatch)
+    monkeypatch.setattr(tianxing, "save_state", Mock())
+    group_send = AsyncMock()
+    monkeypatch.setattr(wild, "send_game_command", group_send)
+    monkeypatch.setattr(tianxing, "send_game_command", group_send)
+    text = get_real_message_text(
+        Path(__file__).parent / "fixtures" / "real_message_samples.json",
+        "tianxing.panel.wa2000_low_tianji_20261104",
+    )
+    h.identity["tianxing_observation"] = tianxing.parse_tianxing_text(
+        text, now=NOW, family="tianxing_panel",
+    )
+    assert h.identity["tianxing_observation"]["tianji_value"] == 2
+
+    async def scan():
+        with state_module.use_identity(IDENTITY_ID):
+            for now in (NOW, NOW + 180, NOW + 360):
+                assert not await wild._prepare_wild_training_tianxing_route(now, due_at=NOW)
+                assert h.identity["tianxing_timeline_state"]["phase"] == "need_tianji_for_change"
+                assert h.identity["next_wild_training_time"] > now
+                assert not wild.wild_training_http_route_is_ready("深入", now)
+                assert not wild.wild_training_http_route_is_ready("谨慎", now)
+
+    asyncio.run(scan())
+    group_send.assert_not_awaited()
+    h.flow.assert_not_awaited()
+
+
+def test_low_tianji_with_fresh_prediction_keeps_cautious_fallback(wild_env, monkeypatch):
+    h = wild_env
+    enable_tianxing(h, monkeypatch)
+    h.identity["tianxing_observation"].update(current_change="", current_change_until=0, tianji_value=2)
+    monkeypatch.setattr(tianxing, "save_state", Mock())
+    group_send = AsyncMock()
+    monkeypatch.setattr(wild, "send_game_command", group_send)
+    monkeypatch.setattr(tianxing, "send_game_command", group_send)
+    with state_module.use_identity(IDENTITY_ID):
+        assert asyncio.run(wild._prepare_wild_training_tianxing_route(NOW, due_at=NOW))
+        assert wild.wild_training_http_route_is_ready("谨慎", NOW)
+        assert not wild.wild_training_http_route_is_ready("深入", NOW)
+    group_send.assert_not_awaited()
 
 
 def test_late_result_does_not_consume_a_new_tianxing_prediction(wild_env, monkeypatch):

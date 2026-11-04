@@ -368,9 +368,11 @@ def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
 def _tianxing_timeline_prepare_failed(timeline_result, followup):
     followup_stage = str((followup or {}).get("stage") or "").strip()
     phase = str((timeline_result or {}).get("phase") or "").strip()
+    # Resource shortage is a known wait, not a missing reply. Querying the
+    # panel cannot replenish Tianji and would repeat on every due scan.
     return followup_stage in {"timeline_waiting", "timeline_waiting_change_fate"} and phase in {
         "ack_timeout", "calibrating", "send_blocked", "blocked_replan",
-        "panel_calibration_timeout_replan", "need_tianji_for_change", "observe_only",
+        "panel_calibration_timeout_replan", "observe_only",
     }
 
 
