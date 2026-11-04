@@ -47,4 +47,27 @@ with the 31 new reconciliation cases passed 75 tests. Compile, Ruff and diff
 checks passed. SQLite tests cover atomic archive/checkpoint writes, rollback
 if the worker restarts, mandatory backup and stopped-worker checks, dry-run
 non-mutation, pending transports and owner changes. Production acceptance is
-recorded separately after release; test success alone does not prove recovery.
+recorded below; test success alone does not prove recovery.
+
+## Production acceptance
+
+Both fresh previews and stopped-worker reconciliations passed. Backups have
+quick_check=ok. All module switches, MiniApp config, account mappings and
+channel send-as settings match the pre-maintenance snapshot. Service restarted
+at 11:53:22 CST, PID 2143117, NRestarts=0; UI HTTP 200 and watchdog dry-run
+passed. Both unknown-action archives survived runtime startup.
+
+At 12:04:24 WalterWA2000's fresh native status reply 1500039, replying to
+1500038, restored availability. At 12:04:39 the normal public-entry scheduler
+confirmed voyage settlement: cultivation +446, stones +137, nourishing wood
+x1 and affinity +6. The HTTP capture returned 200/attempt 1, and the applied
+voyage state became idle. Native dream/divination/heart activity continued;
+at 12:06:46 the scheduler confirmed the next moon voyage launch with one
+additional HTTP 200/attempt 1. No old result or reward was invented.
+
+At 12:05:52 xianxia9527's fresh status reply 1500048, replying to 1500047,
+restored availability. Its new divination 1500052 received terminal reply
+1500053 at 12:06:24. The owned action is complete with heart-omen effect and
+a server-confirmed future cooldown. The October 17 action remains unknown
+in its archive. This is complete business recovery for both reconciled
+identities, independent of the separate unresolved fate-progress discrepancy.
