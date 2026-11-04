@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -1713,9 +1714,30 @@ def _fate_cards_retry_after_sec(fate_state):
     return FATE_CARDS_WAIT_RETRY_SEC
 
 
+def _fate_cards_pending_belongs_to_prior_day(previous, pending, current, account_id):
+    # Daily card actions cannot affect a later day's record. Dwelling/deep
+    # retreat prerequisites can span days and must retain their original hold.
+    before = pending.get("before") or {}
+    old_day = previous.get("challenge_date")
+    new_day = current.get("challenge_date")
+    if (pending.get("action") not in {"draw", "interpret", "choose", "settle"}
+            or previous.get("owner_account_id") != account_id
+            or before.get("state_verified") is not True
+            or before.get("challenge_date") != old_day
+            or current.get("state_verified") is not True):
+        return False
+    try:
+        if date.fromisoformat(new_day) <= date.fromisoformat(old_day):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return not before.get("record_key") or before["record_key"] != current.get("record_key")
+
+
 def _record_fate_cards_state(
     identity_id, fate_state, *, now, status, reward=None, meditation=None, deep_retreat=None,
     base_record=None, pending=None, receipts=None, owner_account_id=None, unconfirmed_prerequisite=None,
+    prior_day_unknown=None,
 ):
     fate_state = dict(fate_state or {})
     quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
@@ -1778,6 +1800,7 @@ def _record_fate_cards_state(
             "snapshot": fate_state, "pending": dict(pending or {}),
             "receipts": dict(receipts or {}), "owner_account_id": owner_account_id,
             "unconfirmed_prerequisite": dict(unconfirmed_prerequisite or {}),
+            "prior_day_unknown": dict(prior_day_unknown or {}),
         })
     source_id = (
         f"fate_cards:{payload['challenge_date'] or get_day_key(now)}:"
@@ -3945,6 +3968,7 @@ class _CaveFateCardsOperation:
         previous = self.base_record.get("state") or {}
         self.pending = deepcopy(previous.get("pending") or {})
         self.unconfirmed_prerequisite = deepcopy(previous.get("unconfirmed_prerequisite") or {})
+        self.prior_day_unknown = deepcopy(previous.get("prior_day_unknown") or {})
         if not self.pending and str(previous.get("status") or "").endswith("_unknown"):
             self.pending = {"action": "legacy", "challenge_date": previous.get("challenge_date")}
         self.receipts = deepcopy(previous.get("receipts") or {})
@@ -4001,6 +4025,7 @@ class _CaveFateCardsOperation:
             base_record=self.base_record, pending=self.pending,
             receipts=self.receipts, owner_account_id=self.owner.account_id,
             unconfirmed_prerequisite=self.unconfirmed_prerequisite,
+            prior_day_unknown=self.prior_day_unknown,
         )
         self.record = deepcopy(get_miniapp_state_records().get(self.record_key) or {})
         return result
@@ -4049,6 +4074,18 @@ class _CaveFateCardsOperation:
             raise MiniAppRequestAborted(error)
         if previous.get("owner_account_id") not in (None, self.owner.account_id):
             raise MiniAppRequestAborted("fate_record_owner_unverified")
+        if not self.fate_state and _fate_cards_pending_belongs_to_prior_day(
+            previous, self.pending, fate_state, self.owner.account_id,
+        ):
+            # Preserve uncertainty, rather than treating rollover as success or
+            # replaying the old action. Persist before admitting any new action.
+            self.prior_day_unknown = {
+                "pending": deepcopy(self.pending), "owner_account_id": self.owner.account_id,
+                "archived_at": self.now, "outcome_unknown": True,
+            }
+            self.pending = {}
+            self.receipts = {}
+            self.record_state(self.owner.identity_id, fate_state, now=self.now, status="new_day_observed")
         if self.pending:
             action = self.pending.get("action")
             basis = self.pending.get("before") or {}

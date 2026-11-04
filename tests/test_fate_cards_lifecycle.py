@@ -586,6 +586,99 @@ def test_authoritative_settled_panel_resolves_unknown_without_replay_or_guessed_
     assert not row.get("gains")
 
 
+@pytest.mark.parametrize("action", ["draw", "interpret", "choose", "settle"])
+def test_new_daily_record_archives_old_unknown_without_replay_or_reward(env, action):
+    before = api.parse_fate_cards_state(native(progress=30, drawn=action != "draw"))
+    pending = {"action": action, "before": before, "expected": "cultivation" if action == "draw" else ""}
+    record = {"state": {
+        "challenge_date": DAY, "status": f"{action}_unknown", "snapshot": before,
+        "pending": pending, "owner_account_id": 11, "gains": {"天机残痕": 99},
+        "receipts": {"settle": "old-receipt"},
+    }}
+    state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
+    next_state = api.parse_fate_cards_state(native(progress=30, status="settled", day="2026-09-12"))
+    env.probe.return_value = {"ok": True, "data": {"state": next_state}}
+
+    result = run()
+
+    assert result["ok"] and result["extra"]["daily_exhausted"]
+    env.action.assert_not_awaited()
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["challenge_date"] == "2026-09-12"
+    assert not row.get("pending") and not row.get("gains") and not row.get("receipts")
+    archive = row["prior_day_unknown"]
+    assert archive["outcome_unknown"] is True
+    assert archive["pending"]["action"] == action
+    assert archive["pending"]["before"]["challenge_date"] == DAY
+    assert archive["owner_account_id"] == 11
+    assert archive["archived_at"] == NOW
+
+    # Repeated observations and a subsequent run retain the unknown evidence.
+    assert run()["ok"]
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]["prior_day_unknown"] == archive
+    env.action.assert_not_awaited()
+
+
+@pytest.mark.parametrize("case", ["same_day", "older_day", "wrong_owner", "unverified_before", "conflicting_before_day", "same_record", "meditation", "deep_start", "deep_settle", "deep_force", "legacy"])
+def test_new_day_does_not_release_unbound_or_cross_day_prerequisite_pending(env, case):
+    before = api.parse_fate_cards_state(native(progress=30))
+    pending = {"action": case if case in {"meditation", "deep_start", "deep_settle", "deep_force", "legacy"} else "settle", "before": before}
+    next_day = DAY if case == "same_day" else "2026-09-10" if case == "older_day" else "2026-09-12"
+    incoming = api.parse_fate_cards_state(native(drawn=False, day=next_day))
+    owner = 12 if case == "wrong_owner" else 11
+    if case == "unverified_before":
+        before["state_verified"] = False
+    elif case == "conflicting_before_day":
+        pending["before"] = {**before, "challenge_date": "2026-09-09"}
+    elif case == "same_record":
+        incoming = api.parse_fate_cards_state(native(progress=30, status="settled", day=next_day))
+        incoming["record_key"] = before["record_key"]
+    record = {"state": {
+        "challenge_date": DAY, "status": "settle_unknown", "snapshot": before,
+        "pending": pending, "owner_account_id": owner,
+    }}
+    state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
+    env.probe.return_value = {"ok": True, "data": {"state": incoming}}
+    assert not run()["ok"]
+    env.action.assert_not_awaited()
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"] == record
+
+
+def test_next_day_undrawn_chain_runs_once_after_archiving_old_draw_unknown(env):
+    env.probe.return_value = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(drawn=False))}}
+    env.action.return_value = {"ok": False, "action_dispatched": True, "outcome_unknown": True}
+    assert not run()["ok"]
+    env.action.reset_mock()
+    current = api.parse_fate_cards_state(native(drawn=False, day="2026-09-12"))
+
+    async def probe(*_args, **_kwargs):
+        return {"ok": True, "data": {"state": copy.deepcopy(current)}}
+
+    async def action(_identity, name, **_kwargs):
+        nonlocal current
+        current = api.parse_fate_cards_state(native(
+            day="2026-09-12", reading=name != "draw",
+            choice="accept" if name in {"choose", "settle"} else "",
+            progress=30 if name in {"choose", "settle"} else 0,
+            status="settled" if name == "settle" else "active",
+        ))
+        return {"ok": True, "action_dispatched": True, "data": {
+            "state": copy.deepcopy(current), "reward": {"天机残痕": 2} if name == "settle" else {},
+        }}
+
+    env.probe.side_effect = probe
+    env.action.side_effect = action
+    result = run()
+    assert result["ok"]
+    assert [call.args[1] for call in env.action.await_args_list] == ["draw", "interpret", "choose", "settle"]
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["status"] == "settled" and row["challenge_date"] == "2026-09-12"
+    assert row["prior_day_unknown"]["pending"]["before"]["challenge_date"] == DAY
+    assert row["gains"] == {"天机残痕": 2}
+    assert run()["ok"]
+    assert env.action.await_count == 4
+
+
 def test_confirmed_reward_not_counted_again_on_next_run_or_old_receipt(env):
     settled = env.action.return_value["data"]["state"]
     env.probe.side_effect = [env.probe.return_value, {"ok": True, "data": {"state": settled}}]
