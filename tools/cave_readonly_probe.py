@@ -65,6 +65,34 @@ def inventory_loadout_report(data, player):
             "active_count": len(active), "complete": True}
 
 
+def inventory_snapshot_report(data, player):
+    """Complete allowlisted balances for explicit maintenance, never credentials."""
+    inventory_loadout_report(data, player)
+    metadata = data.get("snapshot")
+    if isinstance(metadata, dict) and metadata.get("level") in {"core", "overview", "deferred"}:
+        raise ValueError("inventory_deferred")
+    bag = data["account"]["bagTreasure"]
+    sections = {"法宝/丹药/杂物": {}, "材料": {}}
+    for field in ("items", "treasures", "materials"):
+        rows = bag[field]
+        if len(rows) > 2000:
+            raise ValueError("inventory_too_large")
+        target = sections["材料" if field == "materials" else "法宝/丹药/杂物"]
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                    or not row["name"].strip() or len(row["name"]) > 200
+                    or type(row.get("quantity")) is not int or not 0 <= row["quantity"] <= 2**53 - 1):
+                raise ValueError("inventory_quantity_invalid")
+            name = row["name"].strip()
+            if row["quantity"]:
+                target[name] = target.get(name, 0) + row["quantity"]
+    items = {}
+    for section in sections.values():
+        for name, count in section.items():
+            items[name] = items.get(name, 0) + count
+    return {"complete": True, "player_id": player, "items": items, "sections": sections}
+
+
 def fishing_context_report(context):
     """Allowlist supply facts without retaining credentials or unknown fields."""
     if not isinstance(context, dict):
@@ -246,6 +274,7 @@ async def probe(args, report):
         result = request(endpoint, player)
         if args.read == "inventory":
             report["inventory"] = inventory_loadout_report(result, player)
+            report["inventory_snapshot"] = inventory_snapshot_report(result, player)
         elif args.read in ("fishing_context", "fishing_state"):
             context = result.get("context") or {}
             report["context_keys"] = sorted(context)

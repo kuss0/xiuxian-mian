@@ -91,10 +91,10 @@ def validate(record):
     if not isinstance(record, dict):
         raise protocol.ProtocolError("invalid_native_record")
     version = record.get("version")
-    expected = FIELDS | ({"settlement_resources"} if version == 3 else set())
+    expected = FIELDS | ({"settlement_resources"} if version in (3, 4) else set())
     if set(record) != expected:
         raise protocol.ProtocolError("invalid_native_record")
-    if type(version) is not int or version not in (2, 3) or record["mode"] != protocol.MODE:
+    if type(version) is not int or version not in (2, 3, 4) or record["mode"] != protocol.MODE:
         raise protocol.ProtocolError("invalid_native_version")
     for key in ("identity_id", "account_id"):
         protocol._number(record[key], key, 1, 2**53 - 1, integer=True)
@@ -104,9 +104,18 @@ def validate(record):
     protocol._number(record["revision"], "revision", 1, 100000, integer=True)
     protocol._number(record["created_at"], "created_at", 1, 10**12)
     basis = protocol._mapping(record["projection_basis"], "projection_basis")
-    if basis and (set(basis) != {"facts", "plan", "inventory"}
-                  or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in basis.values())):
+    basis_fields = {"facts", "plan", "inventory"} | ({"items"} if version == 4 else set())
+    if basis and (set(basis) != basis_fields
+                  or any(not isinstance(basis[key], str) or not re.fullmatch(r"[a-f0-9]{64}", basis[key])
+                         for key in ("facts", "plan", "inventory"))):
         raise protocol.ProtocolError("invalid_native_projection_basis")
+    if version == 4:
+        items = protocol._mapping(basis.get("items"), "native_inventory_basis")
+        if len(items) > 2000:
+            raise protocol.ProtocolError("native_inventory_basis_too_large")
+        for name, count in items.items():
+            protocol._text(name, "native_inventory_item")
+            protocol._number(count, "native_inventory_count", 0, 2**53 - 1, integer=True)
     if not isinstance(record["cast_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", record["cast_id"]):
         raise protocol.ProtocolError("invalid_cast_id")
     protocol.placement(record["site_id"], record["model_id"])
@@ -132,7 +141,7 @@ def validate(record):
             protocol._text(name, "fish_name")
             protocol._number(count, "fish_count", 1, 1000, integer=True)
     _validate_remote(record)
-    if version == 3:
+    if version in (3, 4):
         resources = record["settlement_resources"]
         if record["phase"] in ("settled", "accounted"):
             protocol.validate_settlement_resources(resources)
@@ -183,6 +192,24 @@ def validate(record):
 def settlement_complete(record):
     return (record["settlement_quota"] is not None and
             (record["version"] == 2 or record["settlement_resources"]["baits"] is not None))
+
+
+def projection_basis_matches(record, current):
+    """Unrelated bag changes are safe only with saved per-item before counts."""
+    saved = record["projection_basis"]
+    if saved.get("facts") != current.get("facts"):
+        return False
+    if saved.get("inventory") == current.get("inventory"):
+        return True
+    if record["version"] != 4 or not settlement_complete(record):
+        return False
+    resources = record["settlement_resources"]
+    if not record["catches"] and not resources["rewards"]:
+        # Empty rods still need a fresh scoped state read before replacing bait
+        # balances; their old context alone cannot refresh unrelated inventory.
+        return False
+    affected = set(record["catches"]) | set(resources["rewards"]) | set(resources["baits"])
+    return all(saved["items"].get(name, 0) == current["items"].get(name, 0) for name in affected)
 
 
 @dataclass(frozen=True)
@@ -267,7 +294,7 @@ def reconcile(record, query, payload):
     next_phase = "settled" if settled else "session_owned"
     catches = parsed.get("catches") if settled else None
     resources = None
-    if settled and record["version"] == 3:
+    if settled and record["version"] in (3, 4):
         resources = protocol.parse_settlement_resources(root, session_id=session_id, site_id=record["site_id"])
         if root.get("context") is not None and not any(
                 b["itemId"] == record["bait_id"] for b in protocol.parse_context(root)["baits"]):
@@ -279,7 +306,7 @@ def reconcile(record, query, payload):
         if not settled or catches != record["catches"]:
             raise protocol.ProtocolError("settlement_changed")
         updated = deepcopy(record)
-        if record["version"] == 3:
+        if record["version"] in (3, 4):
             if resources["rewards"] != record["settlement_resources"]["rewards"]:
                 raise protocol.ProtocolError("settlement_rewards_changed")
             if record["phase"] == "settled" and record["settlement_resources"]["baits"] is None and resources["baits"] is not None:
@@ -314,7 +341,7 @@ def reconcile(record, query, payload):
         return deepcopy(record), parsed
     updated = {**record, "session_id": session_id, "phase": next_phase, "catches": catches,
                "pending_action": "", "pending_payload": {}, "remote": deepcopy(parsed), "settlement_quota": settlement_quota}
-    if record["version"] == 3:
+    if record["version"] in (3, 4):
         updated["settlement_resources"] = resources
     if updated != record:
         updated["revision"] += 1
@@ -383,7 +410,7 @@ class NativeCastJournal:
         reason = protocol.cast_block_reason(facts, bait_id)
         if reason:
             raise protocol.ProtocolError(reason)
-        record = {"version": 3, "mode": protocol.MODE,
+        record = {"version": 4 if projection_basis and "items" in projection_basis else 3, "mode": protocol.MODE,
                   "identity_id": self.owner[0], "account_id": self.owner[1], "player_id": self.owner[2],
                   "cast_id": uuid.uuid4().hex, "session_id": "", "site_id": site_id,
                   "model_id": model_id, "bait_id": bait_id, "revision": 1, "phase": "cast_pending", "catches": None,

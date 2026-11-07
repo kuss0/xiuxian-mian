@@ -981,6 +981,9 @@ def parse_cave_inventory_snapshot(data, *, expected_player_id=None):
     root = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
     if not isinstance(root, dict):
         raise ValueError("洞府 MiniApp 库存回包无效")
+    snapshot_meta = root.get("snapshot")
+    if isinstance(snapshot_meta, dict) and snapshot_meta.get("level") in {"core", "overview", "deferred"}:
+        raise ValueError("洞府 MiniApp 库存回包仍是分阶段占位")
     account = root.get("account") if isinstance(root.get("account"), dict) else None
     if not isinstance(account, dict):
         raise ValueError("洞府 MiniApp 库存回包缺少账号资料")

@@ -4686,6 +4686,9 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
             return cancelled
         from . import fishing_dwelling_runtime as native_fishing
         native_pending = native_fishing.pending(operation.owner.identity)
+        if not native_recovery_only and native_fishing.projection_held(operation.owner.identity):
+            return {"ok": False, "message": "原生鱼竿已结算但库存基线冲突，保留回执待核对", "extra": {
+                "status": "native_projection_conflict", "native": True, "outcome_unknown": False}}
         if native_recovery_only and not native_pending:
             return {"ok": True, "message": "没有待核对的原生鱼竿，未发送动作", "extra": {"status": "recovery_not_needed"}}
         recovered = None if native_pending else recover_fishing_result_pending(identity_id)

@@ -84,7 +84,7 @@ UNANCHORED_GAME_BROADCAST_PATTERN = re.compile(
     r"【世界通告[｜】]|✨\s*(天道感应|元神回响)：|深度闭关总结|元神归窍总结|【深度闭关总结】"
 )
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(
-    r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual|miniapp_error",
+    r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual|miniapp_error|native_projection_basis_changed|native_store_unavailable",
     re.I,
 )
 BENIGN_MODULE_ERROR_PATTERN = re.compile(
@@ -177,6 +177,7 @@ MODULE_HEALTH_SPECS = [
         "key": "fishing",
         "label": "钓鱼",
         "enabled": "fishing_enabled",
+        "json_fields": ("fishing_native_operation", "fishing_native_supply"),
         "phase_fields": (("fishing_phase", "阶段"),),
         "pending_fields": (("fishing_reply_to_msg_id", "回复"), ("fishing_status_msg_id", "状态")),
         "due_fields": (("fishing_reply_due_at", "回复截止"), ("fishing_transfer_due_at", "赠送截止")),
@@ -1647,6 +1648,13 @@ def summarize_json_state(field: str, payload: dict[str, object], now: float, det
     if not payload:
         return False, False
     evidence.setdefault("json_fields", []).append(field)
+    if field in {"fishing_native_operation", "fishing_native_supply"}:
+        phase = payload.get("phase")
+        add_module_detail(details, "原生鱼竿" if field == "fishing_native_operation" else "原生补给", phase)
+        if phase == "accounted":
+            return False, False
+        created = positive_epoch(payload.get("created_at"))
+        return True, phase == "settled" or bool(created and now - created > 1800)
     warn = False
     error = False
     for key, label in (
@@ -1854,6 +1862,9 @@ def build_module_summary(
                 json_warn, json_error = summarize_json_state(str(field), json_payload, now, details, evidence)
                 warn = warn or json_warn
                 error = error or json_error
+                if str(field) in {"fishing_native_operation", "fishing_native_supply"} and json_payload and json_payload.get("phase") != "accounted":
+                    pending.append({"field": str(field), "label": "原生回执", "phase": json_payload.get("phase")})
+                    active = True
 
             for field, label_text in spec.get("phase_fields", ()):
                 text = str(value_for(str(field)) or "").strip()

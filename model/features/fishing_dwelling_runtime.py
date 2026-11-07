@@ -9,7 +9,7 @@ from .. import persistence
 from . import fishing_runtime as fishing
 from .fishing_dwelling_miniapp import run_native_fishing_production_flow
 from .fishing_dwelling_store import STATE_KEY
-from .fishing_dwelling_journal import validate
+from .fishing_dwelling_journal import projection_basis_matches, settlement_complete, validate
 from . import fishing_dwelling_supply as supply
 from .miniapp_common import MiniAppFlowCancelled
 
@@ -30,6 +30,24 @@ def pending(identity):
             if record["phase"] != "accounted":
                 return True
     return False
+
+
+def projection_held(identity):
+    """A complete local receipt cannot benefit from repeated entry reads."""
+    record = identity.get(STATE_KEY) or {}
+    if not isinstance(record, dict) or record.get("phase") != "settled":
+        return False
+    try:
+        validate(record)
+        if not settlement_complete(record):
+            return False
+        identity_id = record["identity_id"]
+        current = {"facts": fishing._fishing_result_basis(identity, fishing._FISHING_MINIAPP_FACT_KEYS),
+                   "inventory": fishing.fishing_operations.inventory_basis(identity_id),
+                   "items": (fishing.get_storage_bag_records().get(str(identity_id)) or {}).get("items") or {}}
+        return not projection_basis_matches(record, current)
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        return True
 
 
 def integrated(raw):

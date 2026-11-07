@@ -399,7 +399,7 @@ def test_native_gains_and_accounted_marker_commit_once_together(fishing_db):
     assert state_module.get_storage_bag_records()[str(h.identity_id)]["items"]["fish"] == 2
 
 
-def test_v3_fish_bonus_and_consumption_commit_together_without_double_bonus_bait(fishing_db):
+def test_v4_fish_bonus_and_consumption_commit_together_without_double_bonus_bait(fishing_db):
     h = fishing_db
 
     async def scenario():
@@ -427,7 +427,7 @@ def test_v3_fish_bonus_and_consumption_commit_together_without_double_bonus_bait
         assert json.loads(h.identity["fishing_chum_counts"]) == {"chum": 1}
 
     asyncio.run(scenario())
-    assert persisted(h.identity_id)["version"] == 3 and persisted(h.identity_id)["phase"] == "accounted"
+    assert persisted(h.identity_id)["version"] == 4 and persisted(h.identity_id)["phase"] == "accounted"
 
 
 def test_v2_recovery_does_not_invent_resources_or_rewrite_old_version(fishing_db):
@@ -437,6 +437,7 @@ def test_v2_recovery_does_not_invent_resources_or_rewrite_old_version(fishing_db
         store = settled_store(h)
         record = h.identity[native.STATE_KEY]
         record.pop("settlement_resources")
+        record["projection_basis"].pop("items")
         record["version"] = 2
         validate(record)
         assert persistence.save_state()

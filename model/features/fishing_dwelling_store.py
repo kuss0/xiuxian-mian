@@ -8,7 +8,7 @@ import json
 
 from .. import persistence
 from .miniapp_common import MiniAppIdentityOwner
-from .fishing_dwelling_journal import NativeCastJournal, settlement_complete, validate
+from .fishing_dwelling_journal import NativeCastJournal, projection_basis_matches, settlement_complete, validate
 from .fishing_dwelling_protocol import ProtocolError
 from . import fishing_dwelling_protocol as protocol
 from . import fishing_dwelling_supply as supply
@@ -177,7 +177,8 @@ class NativeFishingStore:
             self._check()
             return {"facts": fishing._fishing_result_basis(self.owner.identity, fishing._FISHING_MINIAPP_FACT_KEYS),
                     "plan": fishing._fishing_result_basis(self.owner.identity, fishing._FISHING_RESULT_PLAN_KEYS),
-                    "inventory": fishing.fishing_operations.inventory_basis(self.owner.identity_id)}
+                    "inventory": fishing.fishing_operations.inventory_basis(self.owner.identity_id),
+                    "items": deepcopy((fishing.get_storage_bag_records().get(str(self.owner.identity_id)) or {}).get("items") or {})}
         return self._on_loop(capture)
 
     def accept_recovery(self, ledger, query, payload, before_read):
@@ -192,7 +193,7 @@ class NativeFishingStore:
                 raise ProtocolError("native_refresh_requires_state")
             parsed = ledger.accept(query, payload)
             record = ledger.record
-            if (record["version"] != 3 or record["phase"] != "settled" or record["catches"]
+            if (record["version"] not in (3, 4) or record["phase"] != "settled" or record["catches"]
                     or record["settlement_resources"]["rewards"] or payload.get("context") is None):
                 return parsed
             current = self.basis()
@@ -204,6 +205,8 @@ class NativeFishingStore:
                 return parsed
             updated = deepcopy(record)
             updated["projection_basis"]["inventory"] = current["inventory"]
+            if record["version"] == 4:
+                updated["projection_basis"]["items"] = current["items"]
             updated["settlement_resources"] = resources
             updated["settlement_quota"] = protocol.parse_settlement_quota(payload)
             if updated != record:
@@ -227,7 +230,7 @@ class NativeFishingStore:
             if record["phase"] != "settled" or not settlement_complete(record):
                 raise ProtocolError("native_settlement_incomplete")
             basis = self.basis()
-            if any(record["projection_basis"].get(key) != basis[key] for key in ("facts", "inventory")):
+            if not projection_basis_matches(record, basis):
                 raise ProtocolError("native_projection_basis_changed")
             quota = record["settlement_quota"]
             day = fishing.get_day_key(now)
