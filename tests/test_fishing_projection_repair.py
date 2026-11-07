@@ -98,11 +98,15 @@ def test_native_receipt_and_projection_error_are_visible_to_health():
 
 @pytest.mark.parametrize('level', ['core', 'overview', 'deferred'])
 def test_upstream_deferred_inventory_cannot_clear_local_bag(level):
-    from model.features.cave_treasure_miniapp import parse_cave_inventory_snapshot
+    from model.features.cave_treasure_miniapp import (
+        has_complete_cave_inventory_snapshot, parse_cave_inventory_snapshot, parse_cave_dwelling_overview,
+    )
     payload = {'snapshot': {'level': level}, 'account': {'playerId': 7,
                'bagTreasure': {'items': [], 'materials': [], 'treasures': [], 'active': []}}}
     with pytest.raises(ValueError, match='占位'):
         parse_cave_inventory_snapshot(payload, expected_player_id=7)
+    assert not has_complete_cave_inventory_snapshot(payload)
+    assert parse_cave_dwelling_overview(payload)['player_id'] == 7
 
 
 def proof_for(h):

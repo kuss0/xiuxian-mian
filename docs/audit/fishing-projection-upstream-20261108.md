@@ -66,6 +66,35 @@ Proof: `/root/xiuxian-fishing-audit-20261107/wa_inventory_probe_20261108.json`.
 The maintenance preview must still pass against the stopped worker's final
 state before apply; later release acceptance is recorded separately.
 
+## Production acceptance
+
+`a066b441` deployed and pushed to `xiuxian-mian/main`. The worker was stopped
+for reconciliation and the fresh proof passed against its final persisted
+state. The backup is mode 0600:
+`/root/xiuxian-fishing-audit-20261107/chaogu_before_fishing_reconcile_20261108.db`.
+Archive: `fishing_reconciled_inventory:8659059191:d57a7a5add704acb9e43475893174516`.
+The old receipt remains available in that archive; the active marker is
+accounted. Local 青鳞小鲫=160 and 灵米饵=8 match the server read, with no
+estimated gains and no today rods added.
+
+After restart at 00:50:12, the normal public scheduler read a new fishing
+context at 00:51:38 and entered `fishing_companion_sailing` wait. Its next
+fishing time is 01:42:04, after the saved voyage return at 01:41:04. No further
+projection error or repeated entry read appeared during the observed window.
+HTTP UI returned 200. The read-only observer reports no abnormal module or
+native receipt pending; unrelated historical/other-module warnings remain.
+
+Final compatibility review added the same placeholder rejection to
+`has_complete_cave_inventory_snapshot`, so overview rendering ignores a
+deferred bag instead of invoking the strict inventory parser. Its three
+core/overview/deferred fixtures first failed, then passed with the guard.
+The updated guard, overview, native entry and maintenance regression passed:
+245 tests / 5 subtests. This follow-up is deployed with an explicit restart.
+
+Natural new-rod execution after the companion returns has not yet occurred
+in this acceptance window. Do not count the repaired old receipt as a rod
+caught today.
+
 Do not roll back to a v2/v3-only reader after new v4 rods have started. During
 an early rollback, stop the worker and inspect actual generated receipt
 versions before selecting code/state recovery.

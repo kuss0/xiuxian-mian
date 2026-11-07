@@ -946,6 +946,9 @@ def _normalize_cave_inventory_player_id(value):
 
 def has_complete_cave_inventory_snapshot(data):
     root = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    snapshot_meta = root.get("snapshot") if isinstance(root, dict) else None
+    if isinstance(snapshot_meta, dict) and snapshot_meta.get("level") in {"core", "overview", "deferred"}:
+        return False
     account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
     bag = account.get("bagTreasure") if isinstance(account.get("bagTreasure"), dict) else None
     return bool(
