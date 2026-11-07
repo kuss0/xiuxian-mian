@@ -42,7 +42,7 @@ tree was not reset or merged into production.
 | `fishing_dwelling.py`: original cast lookup and refreshed server context | Adopt the recovery principle with a separate bounded maintenance read; retain local no-blind-replay and atomic accounting guards |
 | `cd01b78`: core/overview/deferred inventory placeholders are incomplete | Port rejection to the complete inventory parser and maintenance probe; test that placeholder empty lists cannot erase a bag |
 | `cd01b78`: player-bound inventory and serialized identity selection | Local complete snapshot parser already checks ownership; retain its existing entry locks and do not add polling retries |
-| `2077dc5`: early-summary cleanup and retry timing | Existing local lifecycle differs and already has scoped receipt-time/reply recovery; no shared dispatch/listener rewrite included |
+| `2077dc5`: early-summary cleanup and retry timing | Port explicit-message cleanup and preserve newer replies in active/passive summary triggers and calibration queries; retain local receipt-time/reply recovery; no dispatch/listener rewrite included |
 | Longwind trial / Xuangu dungeon additions | Listed as separate feature work; not enabled or copied into the current fishing repair |
 | Avatar/rebirth route changes | Different identity/runtime model; not transplanted into production guards |
 
@@ -98,3 +98,26 @@ caught today.
 Do not roll back to a v2/v3-only reader after new v4 rods have started. During
 an early rollback, stop the worker and inspect actual generated receipt
 versions before selecting code/state recovery.
+
+## Additional existing-module compatibility check
+
+Reviewing `2077dc5` found that local summary launches already preserve newer
+results, but active summary triggers, passive triggers and timeout calibration
+queries still wrote `waiting_summary` after awaiting transport. An isolated
+fixture first failed when settlement entered `post_summary_wait` before the
+send returned. This is a source/test reproduction, not a claim of a newly
+observed production timeout.
+
+Those three paths now use the existing identity/state ownership predicate
+before writing a receipt, recovering an unknown send or scheduling a retry.
+If a newer reply/operator state owns the lifecycle, they leave it intact.
+Returned trigger messages are cleaned by their explicit ID only while the
+original identity object remains current; a newer message anchor is preserved.
+Normal sends still use their actual receipt timestamp. No timer constants,
+commands, identity controls or shared dispatch behavior are changed.
+
+The added 79 cases cover early settlement/running replies, operator disable
+and timer changes, identity removal/replacement, normal timestamps and explicit
+old-message cleanup. All 300 phaseful tests pass. Ruff, compilation and diff
+checks pass. Related cave lifecycle, caller and send regression passed:
+217 tests / 251 subtests. All tests used isolated temporary state.

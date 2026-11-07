@@ -860,7 +860,11 @@ async def _send_summary_trigger_unlocked(spec, console_message):
     console_log(console_message)
     command = spec.summary_trigger_command
     attempt_started_at = time.time()
+    still_owned, cleanup_superseded = _capture_phaseful_summary_send(spec)
     msg = await send_game_command(command, track=False, priority="chain", source_module=spec.source_module or None)
+    if not still_owned():
+        await cleanup_superseded(msg)
+        return bool(msg)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), command)
@@ -893,12 +897,16 @@ async def _send_passive_summary_trigger_unlocked(spec, console_message, *, now=N
     state[spec.probe_pending_key] = False
     console_log(console_message)
     attempt_started_at = float(now if now is not None else time.time())
+    still_owned, cleanup_superseded = _capture_phaseful_summary_send(spec)
     msg = await send_game_command(
         command,
         track=False,
         priority="chain",
         source_module=spec.source_module or None,
     )
+    if not still_owned():
+        await cleanup_superseded(msg)
+        return bool(msg)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), command)
@@ -961,6 +969,20 @@ def _capture_phaseful_owner(spec):
                 and tuple(owner.get(key) for key in keys) == expected)
 
     return still_owned
+
+
+def _capture_phaseful_summary_send(spec):
+    """Preserve newer replies and clean only this send's returned message."""
+    owner_id = get_current_identity_id()
+    owner = get_identity_state(owner_id)
+    still_owned = _capture_phaseful_owner(spec)
+
+    async def cleanup_superseded(msg):
+        if (msg and has_identity(owner_id) and get_current_identity_id() == owner_id
+                and get_identity_state(owner_id) is owner):
+            await delete_summary_trigger_msg(spec, msg_id=int(msg.id))
+
+    return still_owned, cleanup_superseded
 
 
 async def _send_summary_launch(spec, launch_command, console_message, now=None):
@@ -1057,12 +1079,16 @@ async def _send_active_summary_query(spec, now, *, probe_reserved=False):
         return False
     state[spec.probe_pending_key] = False
     attempt_started_at = time.time()
+    still_owned, cleanup_superseded = _capture_phaseful_summary_send(spec)
     msg = await send_game_command(
         spec.summary_trigger_command,
         track=False,
         priority="chain",
         source_module=spec.source_module or None,
     )
+    if not still_owned():
+        await cleanup_superseded(msg)
+        return bool(msg)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), spec.summary_trigger_command)
@@ -1155,8 +1181,9 @@ def _other_observing_remaining(spec, now):
     return remaining
 
 
-async def delete_summary_trigger_msg(spec):
-    msg_id = state.get(spec.last_summary_msg_id_key, 0)
+async def delete_summary_trigger_msg(spec, *, msg_id=None):
+    if msg_id is None:
+        msg_id = state.get(spec.last_summary_msg_id_key, 0)
     if not msg_id:
         return
     msg_id = abs(int(msg_id))
