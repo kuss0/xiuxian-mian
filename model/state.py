@@ -143,6 +143,7 @@ IDENTITY_BOOL_FIELDS = {
     "tree_maturing_logged", "world_boss_exhausted",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_group_route_config", "account_group_memberships", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "channel_send_as_health", "account_target_memberships", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "world_boss_rotation_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "duel_target_cooldowns", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS.update({"hunt_teams", "hunt_run_state", "expedition_config", "expedition_run_state"})
 REPLICA_KIND_KEYS = ("virtual_hall", "zhuimo", "huanglong", "cangkun", "kunwu", "luoyun", "xiaojigong")
 REPLICA_KIND_CONFIG_TEMPLATE = {
     "enabled": True,
@@ -990,6 +991,10 @@ GLOBAL_STATE_DEFAULTS = {
     "replica_dispatch_participant_identity_ids": [],
     "replica_kind_configs": copy.deepcopy(REPLICA_KIND_CONFIG_DEFAULTS),
     "replica_run_state": {},
+    "hunt_teams": [],
+    "hunt_run_state": {},
+    "expedition_config": {},
+    "expedition_run_state": {},
     "replica_virtual_hall_match_enabled_map": {},
     "replica_query_aggregator_config": {},
     "replica_success_cooldown_hours": copy.deepcopy(REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS),
@@ -1998,6 +2003,45 @@ def get_replica_kind_config(replica_kind):
 
 def get_replica_run_state():
     return _get_meta_dict("replica_run_state")
+
+
+def get_hunt_teams():
+    value = _meta_state.get("hunt_teams")
+    return copy.deepcopy(value) if isinstance(value, list) else []
+
+
+def set_hunt_teams(teams):
+    _meta_state["hunt_teams"] = copy.deepcopy(teams) if isinstance(teams, list) else []
+
+
+def get_hunt_run_state():
+    value = _meta_state.get("hunt_run_state")
+    if not isinstance(value, dict):
+        value = _meta_state["hunt_run_state"] = {}
+    return value
+
+
+def set_hunt_run_state(records):
+    _meta_state["hunt_run_state"] = records if isinstance(records, dict) else {}
+
+
+def get_expedition_config():
+    return copy.deepcopy(_get_meta_dict("expedition_config"))
+
+
+def set_expedition_config(config):
+    _set_meta_dict("expedition_config", copy.deepcopy(config))
+
+
+def get_expedition_run_state():
+    value = _meta_state.get("expedition_run_state")
+    if not isinstance(value, dict):
+        value = _meta_state["expedition_run_state"] = {}
+    return value
+
+
+def set_expedition_run_state(records):
+    _set_meta_dict("expedition_run_state", records)
 
 
 def set_replica_run_state(records):
@@ -3330,6 +3374,8 @@ state = StateProxy()
 
 
 __all__ = [
+    "get_hunt_teams", "set_hunt_teams", "get_hunt_run_state", "set_hunt_run_state",
+    "get_expedition_config", "set_expedition_config", "get_expedition_run_state", "set_expedition_run_state",
     "GLOBAL_STATE_DEFAULTS",
     "IDENTITY_BOOL_FIELDS",
     "IDENTITY_JSON_COLUMNS",

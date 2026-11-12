@@ -238,6 +238,7 @@
     if (state.batchMode) {
       const payload = {
         batch: true,
+        group_role: state.groupRole || "auto",
         operation: state.operation,
         target_identity_id: Number(state.targetId) || 0,
         listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
@@ -258,6 +259,7 @@
     }
     return {
       operation: state.operation,
+      group_role: state.groupRole || "auto",
       source_identity_id: Number(state.sourceId) || 0,
       target_identity_id: Number(state.targetId) || 0,
       listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
@@ -924,6 +926,7 @@
       </div>`;
     panel.innerHTML = `
       ${modeButtons}
+      <label class="field-label">执行群组<select class="text-input" data-storage-transfer-field="groupRole"><option value="auto"${!state.groupRole || state.groupRole === 'auto' ? ' selected' : ''}>自动路由</option><option value="primary"${state.groupRole === 'primary' ? ' selected' : ''}>主群</option><option value="secondary"${state.groupRole === 'secondary' ? ' selected' : ''}>副群</option></select></label>
       ${sourceControls}
       <div class="storage-bag-transfer-grid">
         <section>
@@ -932,7 +935,7 @@
         </section>
         <section>
           <label class="field-label">手填清单<textarea class="text-input storage-bag-transfer-textarea" data-storage-transfer-field="manualText" placeholder="妖丹*10 木髓*5 或一行一个">${esc(state.manualText || '')}</textarea></label>
-          <div class="form-label">${state.batchMode ? `批量按物品需求规划；每号保留和起送阈值会在生成预览时生效。` : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
+          <div class="form-label">${state.batchMode ? `批量按物品需求规划；每号保留和起送阈值会在生成预览时生效。` : '快照不准时可手填；最近完整库存不足会阻止执行，其余由游戏回执确认。'}</div>
         </section>
       </div>
       <div class="storage-bag-transfer-actions">

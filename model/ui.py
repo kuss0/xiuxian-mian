@@ -111,6 +111,7 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, get_nanlong_pending_state, has_nanlong_pending_action, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
+from .app_expeditions import get_expedition_snapshot, ui_set_expedition_config
 from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
@@ -154,7 +155,7 @@ from .features.miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS, world_boss_identity_login_status
 from .features.world_boss_turnstile import world_boss_turnstile_capability
-from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.storage_bag import resolve_storage_transfer_group, storage_transfer_inventory_error, CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_runtime import (
     TreeMiniAppOperation,
     tree_miniapp_unresolved,
@@ -3534,6 +3535,10 @@ def _build_storage_bag_aggregate_money_task(tasks, item_plan, *, listing_item, l
 
 def ui_preview_storage_bag_transfer(payload, *, operation="transfer"):
     payload = payload if isinstance(payload, dict) else {}
+    try:
+        group_role, _chat, _topic = resolve_storage_transfer_group(payload.get("group_role", "auto"))
+    except ValueError as exc:
+        return False, str(exc), None
     operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
     is_gift_operation = operation == "gift"
     if payload.get("batch"):
@@ -3646,7 +3651,14 @@ def ui_preview_storage_bag_transfer(payload, *, operation="transfer"):
                 "note": "来源身份回复目标身份标记消息发送",
             })
 
+    inventory_error = storage_transfer_inventory_error(
+        source_identity_id, target_identity_id, normalized_items,
+        listing_item if exchange_parts else "", requested_listing_count,
+    )
+    if inventory_error:
+        return False, inventory_error, None
     preview = {
+        "group_role": group_role,
         "operation": operation,
         "source_identity_id": source_identity_id,
         "target_identity_id": target_identity_id,
@@ -3687,6 +3699,7 @@ async def ui_start_storage_bag_transfer(payload):
             listing_item=preview.get("listing_item") or "",
             listing_count=preview.get("listing_count") or 1,
             listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+            group_role=preview.get("group_role", "auto"),
             stop_on_error=True,
         )
     return await start_storage_bag_transfer_task(
@@ -3696,6 +3709,7 @@ async def ui_start_storage_bag_transfer(payload):
         preview.get("listing_item") or "",
         listing_count=preview.get("listing_count") or 1,
         listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+        group_role=preview.get("group_role", "auto"),
     )
 
 
@@ -3722,17 +3736,23 @@ async def ui_start_storage_bag_gift(payload):
                 "items": preview.get("items") or [],
             }],
             target_identity_id=preview["target_identity_id"],
+            group_role=preview.get("group_role", "auto"),
             stop_on_error=True,
         )
     return await start_storage_bag_gift_task(
         preview["source_identity_id"],
         preview["target_identity_id"],
         preview.get("items") or [],
+        group_role=preview.get("group_role", "auto"),
     )
 
 
 def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
     payload = payload if isinstance(payload, dict) else {}
+    try:
+        group_role, _chat, _topic = resolve_storage_transfer_group(payload.get("group_role", "auto"))
+    except ValueError as exc:
+        return False, str(exc), None
     operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
     is_gift_operation = operation == "gift"
     try:
@@ -3891,6 +3911,7 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
     total_items = sum(len(task.get("items") or []) for task in tasks)
     total_quantity = sum(int(item.get("quantity") or 0) for task in tasks for item in (task.get("items") or []))
     preview = {
+        "group_role": group_role,
         "operation": operation,
         "target_identity_id": target_identity_id,
         "listing_item": "" if is_gift_operation else listing_item,
@@ -3921,6 +3942,7 @@ async def ui_start_storage_bag_transfer_batch(payload):
         listing_item=preview.get("listing_item") or "",
         listing_count=preview.get("listing_count") or 1,
         listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+        group_role=preview.get("group_role", "auto"),
         stop_on_error=not bool(payload.get("continue_on_error")),
     )
 
@@ -3934,6 +3956,7 @@ async def ui_start_storage_bag_gift_batch(payload):
     return await start_storage_bag_gift_batch(
         preview.get("tasks") or [],
         target_identity_id=preview.get("target_identity_id") or 0,
+        group_role=preview.get("group_role", "auto"),
         stop_on_error=not bool(payload.get("continue_on_error")),
     )
 
@@ -4438,6 +4461,7 @@ def get_replica_config_snapshot():
     identity_options.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
     return {
         "group_ids": group_ids,
+        "expeditions": get_expedition_snapshot(),
         "listener_account_map": {str(group_id): int(listener_map.get(str(group_id)) or 0) for group_id in group_ids},
         "dispatch_group_ids": dispatch_group_ids,
         "dispatch_enabled": False,
@@ -10209,6 +10233,9 @@ def _ui_actor_id(session):
 # 声明 needs_send_as_id 的路由由分发器统一做缺参校验。差异较大的路由不进这张表，
 # 仍留在下面的 elif 链里 —— 硬塞进来只会把差异藏进参数。
 _UI_JSON_ACTION_ROUTES = {
+    "/api/expedition-config": {
+        "handler": lambda payload, session: ui_set_expedition_config(payload),
+    },
     "/api/quiz-ai-config": {
         "handler": lambda payload, session: ui_set_quiz_ai_config(payload),
     },

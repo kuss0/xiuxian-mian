@@ -72,6 +72,8 @@ from .state import (
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
     get_replica_run_state,
+    get_hunt_teams, get_hunt_run_state, set_hunt_teams, set_hunt_run_state,
+    get_expedition_config, set_expedition_config, get_expedition_run_state, set_expedition_run_state,
     get_replica_success_cooldown_hours,
     get_replica_virtual_hall_match_enabled_map,
     get_send_as_profile,
@@ -1169,6 +1171,10 @@ def _meta_defaults():
             "bot_reply_group_by_identity": {},
         }),
         "account_group_memberships": "{}",
+        "hunt_teams": "[]",
+        "hunt_run_state": "{}",
+        "expedition_config": "{}",
+        "expedition_run_state": "{}",
         "game_bot_ids": "[-1003983937918, 7900199668, 8349385938, 8388633812, 8400307678, 8547797815, 8567800706, 8609885831, 8757550896]",
         "game_topic_id": "0",
         "forum_topics": "[]",
@@ -2752,6 +2758,22 @@ _META_STATE_CODEC = {
         get_replica_run_state,
         _encode_meta_json,
         lambda value: set_replica_run_state(_decode_meta_json(value, {})),
+    ),
+    "hunt_teams": (
+        get_hunt_teams, _encode_meta_json,
+        lambda value: set_hunt_teams(_decode_meta_json(value, [])),
+    ),
+    "hunt_run_state": (
+        get_hunt_run_state, _encode_meta_json,
+        lambda value: set_hunt_run_state(_decode_meta_json(value, {})),
+    ),
+    "expedition_config": (
+        get_expedition_config, _encode_meta_json,
+        lambda value: set_expedition_config(_decode_meta_json(value, {})),
+    ),
+    "expedition_run_state": (
+        get_expedition_run_state, _encode_meta_json,
+        lambda value: set_expedition_run_state(_decode_meta_json(value, {})),
     ),
     "replica_virtual_hall_match_enabled_map": (
         get_replica_virtual_hall_match_enabled_map,

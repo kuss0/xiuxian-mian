@@ -6535,6 +6535,14 @@ async def handle_log_group_command(event):
     if not raw_text:
         return False
 
+    if raw_text.startswith((".猎妖", ".长风试炼")):
+        from .app_expeditions import handle_expedition_log_command
+        handled, message = await handle_expedition_log_command(event)
+        if handled:
+            await reply_log_group_message(event, message, scope="global", limit=1800,
+                                          error_prefix="活动指令回复失败")
+            return True
+
     storage_bag_match = RE_CMD_STORAGE_BAG_REPORT.match(raw_text)
     if storage_bag_match:
         return await _handle_storage_bag_report_command(event, storage_bag_match.group(2) or "")

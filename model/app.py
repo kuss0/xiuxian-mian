@@ -11,6 +11,8 @@ from telethon import events, functions
 from telethon.errors import PeerIdInvalidError, SendAsPeerInvalidError
 
 from .message_keys import find_message_key
+from .app_expeditions import handle_expedition_game_event, reset_expedition_runtime_on_startup, run_expedition_scheduler
+from .app_xuangu import handle_xuangu_group_command
 
 from .account_membership import (
     TargetGroupMembership,
@@ -625,10 +627,12 @@ _GLOBAL_SCHEDULERS = (
     ("huanglong_conscription", run_huanglong_conscription_scheduler),
     ("luoyun_cd_reminder", run_luoyun_cd_reminder_scheduler),
     ("wanxin_cleanup", run_wanxin_global_cleanup_scheduler),
+    ("expeditions", run_expedition_scheduler),
     ("daily_grow", run_daily_grow_scheduler),
 )
 
 _SCHEDULER_MANIFEST_BRIDGE = {
+    "expeditions": {"manifest_names": (), "helper": True},
     "channel_send_as_health": {"manifest_names": (), "helper": True},
     # 额外功能，不属于修仙模块清单，所以 manifest_names 为空。
     "daily_grow": {"manifest_names": (), "helper": True},
@@ -3684,7 +3688,9 @@ async def _handle_routed_reply_event(
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            storage_transfer_done = await handle_storage_bag_transfer_reply(text, now, reply_to, matched_family=matched_family, reply_context=reply_context)
+            transfer_context = dict(reply_context or {}, chat_id=event.chat_id,
+                                    topic_id=int(getattr(getattr(event, "reply_to", None), "reply_to_top_id", 0) or 0))
+            storage_transfer_done = await handle_storage_bag_transfer_reply(text, now, reply_to, matched_family=matched_family, reply_context=transfer_context)
             handled_any = storage_transfer_done or handled_any
             if not storage_transfer_done:
                 handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -3790,9 +3796,17 @@ register_game_reply_replayer(_replay_pending_log_replies)
 @client.on(events.NewMessage())
 async def on_message(event):
     await observe_red_packet_candidate(event, event_type="message")
+    if _claim_runtime_event(event, scope="log_group_command"):
+        if await handle_log_group_command(event):
+            return
     if _append_replica_group_message_log(event, event_type="message"):
         now = time.time()
         text = event.raw_text or ""
+        try:
+            if _claim_runtime_event(event, scope="xuangu_roster") and await handle_xuangu_group_command(event):
+                return
+        except Exception:
+            print(traceback.format_exc())
         if is_replica_group_command_text(text):
             try:
                 if await _handle_replica_group_command(event):
@@ -3810,6 +3824,7 @@ async def on_message(event):
                 event_type="message",
             )
             await _handle_replica_progress_event(event, now, event_type="message")
+            await handle_expedition_game_event(event, event_type="message")
         except Exception:
             print(traceback.format_exc())
         if is_replica_group_command_text(text):
@@ -3824,10 +3839,6 @@ async def on_message(event):
 
     _append_game_group_message_log(event, event_type="message")
 
-    if _claim_runtime_event(event, scope="log_group_command"):
-        if await handle_log_group_command(event):
-            return
-
     if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
     now = time.time()
@@ -3839,6 +3850,8 @@ async def on_message(event):
         print(traceback.format_exc())
     sender_is_game_bot = await _is_game_bot_event(event)
     record_game_group_message(event, now=now, event_type="message")
+    if sender_is_game_bot:
+        await handle_expedition_game_event(event, event_type="message")
 
     # bot 健康监测：记录 . 开头指令的触发时间
     raw_text = (event.raw_text or "").strip()
@@ -4011,6 +4024,7 @@ async def on_message_edited(event):
                 event_type="edit",
             )
             await _handle_replica_progress_event(event, now, event_type="edit")
+            await handle_expedition_game_event(event, event_type="edit")
         except Exception:
             print(traceback.format_exc())
         return
@@ -4030,6 +4044,8 @@ async def on_message_edited(event):
     except Exception:
         print(traceback.format_exc())
     sender_is_game_bot = await _is_game_bot_event(event)
+    if sender_is_game_bot:
+        await handle_expedition_game_event(event, event_type="edit")
     if not sender_is_game_bot:
         try:
             text = event.raw_text or ""
@@ -4166,6 +4182,7 @@ async def bootstrap():
     loaded = load_state()
     if not loaded and has_persisted_identity_rows():
         raise RuntimeError("SQLite 状态加载失败，已阻止首次初始化以避免覆盖既有身份计时器。")
+    reset_expedition_runtime_on_startup()
     await resume_audit_summary()
     saved_accounts = get_accounts()
 

@@ -13,7 +13,7 @@ from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
 from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, is_game_send_definitely_unsent, send_audit_log, send_game_command
-from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
+from ..state import get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
 from . import workflow_log
 from . import fishing_gift
@@ -88,6 +88,9 @@ _storage_bag_transfer_state = {
     "running": False,
     "operation": "transfer",
     "op_id": "",
+    "group_role": "auto",
+    "target_chat_id": 0,
+    "target_topic_id": 0,
     "source_identity_id": 0,
     "target_identity_id": 0,
     "items": [],
@@ -201,6 +204,44 @@ def normalize_storage_bag_listing_syntax(value):
     return syntax if syntax in STORAGE_TRANSFER_LISTING_SYNTAXES else STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX
 
 
+def resolve_storage_transfer_group(group_role="auto"):
+    """Capture an explicit route; auto retains the local failover policy."""
+    role = str(group_role or "auto").strip().lower()
+    if role not in {"auto", "primary", "secondary"}:
+        raise ValueError("转移群组须为自动、主群或副群")
+    primary = int(get_game_group_id() or 0)
+    chat_id = 0 if role == "auto" else primary
+    if role == "secondary":
+        chat_id = next((int(chat) for chat in get_game_group_ids() if int(chat) != primary), 0)
+    if role != "auto" and not chat_id:
+        raise ValueError("所选游戏群尚未配置")
+    return role, chat_id, int(get_game_group_topic_id(chat_id) or 0) if chat_id else 0
+
+
+def storage_transfer_inventory_error(source_id, target_id, items, listing_item="", listing_count=1, *, buyers=None, now=None):
+    """Only recent complete snapshots veto manual transfers; no query is sent."""
+    now = time.time() if now is None else float(now)
+    required = {}
+    for buyer in buyers or [{"source_identity_id": source_id, "items": items}]:
+        owner = int(buyer["source_identity_id"])
+        for item in buyer.get("items") or []:
+            name = str(item.get("item_name") or "")
+            key = (owner, name)
+            # Local quantities represent the whole order, including aggregate buyers.
+            required[key] = required.get(key, 0) + int(item.get("quantity") or 0)
+    if listing_item:
+        key = (int(target_id), listing_item)
+        required[key] = required.get(key, 0) + int(listing_count)
+    for (owner, name), quantity in required.items():
+        record = get_storage_bag_records().get(str(owner)) or {}
+        if record.get("inventory_complete") is not True or not 0 <= now - float(record.get("updated_at") or 0) <= 120:
+            continue
+        count = int((record.get("items") or {}).get(name) or 0)
+        if quantity > count:
+            return f"{name} 整单需要 {quantity}，身份 {owner} 最新完整库存仅 {count}"
+    return ""
+
+
 def format_storage_bag_listing_command(listing_item, listing_count, exchange_parts, *, listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX):
     listing_item = str(listing_item or "").strip()
     listing_count = normalize_storage_bag_listing_count(listing_count)
@@ -253,8 +294,10 @@ def _storage_transfer_task_key(
     listing_count=1,
     listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     operation="transfer",
+    group_role="auto",
 ):
     payload = [
+        group_role,
         "gift" if str(operation or "").strip().lower() == "gift" else "transfer",
         int(source_identity_id or 0),
         int(target_identity_id or 0),
@@ -276,6 +319,7 @@ def _storage_transfer_task_key_from_task(task):
         listing_count=task.get("listing_count") or 1,
         listing_syntax=task.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         operation=task.get("operation") or "transfer",
+        group_role=task.get("group_role", "auto"),
     ))
 
 
@@ -597,6 +641,9 @@ def _clear_storage_bag_transfer_state():
         "running": False,
         "operation": "transfer",
         "op_id": "",
+        "group_role": "auto",
+        "target_chat_id": 0,
+        "target_topic_id": 0,
         "source_identity_id": 0,
         "target_identity_id": 0,
         "items": [],
@@ -863,14 +910,30 @@ async def _send_storage_bag_transfer_command(
         kwargs["reply_to"] = reply_to
     _storage_bag_transfer_state["reply_due_at"] = 0
     handoff = _storage_bag_fishing_handoff
+    captured_op = _storage_bag_transfer_state.get("op_id")
+    route_chat = int(_storage_bag_transfer_state.get("target_chat_id") or 0)
+    route_topic = int(_storage_bag_transfer_state.get("target_topic_id") or 0)
+
+    def allowed():
+        if not _storage_bag_transfer_state.get("running") or _storage_bag_transfer_state.get("op_id") != captured_op:
+            return False
+        if route_chat and (route_chat not in get_game_group_ids() or int(get_game_group_topic_id(route_chat) or 0) != route_topic):
+            return False
+        return handoff is None or handoff.allowed()
+
+    kwargs["operation_check"] = allowed
+    target_chat_id = int(_storage_bag_transfer_state.get("gift_locator_chat_id") or 0) if family == "storage_bag_gift" else route_chat
+    if target_chat_id:
+        kwargs["target_chat_id"] = target_chat_id
     if handoff is not None:
-        target_chat_id = int(_storage_bag_transfer_state.get("gift_locator_chat_id") or 0) if family == "storage_bag_gift" else get_game_group_id()
+        if family != "storage_bag_gift":
+            target_chat_id = target_chat_id or get_game_group_id()
         try:
             handoff.before_send(command, family, reply_to, target_chat_id)
         except fishing_gift.HandoffError as exc:
             _finalize_storage_bag_transfer(False, str(exc))
             return None
-        kwargs.update(target_chat_id=target_chat_id, operation_check=handoff.allowed)
+        kwargs["target_chat_id"] = target_chat_id
     try:
         msg = await send_game_command(command, **kwargs)
     except BaseException:
@@ -1411,7 +1474,7 @@ def _is_storage_gift_anchor_sender(payload, target_identity_id):
     return bool(username and expected_username and username == expected_username)
 
 
-def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age_sec=STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC):
+def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age_sec=STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC, target_chat_id=0):
     try:
         now = float(now if now is not None else time.time())
     except (TypeError, ValueError, OverflowError):
@@ -1433,6 +1496,8 @@ def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age
                 chat_id = int(payload.get("chat_id", 0) or 0)
             except (TypeError, ValueError, OverflowError):
                 chat_id = 0
+            if target_chat_id and chat_id != int(target_chat_id):
+                continue
             if not _is_storage_gift_anchor_topic(payload):
                 continue
             if not _is_storage_gift_anchor_sender(payload, target_identity_id):
@@ -1472,7 +1537,7 @@ async def _delete_storage_bag_gift_locator():
         if not chat_id:
             chat_id = get_sent_message_chat_id(
                 msg_id,
-                default=get_game_group_id(),
+                default=int(_storage_bag_transfer_state.get("target_chat_id") or get_game_group_id()),
                 send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0),
             )
         await _run_account_rpc(
@@ -1569,7 +1634,9 @@ async def _start_storage_bag_gift_phase():
         await send_audit_log(f"✅ {message}", limit=220)
         return True, message
     target_identity_id = int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0)
-    anchor = find_recent_storage_bag_gift_anchor(target_identity_id)
+    route_chat = int(_storage_bag_transfer_state.get("target_chat_id") or 0)
+    anchor = (find_recent_storage_bag_gift_anchor(target_identity_id, target_chat_id=route_chat)
+              if route_chat else find_recent_storage_bag_gift_anchor(target_identity_id))
     if anchor:
         anchor_msg_id = int(anchor.get("msg_id") or 0)
         anchor_text = str(anchor.get("text") or "").strip()
@@ -1630,7 +1697,7 @@ async def _start_storage_bag_gift_phase():
     _storage_transfer_log(f"已发送赠送定位消息（消息ID={_storage_bag_transfer_state['gift_locator_msg_id']}）")
     _storage_bag_transfer_state["gift_locator_chat_id"] = get_sent_message_chat_id(
         _storage_bag_transfer_state["gift_locator_msg_id"],
-        default=get_game_group_id(),
+        default=int(_storage_bag_transfer_state.get("target_chat_id") or get_game_group_id()),
         send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0),
     )
     _record_storage_transfer_event(
@@ -1657,6 +1724,8 @@ async def start_storage_bag_transfer_task(
     batch_child=False,
     operation="transfer",
     gift_handoff=None,
+    group_role="auto",
+    expected_route=None,
 ):
     global _storage_bag_fishing_handoff
     if _storage_bag_transfer_state.get("running"):
@@ -1675,6 +1744,12 @@ async def start_storage_bag_transfer_task(
         return False, "目标身份无效", None
     if source_identity_id == target_identity_id:
         return False, "来源和目标身份不能相同", None
+    try:
+        group_role, target_chat_id, target_topic_id = resolve_storage_transfer_group(group_role)
+    except ValueError as exc:
+        return False, str(exc), None
+    if expected_route is not None and tuple(expected_route) != (target_chat_id, target_topic_id):
+        return False, "排队期间所选游戏群或话题已变更，请重新预览", None
 
     normalized_items = []
     for raw_item in (items if isinstance(items, (list, tuple)) else []):
@@ -1717,6 +1792,12 @@ async def start_storage_bag_transfer_task(
     listing_syntax = normalize_storage_bag_listing_syntax(listing_syntax)
     operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
     listing_command = ""
+    inventory_error = storage_transfer_inventory_error(
+        source_identity_id, target_identity_id, normalized_items,
+        listing_item if basic_items else "", listing_count, buyers=normalized_aggregate_buyers,
+    )
+    if inventory_error:
+        return False, inventory_error, None
     listing_command_override = str(listing_command_override or "").strip()
     if basic_items:
         if not listing_item:
@@ -1739,6 +1820,7 @@ async def start_storage_bag_transfer_task(
         listing_count=listing_count,
         listing_syntax=listing_syntax,
         operation=operation,
+        group_role=group_role,
     )
     if listing_command and not batch_child:
         wait_sec = _storage_listing_initial_wait_sec(target_identity_id, listing_command)
@@ -1751,6 +1833,9 @@ async def start_storage_bag_transfer_task(
         "running": True,
         "operation": operation,
         "op_id": uuid.uuid4().hex[:12],
+        "group_role": group_role,
+        "target_chat_id": target_chat_id,
+        "target_topic_id": target_topic_id,
         "source_identity_id": int(source_identity_id),
         "target_identity_id": int(target_identity_id),
         "items": normalized_items,
@@ -1830,6 +1915,7 @@ async def start_storage_bag_gift_task(
     *,
     batch_child=False,
     gift_handoff=None,
+    group_role="auto",
 ):
     return await start_storage_bag_transfer_task(
         source_identity_id,
@@ -1838,6 +1924,7 @@ async def start_storage_bag_gift_task(
         "",
         batch_child=batch_child,
         operation="gift",
+        group_role=group_role,
         gift_handoff=gift_handoff,
     )
 
@@ -1847,6 +1934,7 @@ async def start_storage_bag_gift_batch(
     *,
     target_identity_id=0,
     stop_on_error=True,
+    group_role="auto",
 ):
     return await start_storage_bag_transfer_batch(
         _force_storage_bag_gift_tasks(tasks),
@@ -1854,6 +1942,7 @@ async def start_storage_bag_gift_batch(
         listing_item="",
         stop_on_error=stop_on_error,
         operation="gift",
+        group_role=group_role,
     )
 
 
@@ -1907,6 +1996,8 @@ async def _start_next_storage_bag_transfer_batch_task():
         listing_command_override=task.get("listing_command") or "",
         aggregate_buyers=task.get("aggregate_buyers") or [],
         batch_child=True,
+        group_role=task.get("group_role", "auto"),
+        expected_route=(task["target_chat_id"], task["target_topic_id"]) if task.get("target_chat_id") else None,
         operation=task.get("operation") or _storage_bag_transfer_batch_state.get("operation") or "transfer",
     )
     if ok:
@@ -1988,6 +2079,7 @@ async def start_storage_bag_transfer_batch(
     listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     stop_on_error=True,
     operation="transfer",
+    group_role="auto",
 ):
     normalized_tasks = []
     known_ids = {int(identity_id) for identity_id in get_identity_ids()}
@@ -2045,8 +2137,16 @@ async def start_storage_bag_transfer_batch(
             listing_count=task_listing_count,
             listing_syntax=task_listing_syntax,
             operation=operation,
+            group_role=raw_task.get("group_role", group_role),
         )
+        try:
+            task_group_role, _chat, _topic = resolve_storage_transfer_group(raw_task.get("group_role", group_role))
+        except ValueError as exc:
+            return False, str(exc), get_storage_bag_transfer_snapshot()
         normalized_tasks.append({
+            "group_role": task_group_role,
+            "target_chat_id": _chat,
+            "target_topic_id": _topic,
             "source_identity_id": source_identity_id,
             "source_label": source_profile.get("label") or source_profile.get("username") or str(source_identity_id),
             "target_identity_id": target_identity_id,
@@ -2395,6 +2495,14 @@ async def _handle_storage_bag_gift_reply(raw_text, *, reply_msg_id=0, family="st
 async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_family=None, reply_context=None):
     if not _storage_bag_transfer_state.get("running"):
         return False
+    route_chat = int(_storage_bag_transfer_state.get("target_chat_id") or 0)
+    if route_chat:
+        chat_id = int((reply_context or {}).get("chat_id") or getattr(reply_to, "chat_id", 0) or 0)
+        if chat_id != route_chat:
+            return False
+        topic = int((reply_context or {}).get("topic_id") or 0)
+        if topic != int(_storage_bag_transfer_state.get("target_topic_id") or 0):
+            return False
     raw_text = str(text or "").strip()
     if not raw_text:
         return False
@@ -2572,7 +2680,7 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
     if command_msg_id <= 0:
         return False
     chat_id = get_sent_message_chat_id(
-        command_msg_id, default=get_game_group_id(), send_as_id=int(config.get("identity_id") or 0))
+        command_msg_id, default=int(_storage_bag_transfer_state.get("target_chat_id") or get_game_group_id()), send_as_id=int(config.get("identity_id") or 0))
     handoff = _storage_bag_fishing_handoff
     if handoff is not None:
         try:
@@ -2614,6 +2722,7 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
                 "family": family,
                 "reply_to_msg_id": command_msg_id,
                 "chat_id": int(entry.get("chat_id") or 0),
+                "topic_id": int(entry.get("topic_id") or 0),
                 "matched_via": "message_log_recovery",
             },
         )
@@ -2722,6 +2831,8 @@ async def handle_storage_bag_reply(text, now, reply_to=None, matched_family=None
         "items": parsed.get("items") or {},
         "sections": parsed.get("sections") or {},
         "empty": bool(parsed.get("empty")),
+        "inventory_complete": bool(parsed.get("sections") or parsed.get("empty"))
+        and not bool(re.search(r"分页|第\s*\d+\s*页|省略|仅显示|更多|…", str(text or ""))),
     }
     set_storage_bag_records(records)
     save_state()

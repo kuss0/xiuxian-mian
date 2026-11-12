@@ -81,6 +81,7 @@ def _http_request(port: int, method: str, path: str, *, body: dict[str, Any] | N
 # 每个需要会话的 /api/ 路由，用于全量鉴权矩阵探测。清单从 ui.handle_ui_http 的
 # 路由分支提取；新增受保护路由时同步加进来，让匿名访问回归立刻可见。
 GUARDED_API_ROUTES = (
+    ("POST", "/api/expedition-config"),
     ("POST", "/api/account-logout"),
     ("POST", "/api/account/login-cancel"),
     ("POST", "/api/account/login-qr-start"),

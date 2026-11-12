@@ -5535,6 +5535,10 @@ def _get_replica_identity_block_reason(identity_id, *, now=None, allow_dungeon_q
         return "身份未启用"
     if not get_global_enabled():
         return "全局暂停"
+    from .activity_occupancy import get_activity_block_reason
+    activity_reason = get_activity_block_reason(identity_id, include_replica=False, now=now)
+    if activity_reason:
+        return activity_reason
     if is_dungeon_quiet_active(now) and not allow_dungeon_quiet:
         quiet_reason = get_dungeon_quiet_reason() or "副本静场令"
         return f"{quiet_reason}生效中，恢复 {format_dungeon_quiet_until()}"

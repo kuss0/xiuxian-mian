@@ -27,7 +27,9 @@ function isDungeonModalOpen() {
 
 function isReplicaConfigEditing() {
   const form = document.getElementById('replica-config-form');
+  const expeditions = document.getElementById('expedition-config-form');
   const active = document.activeElement;
+  if (expeditions && (expeditions.dataset.dirty === '1' || (active && expeditions.contains(active)))) return true;
   return !!(form && active && form.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName || ''));
 }
 
@@ -393,6 +395,7 @@ function renderDungeonModal(options) {
     + '<div class="queue-section-title">副本群配置</div>'
     + renderReplicaConfig(replica)
     + '</div>'
+    + renderExpeditionConfig(replica)
     + '<div class="dungeon-section">'
     + '<div class="queue-section-title">自动加入状态</div>'
     + renderDungeonRows(rows)
@@ -402,6 +405,110 @@ function renderDungeonModal(options) {
     + renderDungeonAnnouncements(dungeon.recent_announcements)
     + '</div>';
 }
+
+function renderHuntTeamRow(team, replica) {
+  team = team || {};
+  const options = replica.identity_options || [];
+  const members = team.member_identity_ids || [];
+  const seas = team.seas || ['近海', '近海', '近海'];
+  const selectOptions = function(values, selected) {
+    return values.map(function(value) {
+      return '<option value="' + escapeHtml(value) + '"' + (String(value) === String(selected) ? ' selected' : '') + '>' + escapeHtml(value) + '</option>';
+    }).join('');
+  };
+  return '<fieldset class="dungeon-section" data-hunt-team>'
+    + '<div class="replica-config-grid"><label class="form-label">队伍名称<input class="text-input" data-hunt-name maxlength="24" value="' + escapeHtml(team.name || '') + '" /></label>'
+    + '<label class="form-label">游戏群<select class="text-input" data-hunt-role><option value="primary"' + (team.group_role === 'primary' ? ' selected' : '') + '>主群</option><option value="secondary"' + (team.group_role !== 'primary' ? ' selected' : '') + '>副群</option></select></label></div>'
+    + '<div class="replica-config-grid">' + [0, 1, 2].map(function(day) {
+      return '<label class="form-label">第 ' + (day + 1) + ' 日航向<select class="text-input" data-hunt-sea>' + selectOptions(['近海', '暗礁', '外海'], seas[day]) + '</select></label>';
+    }).join('') + '</div><div class="replica-config-grid">'
+    + [0, 1, 2, 3, 4].map(function(index) {
+      return '<label class="form-label">' + (index ? '成员 ' + (index + 1) : '船长兼探路者') + '<select class="text-input" data-hunt-member><option value="">不选择</option>'
+        + options.map(function(identity) {
+          return '<option value="' + escapeHtml(identity.identity_id) + '"' + (String(identity.identity_id) === String(members[index]) ? ' selected' : '') + '>' + escapeHtml(identity.display_name || identity.username || identity.identity_id) + '</option>';
+        }).join('') + '</select></label>';
+    }).join('') + '</div><button type="button" class="btn btn-secondary" data-hunt-remove>删除队伍</button></fieldset>';
+}
+
+function renderExpeditionConfig(replica) {
+  const config = replica.expeditions || {};
+  const xuangu = config.xuangu || {};
+  const changfeng = config.changfeng || {};
+  const identities = replica.identity_options || [];
+  const members = function(kind, selected) {
+    return '<div class="replica-config-grid">' + identities.map(function(identity) {
+      return '<label class="checkbox-inline"><input type="checkbox" data-expedition-member="' + kind + '" value="' + escapeHtml(identity.identity_id) + '"'
+        + ((selected || []).map(String).includes(String(identity.identity_id)) ? ' checked' : '') + ' />' + escapeHtml(identity.display_name || identity.identity_id) + '</label>';
+    }).join('') + '</div>';
+  };
+  const records = (config.hunt_runs || []).concat(config.xuangu_runs || [], config.changfeng_runs || []);
+  return '<details class="dungeon-section"><summary class="queue-section-title">出海猎妖、玄骨遗府与长风试炼</summary><form id="expedition-config-form">'
+    + '<div class="dungeon-section"><h4>出海猎妖</h4><p>每队选择 2–5 人。保存后，在日志群发送「.猎妖 出发 队伍名」；返航后结束，不会循环开船。</p>'
+    + '<div id="hunt-team-rows">' + (config.hunt_teams || []).map(function(team) { return renderHuntTeamRow(team, replica); }).join('') + '</div>'
+    + '<button type="button" class="btn btn-secondary" data-hunt-add>新增队伍</button></div>'
+    + '<div class="dungeon-section"><h4>玄骨遗府</h4><label class="checkbox-inline"><input type="checkbox" name="xuangu_enabled"' + (xuangu.enabled ? ' checked' : '') + ' />开启集结与副群应对</label>'
+    + '<p>在已配置的副本群发送「.开启玄骨 @队长 @队员」，游戏操作固定使用副群。</p>'
+    + members('xuangu', xuangu.participant_identity_ids)
+    + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
+      return '<option' + ((xuangu.finish_choice || '收拢遗宝') === choice ? ' selected' : '') + '>' + choice + '</option>';
+    }).join('') + '</select></label></div>'
+    + '<div class="dungeon-section"><h4>长风试炼</h4><label class="checkbox-inline"><input type="checkbox" name="changfeng_enabled"' + (changfeng.enabled ? ' checked' : '') + ' />开启每日试炼</label>'
+    + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
+    + members('changfeng', changfeng.participant_identity_ids)
+    + '<div class="replica-config-grid"><label class="form-label">每日场次上限<input class="text-input" type="number" name="changfeng_limit" min="1" max="8" value="' + escapeHtml(changfeng.daily_limit || 1) + '" /></label>'
+    + ['longwind', 'bamboo'].map(function(arena) {
+      return '<label class="checkbox-inline"><input type="checkbox" data-changfeng-arena="' + arena + '"' + ((changfeng.arenas || ['longwind', 'bamboo']).includes(arena) ? ' checked' : '') + ' />' + (arena === 'longwind' ? '麦田试炼' : '竹林试炼') + '</label>';
+    }).join('') + '</div></div>'
+    + '<div class="dungeon-section">' + records.map(function(record) {
+      return '<p>' + escapeHtml(record.name || record.identity_id || '') + '：' + escapeHtml(record.phase || '') + ' ' + escapeHtml(record.result || record.outcome || record.last_error || '') + '</p>';
+    }).join('') + '</div><button type="submit" class="btn">保存活动配置</button></form></details>';
+}
+
+document.addEventListener('input', function(event) {
+  const form = event.target.closest && event.target.closest('#expedition-config-form');
+  if (form) form.dataset.dirty = '1';
+});
+
+document.addEventListener('click', function(event) {
+  const form = document.getElementById('expedition-config-form');
+  if (!form) return;
+  if (event.target.closest('[data-hunt-add]')) {
+    if (form.querySelectorAll('[data-hunt-team]').length >= 20) return;
+    form.querySelector('#hunt-team-rows').insertAdjacentHTML('beforeend', renderHuntTeamRow({}, getReplicaSnapshot()));
+    form.dataset.dirty = '1';
+  }
+  const remove = event.target.closest('[data-hunt-remove]');
+  if (remove) { remove.closest('[data-hunt-team]').remove(); form.dataset.dirty = '1'; }
+});
+
+document.addEventListener('submit', async function(event) {
+  const form = event.target;
+  if (form.id !== 'expedition-config-form') return;
+  event.preventDefault();
+  const selectedMembers = function(kind) {
+    return Array.from(form.querySelectorAll('[data-expedition-member="' + kind + '"]:checked')).map(function(input) { return input.value; });
+  };
+  const payload = {
+    hunt_teams: Array.from(form.querySelectorAll('[data-hunt-team]')).map(function(row) {
+      return {name: row.querySelector('[data-hunt-name]').value.trim(), group_role: row.querySelector('[data-hunt-role]').value,
+        seas: Array.from(row.querySelectorAll('[data-hunt-sea]')).map(function(select) { return select.value; }),
+        member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
+    }),
+    xuangu: {enabled: form.elements.xuangu_enabled.checked, finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
+    changfeng: {enabled: form.elements.changfeng_enabled.checked, daily_limit: Number(form.elements.changfeng_limit.value), participant_identity_ids: selectedMembers('changfeng'),
+      arenas: Array.from(form.querySelectorAll('[data-changfeng-arena]:checked')).map(function(input) { return input.dataset.changfengArena; })}
+  };
+  try {
+    const result = await postJson('/api/expedition-config', payload);
+    form.dataset.dirty = '';
+    updateFlash(result.message || '已保存活动配置', false);
+    if (result.snapshot && typeof applySnapshot === 'function') applySnapshot(result.snapshot, {keepFlash: true});
+    else if (typeof refreshState === 'function') await refreshState({silent: true, keepFlash: true});
+    renderDungeonModal({force: true});
+  } catch (error) {
+    updateFlash(error.message || '活动配置保存失败', true);
+  }
+});
 
 function openDungeonModal() {
   renderDungeonModal({force: true});
