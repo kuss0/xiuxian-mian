@@ -150,12 +150,16 @@ async def _apply_round_action(ctx, run, action, *, source):
     run.update(phase="acting", action=action, action_source=source,
                action_sent=[], action_confirmed=[], action_failed=[])
     ctx.save()
-    for index, member in enumerate(_onboard_members(run)):
+    captain_id = run["members"][0]["identity_id"]
+    # The captain already has a confirmed scout choice. Give the other crew
+    # their first choice before spending the window replacing that scout.
+    members = sorted(_onboard_members(run), key=lambda member: member["identity_id"] == captain_id)
+    for member in members:
         if not _active(run) or run.get("terminal_pending"):
             return "本次猎妖已停止，取消后续动作"
         # The first member's successful scout is already this round's 探路 action.
         # For combat/defence, replace it too so every crew member responds.
-        if index == 0 and action == "探路":
+        if member["identity_id"] == captain_id and action == "探路":
             run["action_sent"].append(member["identity_id"])
             run["action_confirmed"].append(member["identity_id"])
         elif await _send(ctx, run, member, "." + action, deadline=run["deadline"]):
@@ -427,10 +431,12 @@ async def game_event(ctx, event, *, event_type="message"):
                        action_failed=[], action_rejected=[], action="", action_source="",
                        sea_event="", scout_text="", scout_msg_id=0, deadline=_event_time(event) + 30)
             ctx.save()
-            for member in _onboard_members(run):
-                if not await _send(ctx, run, member, ".航向 " + get_team_seas(run)[day - 1], deadline=run["deadline"]):
-                    await _fail(ctx, run, "航向发送失败/超时，本次已停止")
-                    return True
+            # One captain vote chooses the configured route. Having every crew
+            # member vote consumes send slots and can start the sea stage early,
+            # leaving the scout and response chain behind the local throttle.
+            if not await _send(ctx, run, run["members"][0], ".航向 " + get_team_seas(run)[day - 1], deadline=run["deadline"]):
+                await _fail(ctx, run, "航向发送失败/超时，本次已停止")
+                return True
             return True
         if match and "征兆：" in text:
             day = int(match.group(1))

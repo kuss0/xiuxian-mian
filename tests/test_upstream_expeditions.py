@@ -74,7 +74,7 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([".出手", ".出手"], [row[0] for row in self.sends[-2:]])
         self.assertEqual([], self.runs["本机队"]["action_confirmed"])
         await hunt.game_event(self.ctx, event("你选择【出手】", reply=len(self.sends) + 100))
-        self.assertEqual([2], self.runs["本机队"]["action_confirmed"])
+        self.assertEqual([1], self.runs["本机队"]["action_confirmed"])
         before = len(self.sends)
         await hunt.game_event(self.ctx, event("你攀上桅杆看清了：是【妖兽群】", reply=scout_id), event_type="edit")
         self.assertEqual(before, len(self.sends))
@@ -82,6 +82,60 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("done", self.runs["本机队"]["phase"])
         await hunt.scheduler(self.ctx, time.time() + 10000)
         self.assertEqual(before, len(self.sends))
+
+    async def test_captain_vote_keeps_route_and_ignores_duplicate_panel(self):
+        await self.recruit()
+        panel = "【猎妖船】第1日，选海域\n船员：@captain @mate\n剩余 30 秒"
+        before = len(self.sends)
+        await hunt.game_event(self.ctx, event(panel))
+        await hunt.game_event(self.ctx, event(panel), event_type="edit")
+        votes = self.sends[before:]
+        self.assertEqual([(".航向 近海", 1)],
+                         [(command, kwargs["send_as_id"]) for command, kwargs in votes])
+
+    async def test_two_player_combat_fits_paced_send_window(self):
+        await self.recruit()
+        now = [time.time()]
+        last_sent = [now[0] - 20]
+        blocked = []
+
+        async def paced_send(command, **kwargs):
+            # Observed live sends need about 15 seconds plus acknowledgement time.
+            # Completing every vote early can start the 45-second sea window
+            # while the scout is still waiting behind the last vote.
+            now[0] = max(now[0], last_sent[0] + 17)
+            if not kwargs["send_guard"]():
+                blocked.append((command, kwargs["send_as_id"]))
+                return None
+            self.sends.append((command, kwargs))
+            last_sent[0] = now[0]
+            now[0] += 4
+            return SimpleNamespace(id=len(self.sends) + 100)
+
+        def at_current_time(text, **kwargs):
+            sample = event(text, **kwargs)
+            sample.date = datetime.fromtimestamp(now[0], timezone.utc)
+            return sample
+
+        self.ctx.send = paced_send
+        voting_started = now[0]
+        before = len(self.sends)
+        with patch.object(hunt.time, "time", side_effect=lambda: now[0]):
+            await hunt.game_event(self.ctx, at_current_time(
+                "【猎妖船】第1日，选海域\n船员：@captain @mate\n剩余 30 秒"))
+            votes = [row for row in self.sends[before:] if row[0].startswith(".航向 ")]
+            if len(votes) < len(self.members):
+                now[0] = max(now[0], voting_started + 30)
+            await hunt.game_event(self.ctx, at_current_time(
+                "【猎妖船】第1日·风浪\n船员：@captain @mate\n征兆：未知\n剩余 45 秒"))
+            scout_id = len(self.sends) + 100
+            await hunt.game_event(self.ctx, at_current_time(
+                "你攀上桅杆看清了：是【妖兽群】", reply=scout_id))
+        self.assertEqual([], blocked)
+        run = self.runs["本机队"]
+        self.assertEqual({1, 2}, set(run["action_sent"]))
+        self.assertEqual([], run["action_failed"])
+        self.assertEqual([2, 1], [kwargs["send_as_id"] for command, kwargs in self.sends if command == ".出手"])
 
     async def test_unknown_reveal_holds_until_explicit_action(self):
         await self.scout()
