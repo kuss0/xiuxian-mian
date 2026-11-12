@@ -9,8 +9,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Daily reset fixtures and message-log dates use the production game timezone.
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Compatibility tests read the previous persisted-state reader with git show.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
