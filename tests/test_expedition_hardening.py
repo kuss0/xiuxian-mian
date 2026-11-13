@@ -353,3 +353,39 @@ def test_shared_group_listener_requires_configured_client(monkeypatch):
     monkeypatch.setattr(app_message_log, "get_all_clients", lambda: {1: owner})
     assert app_xuangu._listener_account_id(SimpleNamespace(chat_id=-100, client=owner)) == 1
     assert app_xuangu._listener_account_id(SimpleNamespace(chat_id=-100, client=stranger)) == 0
+
+
+def test_actual_five_person_run_confirms_last_actions_from_owned_phase_replies():
+    live = json.loads((Path(__file__).parent / "fixtures/xuangu_live_20261113.json").read_text())
+    now = time.time()
+    ctx, roster = make_context(now)
+    roster.clear()
+    roster.update(copy.deepcopy(live["roster"]))
+    roster.update(flow_id="fixture", roster_id="fixture", phase="running", current_round=5,
+                  round_done=[], expires_at=now + 900)
+    for actions in roster["round_actions"].values():
+        for action in actions.values():
+            action["status"] = "pending"
+    transitions = [sample for sample in live["events"] if "【玄骨遗府·" in sample["text"]]
+    acks = [sample for sample in live["events"] if "已提交第" in sample["text"]]
+    assert len(transitions) == 5 and len(acks) == 20
+
+    async def run():
+        first = make_event(transitions[0], now=transitions[0]["server_event_at"], reply=7310786)
+        await xuangu.handle_xuangu_game_event(ctx, first)
+        assert all(action["status"] == "pending" for action in roster["round_actions"]["1"].values())
+        # Direct replies may arrive after a shared panel already advanced us.
+        for sample in transitions:
+            await xuangu.handle_xuangu_game_event(ctx, make_event(sample, now=sample["server_event_at"]))
+        assert sum(action.get("confirmation_kind") == "phase_transition"
+                   for actions in roster["round_actions"].values() for action in actions.values()) == 5
+        roster["phase"] = "settled"
+        # Queued acks remain evidence after finishing, without resuming sends.
+        for sample in acks:
+            assert await xuangu._on_xuangu_action_reply(
+                ctx, make_event(sample, now=sample["server_event_at"]), sample["text"], now)
+    asyncio.run(run())
+    assert roster["round_done"] == [1, 2, 3, 4, 5]
+    assert all(action["status"] == "confirmed"
+               for actions in roster["round_actions"].values() for action in actions.values())
+    ctx.messages.game_command.assert_not_called()

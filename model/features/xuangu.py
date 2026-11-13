@@ -775,6 +775,34 @@ async def _xuangu_disband(ctx, roster, now, reason):
     return sent
 
 
+def _confirm_xuangu_action(roster, round_key, actions, username, action, event, now, kind):
+    action.update(status="confirmed", reply_at=now, reply_msg_id=int(getattr(event, "id", 0) or 0),
+                  confirmation_kind=kind)
+    if action.get("special"):
+        used = set(roster.get("special_used_usernames") or [])
+        used.add(username)
+        roster["special_used_usernames"] = sorted(used)
+        roster["special_used"] = True
+    local = {str(m.get("username") or "").lower() for m in roster.get("my_members") or []}
+    if local and all((actions.get(name) or {}).get("status") == "confirmed" for name in local):
+        roster["round_done"] = sorted({int(n) for n in roster.get("round_done") or []} | {int(round_key)})
+    roster["updated_at"] = now
+
+
+def _confirm_xuangu_transition(ctx, roster, event, completed_round, now):
+    """The last accepted action receives the next phase instead of a plain ack."""
+    reply_id = int(getattr(event, "reply_to_msg_id", 0) or
+                   getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0)
+    if not reply_id:
+        return
+    actions = (roster.get("round_actions") or {}).get(str(completed_round), {})
+    for username, action in actions.items():
+        if int(action.get("msg_id") or 0) == reply_id and action.get("status") == "pending":
+            _confirm_xuangu_action(roster, completed_round, actions, username, action, event, now, "phase_transition")
+            _upsert_xuangu_roster(ctx, roster)
+            return
+
+
 async def _on_xuangu_action_reply(ctx, event, text, now):
     """把行动的发送状态与 bot 的提交确认分开，拒绝/无回执均不算完成。"""
     reply_to = int(getattr(event, "reply_to_msg_id", 0) or 0)
@@ -782,7 +810,7 @@ async def _on_xuangu_action_reply(ctx, event, text, now):
         return False
     chat_id = int(getattr(event, "chat_id", 0) or 0)
     for roster in _active_xuangu_rosters(ctx, now):
-        if roster.get("disbanded") or roster.get("phase") not in ("joining", "running"):
+        if roster.get("phase") not in ("joining", "running", "finishing", "settled", "held", "interrupted", "disbanded"):
             continue
         if int(roster.get("game_chat_id") or 0) != chat_id or not _roster_matches_event(roster, event):
             continue
@@ -792,15 +820,7 @@ async def _on_xuangu_action_reply(ctx, event, text, now):
                     continue
                 ack = _XUANGU_ACTION_ACK_RE.search(text)
                 if ack and int(ack.group("round")) == int(round_key) and ack.group("action").strip() == (("亮招·" if action.get("special") else "") + str(action.get("action") or "")):
-                    action["status"] = "confirmed"
-                    if action.get("special"):
-                        used = set(roster.get("special_used_usernames") or [])
-                        used.add(username)
-                        roster["special_used_usernames"] = sorted(used)
-                        roster["special_used"] = True
-                    local = {str(m.get("username") or "").lower() for m in roster.get("my_members") or []}
-                    if local and all((actions.get(name) or {}).get("status") == "confirmed" for name in local):
-                        roster["round_done"] = sorted({int(n) for n in roster.get("round_done") or []} | {int(round_key)})
+                    _confirm_xuangu_action(roster, round_key, actions, username, action, event, now, "action_ack")
                 else:
                     action["status"] = "rejected"
                     roster["last_error"] = text
@@ -821,7 +841,12 @@ async def _on_xuangu_round(ctx, event, panel, now):
     if roster.get("game_chat_id") and int(roster["game_chat_id"]) != chat_id:
         return
     round_no = int(panel.get("round") or 0)
-    if not 1 <= round_no <= 5 or round_no < int(roster.get("current_round") or 0):
+    if not 1 <= round_no <= 5:
+        return
+    # A shared broadcast can start the next dispatch before its direct reply
+    # gets this lock. Record that owned receipt even if a later round is active.
+    _confirm_xuangu_transition(ctx, roster, event, round_no - 1, now)
+    if round_no < int(roster.get("current_round") or 0):
         return
     roster["current_round"] = round_no
     roster["entered"] = True  # 这是 bot 发布的实际进度，不是发送成功的推断。
@@ -886,6 +911,7 @@ async def _on_xuangu_outcome(ctx, event, outcome, now):
     roster = _match_roster_for_outcome(ctx, outcome, now, event=event)
     if roster is None:
         return
+    _confirm_xuangu_transition(ctx, roster, event, 5, now)
     # 残图异动是 bot 给出的收尾选择点，发完选择后仍需等待最终结算回执。
     if outcome == "残图异动":
         if roster.get("disbanded") or roster.get("phase") != "running":

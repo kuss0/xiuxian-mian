@@ -1,0 +1,803 @@
+{
+  "source": "production room 914e34d000, 2026-11-13, owned action replies",
+  "roster": {
+    "roster_id": "-1003807888644:walterwa2000:1794533513444",
+    "assemble_chat_id": -1003807888644,
+    "leader_username": "WalterWA2000",
+    "leader_identity_id": 8659059191,
+    "members": [
+      "WalterWA2000",
+      "jfdffdddd",
+      "Lpprceqei",
+      "wisemole",
+      "xianxia9527"
+    ],
+    "phase": "settled",
+    "room_id": "914e34d000",
+    "is_captain": true,
+    "my_members": [
+      {
+        "username": "WalterWA2000",
+        "identity_id": 8659059191
+      },
+      {
+        "username": "jfdffdddd",
+        "identity_id": 301299112
+      },
+      {
+        "username": "Lpprceqei",
+        "identity_id": 7538826434
+      },
+      {
+        "username": "wisemole",
+        "identity_id": 8574677796
+      },
+      {
+        "username": "xianxia9527",
+        "identity_id": 8613500668
+      }
+    ],
+    "join_sent_usernames": [
+      "Lpprceqei",
+      "jfdffdddd",
+      "wisemole",
+      "xianxia9527"
+    ],
+    "seen_at": 1794533513.444395,
+    "open_requested_at": 1794533513.444395,
+    "open_command_msg_id": 13174488,
+    "join_sent_at": 1794533518.9531596,
+    "round_done": [],
+    "special_used": true,
+    "last_error": "",
+    "updated_at": 1794533770.9967475,
+    "expires_at": 1794534070.9967475,
+    "flow_id": "-1003807888644:walterwa2000:1794533513444",
+    "command_attempts": {
+      "8659059191:.开启玄骨遗府": {
+        "status": "sent",
+        "at": 1794533514.2633972,
+        "msg_id": 13174488
+      },
+      "301299112:.加入玄骨 914e34d000": {
+        "status": "sent",
+        "at": 1794533519.0183287,
+        "msg_id": 13174498
+      },
+      "7538826434:.加入玄骨 914e34d000": {
+        "status": "sent",
+        "at": 1794533535.4615996,
+        "msg_id": 13174502
+      },
+      "8574677796:.加入玄骨 914e34d000": {
+        "status": "sent",
+        "at": 1794533551.6458683,
+        "msg_id": 13174508
+      },
+      "8613500668:.加入玄骨 914e34d000": {
+        "status": "sent",
+        "at": 1794533567.4162395,
+        "msg_id": 13174510
+      },
+      "8659059191:.玄骨分工 探禁": {
+        "status": "sent",
+        "at": 1794533581.221875,
+        "msg_id": 13174513
+      },
+      "301299112:.玄骨分工 攻伐": {
+        "status": "sent",
+        "at": 1794533594.9616628,
+        "msg_id": 13174516
+      },
+      "7538826434:.玄骨分工 护队": {
+        "status": "sent",
+        "at": 1794533610.3594668,
+        "msg_id": 13174523
+      },
+      "8574677796:.玄骨分工 镇魂": {
+        "status": "sent",
+        "at": 1794533626.576184,
+        "msg_id": 13174525
+      },
+      "8613500668:.玄骨分工 御傀": {
+        "status": "sent",
+        "at": 1794533639.9554653,
+        "msg_id": 13174530
+      },
+      "8659059191:.进入玄骨": {
+        "status": "sent",
+        "at": 1794533656.1812685,
+        "msg_id": 13174537
+      },
+      "301299112:.玄骨行动 1 护队": {
+        "status": "sent",
+        "at": 1794533671.7836733,
+        "msg_id": 13174541
+      },
+      "7538826434:.玄骨行动 1 护队": {
+        "status": "sent",
+        "at": 1794533673.1382186,
+        "msg_id": 13174545
+      },
+      "8574677796:.玄骨行动 1 试池": {
+        "status": "sent",
+        "at": 1794533678.3238418,
+        "msg_id": 13174547
+      },
+      "8613500668:.玄骨行动 1 护队": {
+        "status": "sent",
+        "at": 1794533682.124663,
+        "msg_id": 13174548
+      },
+      "8659059191:.玄骨行动 1 验骨": {
+        "status": "sent",
+        "at": 1794533684.178421,
+        "msg_id": 13174551
+      },
+      "8659059191:.玄骨行动 2 引蛇": {
+        "status": "sent",
+        "at": 1794533692.0275517,
+        "msg_id": 13174557
+      },
+      "301299112:.玄骨行动 2 破敌": {
+        "status": "sent",
+        "at": 1794533699.4147613,
+        "msg_id": 13174558
+      },
+      "7538826434:.玄骨行动 2 护队": {
+        "status": "sent",
+        "at": 1794533701.924375,
+        "msg_id": 13174562
+      },
+      "8574677796:.玄骨行动 2 镇魂": {
+        "status": "sent",
+        "at": 1794533705.691415,
+        "msg_id": 13174563
+      },
+      "8613500668:.玄骨行动 2 护队": {
+        "status": "sent",
+        "at": 1794533708.9503992,
+        "msg_id": 13174566
+      },
+      "8659059191:.玄骨行动 3 侦察": {
+        "status": "sent",
+        "at": 1794533715.4747996,
+        "msg_id": 13174570
+      },
+      "301299112:.玄骨行动 3 破敌": {
+        "status": "sent",
+        "at": 1794533716.3420863,
+        "msg_id": 13174572
+      },
+      "7538826434:.玄骨行动 3 护队": {
+        "status": "sent",
+        "at": 1794533719.2242084,
+        "msg_id": 13174577
+      },
+      "8574677796:.玄骨行动 3 侦察": {
+        "status": "sent",
+        "at": 1794533722.6409972,
+        "msg_id": 13174579
+      },
+      "8613500668:.玄骨行动 3 护队": {
+        "status": "sent",
+        "at": 1794533726.1308727,
+        "msg_id": 13174580
+      },
+      "8659059191:.玄骨行动 4 侦察": {
+        "status": "sent",
+        "at": 1794533734.2053459,
+        "msg_id": 13174584
+      },
+      "301299112:.玄骨行动 4 护队": {
+        "status": "sent",
+        "at": 1794533736.4009879,
+        "msg_id": 13174587
+      },
+      "7538826434:.玄骨行动 4 护队": {
+        "status": "sent",
+        "at": 1794533739.6458118,
+        "msg_id": 13174588
+      },
+      "8574677796:.玄骨行动 4 镇魂": {
+        "status": "sent",
+        "at": 1794533742.250888,
+        "msg_id": 13174590
+      },
+      "8613500668:.玄骨行动 4 护傀": {
+        "status": "sent",
+        "at": 1794533743.7036092,
+        "msg_id": 13174592
+      },
+      "8659059191:.玄骨行动 5 镇魂": {
+        "status": "sent",
+        "at": 1794533750.8934436,
+        "msg_id": 13174596
+      },
+      "301299112:.玄骨行动 5 亮招 破敌": {
+        "status": "sent",
+        "at": 1794533752.4180996,
+        "msg_id": 13174597
+      },
+      "7538826434:.玄骨行动 5 护队": {
+        "status": "sent",
+        "at": 1794533754.9122875,
+        "msg_id": 13174599
+      },
+      "8574677796:.玄骨行动 5 收神": {
+        "status": "sent",
+        "at": 1794533757.52486,
+        "msg_id": 13174601
+      },
+      "8613500668:.玄骨行动 5 收神": {
+        "status": "sent",
+        "at": 1794533759.9546654,
+        "msg_id": 13174603
+      },
+      "8659059191:.玄骨收尾 收拢遗宝": {
+        "status": "sent",
+        "at": 1794533766.320223,
+        "msg_id": 13174610
+      }
+    },
+    "room_seen_at": 1794533518.9531596,
+    "game_chat_id": -1001680975844,
+    "game_topic_id": 7310786,
+    "join_confirmed_usernames": [
+      "jfdffdddd",
+      "lpprceqei",
+      "walterwa2000",
+      "wisemole",
+      "xianxia9527"
+    ],
+    "role_confirmed_map": {
+      "walterwa2000": "探禁",
+      "jfdffdddd": "攻伐",
+      "lpprceqei": "护队",
+      "wisemole": "镇魂",
+      "xianxia9527": "御傀"
+    },
+    "join_msg_ids": {
+      "13174498": "jfdffdddd",
+      "13174502": "Lpprceqei",
+      "13174508": "wisemole",
+      "13174510": "xianxia9527"
+    },
+    "join_attempts": {
+      "jfdffdddd": {
+        "count": 1,
+        "last_at": 1794533518.9531596
+      },
+      "Lpprceqei": {
+        "count": 1,
+        "last_at": 1794533518.9531596
+      },
+      "wisemole": {
+        "count": 1,
+        "last_at": 1794533518.9531596
+      },
+      "xianxia9527": {
+        "count": 1,
+        "last_at": 1794533518.9531596
+      }
+    },
+    "role_set_usernames": [
+      "Lpprceqei",
+      "WalterWA2000",
+      "jfdffdddd",
+      "wisemole",
+      "xianxia9527"
+    ],
+    "role_map": {
+      "WalterWA2000": "探禁",
+      "jfdffdddd": "攻伐",
+      "Lpprceqei": "护队",
+      "wisemole": "镇魂",
+      "xianxia9527": "御傀"
+    },
+    "team_complete": true,
+    "enter_scheduled": true,
+    "enter_requested_at": 1794533656.1811929,
+    "enter_command_msg_id": 13174537,
+    "observed_round": 5,
+    "current_round": 5,
+    "entered": true,
+    "round_deadline": 1794533779.0,
+    "deadline_round": 5,
+    "round_actions": {
+      "1": {
+        "jfdffdddd": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174541,
+          "sent_at": 1794533671.7241719,
+          "reply_at": 1794533688.8470545
+        },
+        "lpprceqei": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174545,
+          "sent_at": 1794533671.7241719,
+          "reply_at": 1794533689.032298
+        },
+        "wisemole": {
+          "status": "confirmed",
+          "action": "试池",
+          "special": false,
+          "msg_id": 13174547,
+          "sent_at": 1794533671.7241719,
+          "reply_at": 1794533689.0644877
+        },
+        "xianxia9527": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174548,
+          "sent_at": 1794533671.7241719,
+          "reply_at": 1794533712.0700161
+        },
+        "walterwa2000": {
+          "status": "pending",
+          "action": "验骨",
+          "special": false,
+          "msg_id": 13174551,
+          "sent_at": 1794533671.7241719
+        }
+      },
+      "2": {
+        "walterwa2000": {
+          "status": "confirmed",
+          "action": "引蛇",
+          "special": false,
+          "msg_id": 13174557,
+          "sent_at": 1794533691.9664922,
+          "reply_at": 1794533712.4167578
+        },
+        "jfdffdddd": {
+          "status": "confirmed",
+          "action": "破敌",
+          "special": false,
+          "msg_id": 13174558,
+          "sent_at": 1794533691.9664922,
+          "reply_at": 1794533712.4969232
+        },
+        "lpprceqei": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174562,
+          "sent_at": 1794533691.9664922,
+          "reply_at": 1794533712.6297498
+        },
+        "wisemole": {
+          "status": "confirmed",
+          "action": "镇魂",
+          "special": false,
+          "msg_id": 13174563,
+          "sent_at": 1794533691.9664922,
+          "reply_at": 1794533730.4243762
+        },
+        "xianxia9527": {
+          "status": "pending",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174566,
+          "sent_at": 1794533691.9664922
+        }
+      },
+      "3": {
+        "walterwa2000": {
+          "status": "confirmed",
+          "action": "侦察",
+          "special": false,
+          "msg_id": 13174570,
+          "sent_at": 1794533715.4166362,
+          "reply_at": 1794533730.8475335
+        },
+        "jfdffdddd": {
+          "status": "confirmed",
+          "action": "破敌",
+          "special": false,
+          "msg_id": 13174572,
+          "sent_at": 1794533715.4166362,
+          "reply_at": 1794533730.9690418
+        },
+        "lpprceqei": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174577,
+          "sent_at": 1794533715.4166362,
+          "reply_at": 1794533730.9985662
+        },
+        "wisemole": {
+          "status": "confirmed",
+          "action": "侦察",
+          "special": false,
+          "msg_id": 13174579,
+          "sent_at": 1794533715.4166362,
+          "reply_at": 1794533747.2437952
+        },
+        "xianxia9527": {
+          "status": "pending",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174580,
+          "sent_at": 1794533715.4166362
+        }
+      },
+      "4": {
+        "walterwa2000": {
+          "status": "confirmed",
+          "action": "侦察",
+          "special": false,
+          "msg_id": 13174584,
+          "sent_at": 1794533734.1444688,
+          "reply_at": 1794533747.5069888
+        },
+        "jfdffdddd": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174587,
+          "sent_at": 1794533734.1444688,
+          "reply_at": 1794533748.087448
+        },
+        "lpprceqei": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174588,
+          "sent_at": 1794533734.1444688,
+          "reply_at": 1794533748.1475642
+        },
+        "wisemole": {
+          "status": "confirmed",
+          "action": "镇魂",
+          "special": false,
+          "msg_id": 13174590,
+          "sent_at": 1794533734.1444688,
+          "reply_at": 1794533762.2177393
+        },
+        "xianxia9527": {
+          "status": "pending",
+          "action": "护傀",
+          "special": false,
+          "msg_id": 13174592,
+          "sent_at": 1794533734.1444688
+        }
+      },
+      "5": {
+        "walterwa2000": {
+          "status": "confirmed",
+          "action": "镇魂",
+          "special": false,
+          "msg_id": 13174596,
+          "sent_at": 1794533750.8338842,
+          "reply_at": 1794533762.450911
+        },
+        "jfdffdddd": {
+          "status": "confirmed",
+          "action": "破敌",
+          "special": true,
+          "msg_id": 13174597,
+          "sent_at": 1794533750.8338842,
+          "reply_at": 1794533762.509346
+        },
+        "lpprceqei": {
+          "status": "confirmed",
+          "action": "护队",
+          "special": false,
+          "msg_id": 13174599,
+          "sent_at": 1794533750.8338842,
+          "reply_at": 1794533762.6333773
+        },
+        "wisemole": {
+          "status": "confirmed",
+          "action": "收神",
+          "special": false,
+          "msg_id": 13174601,
+          "sent_at": 1794533750.8338842,
+          "reply_at": 1794533763.4049904
+        },
+        "xianxia9527": {
+          "status": "pending",
+          "action": "收神",
+          "special": false,
+          "msg_id": 13174603,
+          "sent_at": 1794533750.8338842
+        }
+      }
+    },
+    "special_used_usernames": [
+      "jfdffdddd"
+    ],
+    "terminal_pending": true,
+    "finish_deadline": 1794533793.0,
+    "finish_requested_at": 1794533766.2903693,
+    "finish_command_msg_id": 13174610,
+    "finish_choice": "收拢遗宝",
+    "requires_reconciliation": false,
+    "finished": true,
+    "outcome": "收拢遗宝"
+  },
+  "events": [
+    {
+      "ts": "2026-11-13 09:34:36 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533675.0,
+      "message_id": 13174543,
+      "chat_id": -1001680975844,
+      "sender_id": 8861328042,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174541,
+      "text": "已提交第1轮【护队】，1/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:34:41 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533680.0,
+      "message_id": 13174546,
+      "chat_id": -1001680975844,
+      "sender_id": 8918867302,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174545,
+      "text": "已提交第1轮【护队】，2/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:34:45 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533685.0,
+      "message_id": 13174549,
+      "chat_id": -1001680975844,
+      "sender_id": 8788895566,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174547,
+      "text": "已提交第1轮【试池】，3/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:34:46 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533685.0,
+      "message_id": 13174550,
+      "chat_id": -1001680975844,
+      "sender_id": 8964348409,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174548,
+      "text": "已提交第1轮【护队】，4/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:34:52 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533691.0,
+      "message_id": 13174554,
+      "chat_id": -1001680975844,
+      "sender_id": 7965897083,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174551,
+      "text": "【玄骨遗府·第2轮：妖冠蛇出水】\n白骨伤手与试池反应证实彩莲是诱饵，你们提前护住了池边。\n本轮魂稳 -0，剩余 100。\n\n彩莲缩入水中，竟是妖冠蛇的肉冠！蛇首盯住人群，毒液将随扑击飞溅。需有人引蛇、有人护队，再集中破敌。\n魂稳 100｜傀躯：受控\n已识破：七霞骗局\n探禁 @WalterWA2000｜攻伐 @jfdffdddd｜护队 @Lpprceqei｜镇魂 @wisemole｜御傀 @xianxia9527\n尚未亮招：@WalterWA2000、@jfdffdddd、@Lpprceqei、@wisemole、@xianxia9527\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 2 引蛇 / .玄骨行动 2 破敌 / .玄骨行动 2 护队 / .玄骨行动 2 镇魂\n亮招：.玄骨行动 2 亮招 引蛇 / .玄骨行动 2 亮招 破敌 / .玄骨行动 2 亮招 护队 / .玄骨行动 2 亮招 镇魂\n剩余30秒，提交0/5：无；交齐立即结算。"
+    },
+    {
+      "ts": "2026-11-13 09:35:02 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533702.0,
+      "message_id": 13174560,
+      "chat_id": -1001680975844,
+      "sender_id": 8917921351,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174557,
+      "text": "已提交第2轮【引蛇】，1/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:04 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533703.0,
+      "message_id": 13174561,
+      "chat_id": -1001680975844,
+      "sender_id": 8735907987,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174558,
+      "text": "已提交第2轮【破敌】，2/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:09 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533708.0,
+      "message_id": 13174564,
+      "chat_id": -1001680975844,
+      "sender_id": 8861328042,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174562,
+      "text": "已提交第2轮【护队】，3/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:12 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533711.0,
+      "message_id": 13174567,
+      "chat_id": -1001680975844,
+      "sender_id": 8918867302,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174563,
+      "text": "已提交第2轮【镇魂】，4/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:15 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533714.0,
+      "message_id": 13174569,
+      "chat_id": -1001680975844,
+      "sender_id": 8964348409,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174566,
+      "text": "【玄骨遗府·第3轮：尸起骨动】\n蛇首被引离人群，众人截住肉冠，将妖蛇斩落。\n本轮魂稳 -0，剩余 100。\n\n池中残尸摇晃着站起，门边散骨却也悄悄挪动。玄骨诱言：‘不想死的，现在就走。’需侦察背后、护队并压制骨傀。\n魂稳 100｜傀躯：受控\n已识破：七霞骗局\n探禁 @WalterWA2000｜攻伐 @jfdffdddd｜护队 @Lpprceqei｜镇魂 @wisemole｜御傀 @xianxia9527\n尚未亮招：@WalterWA2000、@jfdffdddd、@Lpprceqei、@wisemole、@xianxia9527\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 3 侦察 / .玄骨行动 3 护队 / .玄骨行动 3 破敌\n亮招：.玄骨行动 3 亮招 侦察 / .玄骨行动 3 亮招 护队 / .玄骨行动 3 亮招 破敌\n剩余30秒，提交0/5：无；交齐立即结算。"
+    },
+    {
+      "ts": "2026-11-13 09:35:20 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533719.0,
+      "message_id": 13174574,
+      "chat_id": -1001680975844,
+      "sender_id": 7965897083,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174570,
+      "text": "已提交第3轮【侦察】，1/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:21 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533721.0,
+      "message_id": 13174575,
+      "chat_id": -1001680975844,
+      "sender_id": 8816935632,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174572,
+      "text": "已提交第3轮【破敌】，2/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:25 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533724.0,
+      "message_id": 13174578,
+      "chat_id": -1001680975844,
+      "sender_id": 8917921351,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174577,
+      "text": "已提交第3轮【护队】，3/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:30 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533730.0,
+      "message_id": 13174581,
+      "chat_id": -1001680975844,
+      "sender_id": 8735907987,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174579,
+      "text": "已提交第3轮【侦察】，4/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:34 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533733.0,
+      "message_id": 13174583,
+      "chat_id": -1001680975844,
+      "sender_id": 8861328042,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174580,
+      "text": "【玄骨遗府·第4轮：分魂两袭】\n残尸只是幌子！你们看住门边白骨，截下真正的偷袭。\n本轮魂稳 -1，剩余 99。\n\n正面魂影暴涨，傀躯血光却逆流，火鸟齐齐转向它身后。真杀机在傀躯：护傀、镇魂，另以侦察或画轴辨明分魂。\n魂稳 99｜傀躯：受控\n已识破：七霞骗局、尸变诱敌\n探禁 @WalterWA2000｜攻伐 @jfdffdddd｜护队 @Lpprceqei｜镇魂 @wisemole｜御傀 @xianxia9527\n尚未亮招：@WalterWA2000、@jfdffdddd、@Lpprceqei、@wisemole、@xianxia9527\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 4 侦察 / .玄骨行动 4 护傀 / .玄骨行动 4 护队 / .玄骨行动 4 镇魂 / .玄骨行动 4 画轴\n亮招：.玄骨行动 4 亮招 侦察 / .玄骨行动 4 亮招 护傀 / .玄骨行动 4 亮招 护队 / .玄骨行动 4 亮招 镇魂 / .玄骨行动 4 亮招 画轴\n剩余30秒，提交0/5：无；交齐立即结算。"
+    },
+    {
+      "ts": "2026-11-13 09:35:38 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533738.0,
+      "message_id": 13174586,
+      "chat_id": -1001680975844,
+      "sender_id": 8788895566,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174584,
+      "text": "已提交第4轮【侦察】，1/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:43 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533742.0,
+      "message_id": 13174589,
+      "chat_id": -1001680975844,
+      "sender_id": 8964348409,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174587,
+      "text": "已提交第4轮【护队】，2/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:44 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533744.0,
+      "message_id": 13174591,
+      "chat_id": -1001680975844,
+      "sender_id": 8980154525,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174588,
+      "text": "已提交第4轮【护队】，3/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:47 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533746.0,
+      "message_id": 13174593,
+      "chat_id": -1001680975844,
+      "sender_id": 7965897083,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174590,
+      "text": "已提交第4轮【镇魂】，4/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:51 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533750.0,
+      "message_id": 13174595,
+      "chat_id": -1001680975844,
+      "sender_id": 8944702077,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174592,
+      "text": "【玄骨遗府·第5轮：收神舍躯】\n你们没有追逐正面假影，真正的摄魂被合力截住。\n本轮魂稳 -0，剩余 99。\n\n玄骨强摄煞丹傀躯！御傀者须收神；队友护队、镇魂并压制追魂。若御傀者失联，两人镇魂加一人收神也可接应。争取全收还需本轮至少一人有效亮招，压出搜宝窗口。\n魂稳 99｜傀躯：待收神\n已识破：七霞骗局、尸变诱敌、分魂夺舍\n探禁 @WalterWA2000｜攻伐 @jfdffdddd｜护队 @Lpprceqei｜镇魂 @wisemole｜御傀 @xianxia9527\n尚未亮招：@WalterWA2000、@jfdffdddd、@Lpprceqei、@wisemole、@xianxia9527\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 5 收神 / .玄骨行动 5 护队 / .玄骨行动 5 镇魂 / .玄骨行动 5 破敌\n亮招：.玄骨行动 5 亮招 收神 / .玄骨行动 5 亮招 护队 / .玄骨行动 5 亮招 镇魂 / .玄骨行动 5 亮招 破敌\n剩余30秒，提交0/5：无；交齐立即结算。"
+    },
+    {
+      "ts": "2026-11-13 09:35:55 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533755.0,
+      "message_id": 13174598,
+      "chat_id": -1001680975844,
+      "sender_id": 8917921351,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174596,
+      "text": "已提交第5轮【镇魂】，1/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:35:59 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533757.0,
+      "message_id": 13174600,
+      "chat_id": -1001680975844,
+      "sender_id": 8735907987,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174597,
+      "text": "已提交第5轮【亮招·破敌】，2/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:36:00 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533760.0,
+      "message_id": 13174602,
+      "chat_id": -1001680975844,
+      "sender_id": 8861328042,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174599,
+      "text": "已提交第5轮【护队】，3/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:36:02 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533761.0,
+      "message_id": 13174604,
+      "chat_id": -1001680975844,
+      "sender_id": 8918867302,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174601,
+      "text": "已提交第5轮【收神】，4/5；截止前可修改。"
+    },
+    {
+      "ts": "2026-11-13 09:36:06 UTC+8",
+      "event_type": "message",
+      "server_event_at": 1794533764.0,
+      "message_id": 13174607,
+      "chat_id": -1001680975844,
+      "sender_id": 8964348409,
+      "topic_id": 7310786,
+      "reply_to_msg_id": 13174603,
+      "text": "【玄骨遗府·残图异动】\n分神及时回归，队友截住追魂；玄骨只夺走了空出的傀躯。\n亮招压住杀机，额外挽回8点魂稳；已被看破的亮招收益降低。\n本轮魂稳 -0，剩余 99。\n玄骨记住了你们的亮招，下轮提防：强攻。换招或侦察可避开其防备。\n玄骨夺躯携箭离去，极阴随时可能赶来。\n魂稳 99｜傀躯：已夺舍\n已识破：七霞骗局、尸变诱敌、分魂夺舍\n立即撤离（可选）\n收拢遗宝（可选）\n争取全收（可选）\n队长 .玄骨收尾 立即撤离 / .玄骨收尾 收拢遗宝 / .玄骨收尾 争取全收；30秒内，超时撤离。"
+    }
+  ]
+}
