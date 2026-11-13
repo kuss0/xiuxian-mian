@@ -191,6 +191,43 @@ def test_unknown_open_is_not_replayed(env):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("kind", list(weekly.KINDS))
+def test_only_timed_join_and_stage_actions_use_reactive_queue(env, kind):
+    async def run():
+        await open_run(env, kind)
+        assert env.sends[0][1]["reactive"] is False
+        joins = [kwargs for command, kwargs in env.sends if command == weekly.KINDS[kind]["join"]]
+        assert joins and all(kwargs["reactive"] for kwargs in joins)
+    asyncio.run(run())
+
+
+def test_foreign_player_start_during_join_invalidates_queued_member(env):
+    normal_send = env.ctx.send
+
+    async def interrupted_send(command, **kwargs):
+        if kwargs["send_as_id"] == 5:
+            weekly.observe(env.ctx, event(env,
+                "你加入了队伍（5/5）：@member1、@member2、@member3、@other、@member4\n"
+                "【越京夜行】夜色里，@member1、@member2、@member3、@other、@member4 潜入越国京城。", mid=888))
+            assert not kwargs["send_guard"]()
+            return None
+        return await normal_send(command, **kwargs)
+
+    env.ctx.send = interrupted_send
+
+    async def run():
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env,
+            "【越京夜行】@member1 要夜探越国京城，发 .同往 加入。", reply=101))
+        record = env.records["runs"]["yuejing"]
+        assert record["phase"] == "held" and not record["bound"]
+        assert record["collision_message_id"] == 888 and "other" in record["collision_names"]
+        assert "其他玩家" in record["last_error"]
+        assert [kwargs["send_as_id"] for _, kwargs in env.sends] == [1, 2, 3, 4]
+
+    asyncio.run(run())
+
+
 def test_tianlan_owned_ack_waits_for_separate_named_recruitment(env):
     async def run():
         env.enabled.clear(); env.enabled.add("tianlan")
@@ -376,6 +413,22 @@ def test_watchdog_weekly_gap_requires_exact_metadata(changes):
         "priority": "urgent_reactive", "op_id": "weekly:yuejing:1794538000:5:1:.破幕", "chain_id": "weekly:yuejing:1794538000:5"}
     current.update(changes)
     assert safety_watchdog.is_safe_global_gap_pair(previous, current) is (not changes)
+
+
+@pytest.mark.parametrize("kind,command", [("tianlan", ".同行"), ("yuejing", ".同往"), ("yinming", ".同入阴冥")])
+@pytest.mark.parametrize("mode", ["valid", "wrong_stage", "wrong_kind", "wrong_sender", "wrong_chain", "open"])
+def test_watchdog_timed_join_requires_exact_recruitment_metadata(kind, command, mode):
+    previous = {"_epoch": 1000, "op_id": "previous"}
+    stage = 1 if mode == "wrong_stage" else 0
+    op_kind = next(k for k in weekly.KINDS if k != kind) if mode == "wrong_kind" else kind
+    text = weekly.KINDS[kind]["open"] if mode == "open" else command
+    current = {"_epoch": 1002, "sender_id": 2 if mode == "wrong_sender" else 1,
+               "text": text, "source_module": "组队周常", "priority": "urgent_reactive",
+               "op_id": f"weekly:{op_kind}:123:{stage}:1:{text}",
+               "chain_id": f"weekly:{op_kind}:123:{stage}"}
+    if mode == "wrong_chain":
+        current["chain_id"] = "weekly:yuejing:456:0"
+    assert safety_watchdog.is_safe_global_gap_pair(previous, current) is (mode == "valid")
 
 
 def test_watchdog_repeated_action_requires_new_stage_same_run_and_ten_seconds():

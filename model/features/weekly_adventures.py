@@ -163,6 +163,8 @@ def observe(ctx, event):
                    and names(text) and not names(text).issubset({m["username"].lower() for m in run["members"]}))
         if foreign:
             run["collision"] = True
+            run["collision_names"] = sorted(names(text))
+            run["collision_message_id"] = int(getattr(event, "id", 0) or 0)
         if terminal(kind, text) and _ours(run, text):
             run["terminal_pending"] = True
         stage = panel(kind, text, run["members"])
@@ -207,7 +209,8 @@ async def send(ctx, run, identity_id, command, stage, deadline):
     ctx.save()
     message = await ctx.send(command, send_as_id=identity_id, send_guard=allowed, deadline=deadline,
                              op_id=f"weekly:{run['kind']}:{run['id']}:{key}",
-                             chain_id=f"weekly:{run['kind']}:{run['id']}:{stage}", reactive=stage > 0)
+                             chain_id=f"weekly:{run['kind']}:{run['id']}:{stage}",
+                             reactive=stage > 0 or command == KINDS[run["kind"]]["join"])
     mid = int(getattr(message, "id", 0) or 0)
     attempt.update(status="sent" if mid else "unknown", msg_id=mid)
     if not mid and ctx.unsent(identity_id, command):
@@ -324,7 +327,8 @@ async def game_event(ctx, event):
                 ctx.save()
                 for member in run["members"][1:]:
                     if not await send(ctx, run, member["identity_id"], spec["join"], 0, run["deadline"] - 3):
-                        await hold(ctx, run, "入队发送未获确认")
+                        await hold(ctx, run, "招募或入场名单出现其他玩家，停止后续入队与动作"
+                                   if run.get("collision") else "入队发送未获确认")
                         break
                 return True
             start_marker = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）"}[kind]
