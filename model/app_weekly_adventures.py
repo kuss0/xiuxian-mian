@@ -108,7 +108,7 @@ def reset_weekly_on_startup():
 async def _recover_terminal_receipts(now):
     """One startup replay from local logs; never issue history/API probes."""
     ctx = _context()
-    active = [r for r in ctx.records().get("runs", {}).values() if r.get("phase") in weekly.ACTIVE]
+    active = [r for r in ctx.records().get("runs", {}).values() if r.get("phase") in weekly.ACTIVE | {"waiting_room"}]
     if not active:
         return
     earliest = min(float(r["started_at"]) for r in active)
@@ -120,7 +120,7 @@ async def _recover_terminal_receipts(now):
             continue
         with path.open() as stream:
             for line in stream:
-                if not any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了")):
+                if not any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了", "这里已经有一场密议了")):
                     continue
                 try:
                     row = json.loads(line)

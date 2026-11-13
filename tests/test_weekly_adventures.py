@@ -380,6 +380,49 @@ def test_qipai_fast_rounds_respect_same_voter_send_gap(env):
     asyncio.run(run())
 
 
+def test_qipai_busy_rejection_releases_and_waits_for_foreign_end_without_claiming_it(env):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["qipai"]
+        # Reproduce the observed production hold, then replay its real rejection.
+        record.update(phase="held", collision=True, requires_reconciliation=True)
+        rejection = "这里已经有一场密议了。.密议 看局面，.入议 加入。"
+        await weekly.game_event(env.ctx, event(env, rejection, reply=987))
+        assert record["phase"] == "held"
+        await weekly.game_event(env.ctx, event(env, rejection, reply=101))
+        assert record["phase"] == "waiting_room" and not record["requires_reconciliation"]
+        assert record["foreign_busy"]
+        env.now[0] += 120
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 1
+        await weekly.game_event(env.ctx, event(env, "【七派密议·散议】\n3 位长老各得修为、灵石", reply=54321))
+        assert not record["foreign_busy"] and not env.records.get("quotas", {}).get("qipai")
+        assert len(env.sends) == 1
+        env.now[0] += 61
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 1
+        env.now[0] += 120
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert [c for c, _ in env.sends] == [".开密议", ".开密议"]
+        assert env.records["runs"]["qipai"] is not record
+    asyncio.run(run())
+
+
+def test_qipai_foreign_recruitment_during_cooldown_defers_next_open(env):
+    async def run():
+        record = await open_run(env, "qipai")
+        record.update(phase="done", next_at=env.now[0] + 300)
+        sent = len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "【七派密议】@outsider 召集密议，.入议 加入"))
+        env.now[0] += 301
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == sent and record["foreign_busy"]
+        assert not env.records.get("quotas", {}).get("qipai")
+    asyncio.run(run())
+
+
 def test_full_owned_yuejing_flow_and_quota_stop(env):
     async def run():
         record = await open_run(env)

@@ -263,6 +263,17 @@ def observe(ctx, event):
     if getattr(event, "sender_id", 0) not in ctx.bot_ids() or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None):
         return
     for kind, run in ctx.records().get("runs", {}).items():
+        if kind == "qipai" and run.get("phase") not in ACTIVE and _route(ctx, run, event):
+            foreign_start = ("【七派密议】" in text and "召集密议" in text
+                             or "【七派密议·开议】" in text)
+            if foreign_start and names(text) and not names(text).issubset({m["username"].lower() for m in run["members"]}):
+                run.update(foreign_busy=True, next_at=max(float(run.get("next_at") or 0), time.time() + 900))
+                ctx.save()
+            if run.get("foreign_busy") and terminal(kind, text):
+                # A foreign result only schedules a future opening attempt. It
+                # never confirms our run, claims rewards or grants occupancy.
+                run.update(foreign_busy=False, next_at=max(float(run.get("cooldown_until") or run.get("completed_at", 0) + 300), time.time() + 60))
+                ctx.save()
         if run.get("phase") not in ACTIVE or not _route(ctx, run, event):
             continue
         _council_roster(run, event, text)
@@ -462,6 +473,14 @@ async def game_event(ctx, event):
             attempts = run.get("attempts", {}).values()
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             party = departure(run, text)
+            if (kind == "qipai" and owned and owned["command"] == ".开密议" and not run.get("bound")
+                    and text.strip() == "这里已经有一场密议了。.密议 看局面，.入议 加入。"):
+                run.update(phase="waiting_room", requires_reconciliation=False, foreign_busy=True,
+                           next_at=time.time() + 900, cooldown_until=time.time() + 300,
+                           last_error=None, result="别队密议进行中，等空房后自动继续")
+                run.pop("pending_actions", None)
+                ctx.save()
+                return True
             if kind == "qipai" and owned and owned["command"] == ".散议" and text.strip() == "这一场密议散了。" and not run.get("bound"):
                 run.update(phase="cancelled", requires_reconciliation=False, last_error=None, result=text,
                            completed_at=ctx.event_time(event), next_at=time.time() + 300)
@@ -489,7 +508,7 @@ async def game_event(ctx, event):
                     quotas[key] = {field: settled_period, "used": quota_limit(kind) if "本周有奖次数已满" in line else min(quota_limit(kind), used + 1),
                                    "source_msg_id": int(getattr(event, "id", 0)), "at": ctx.event_time(event)}
                 run.update(phase="done", result=text[:4000], completed_at=ctx.event_time(event), requires_reconciliation=False, last_error=None,
-                           next_at=time.time() + 300)
+                           next_at=time.time() + 300, cooldown_until=time.time() + 300)
                 if receipt_key not in evidence:
                     evidence.append(receipt_key)
                 ctx.records()["receipt_keys"] = evidence[-200:]
