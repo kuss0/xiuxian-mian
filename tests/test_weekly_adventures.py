@@ -148,6 +148,34 @@ def test_full_owned_yuejing_flow_and_quota_stop(env):
     asyncio.run(run())
 
 
+def test_real_talisman_terminal_skips_actor_line_and_finishes_all_quotas(env):
+    row = json.loads((Path(__file__).parent / "fixtures/yuejing_talisman_terminal_20261113.json").read_text())
+    usernames = ["jfdffdddd", "WalterWA2000", "Lpprceqei", "wisemole", "xianxia9527"]
+    for member, username in zip(env.members, usernames):
+        member["username"] = username
+    env.now[0] = row["server_event_at"] - 60
+    env.records["quotas"] = {"yuejing": {str(i): {"week": weekly.week_key(env.now[0]), "used": 1} for i in range(1, 6)}}
+
+    async def run():
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["yuejing"]
+        record.update(phase="held", bound=True, requires_reconciliation=True, last_error="结算缺少成员奖励明细")
+        env.now[0] = row["server_event_at"]
+        receipt = event(env, row["text"], mid=row["message_id"])
+        await weekly.game_event(env.ctx, receipt)
+        assert record["phase"] == "done" and not record["requires_reconciliation"]
+        assert record["last_error"] is None
+        assert all(q["used"] == 2 and q["source_msg_id"] == row["message_id"]
+                   for q in env.records["quotas"]["yuejing"].values())
+        sent = len(env.sends)
+        await weekly.game_event(env.ctx, receipt)
+        env.now[0] += 3600
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == sent and len(env.records["receipt_keys"]) == 1
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("changes", [{"sender": 98}, {"chat": -101}, {"topic": 43}, {"at": 1794537000}])
 def test_foreign_events_never_drive_actions(env, changes):
     async def run():
@@ -396,6 +424,37 @@ def test_real_ambiguous_yuejing_seal_clue_uses_available_talisman():
     text = ("第 2/5 回合　教主 10/15　血祭 40%　真凰符 2 张\n"
             "征兆：教主双手结印，被擒的散修身上飘起缕缕血丝。\n.破幕 / .闪身 / .强攻")
     assert weekly.panel("yuejing", text, [{"identity_id": 1}])[2] == [(1, ".真凰符")]
+
+
+def test_real_five_roots_reinforce_guard_without_element_counter():
+    members = [{"identity_id": i, "linggen": root} for i, root in
+               [(1, "火"), (2, "雷"), (3, "木火水土金"), (4, "金木"), (5, "木水")]]
+    text = "【越京夜行·闯宫】惊动25。青纹（木）　铁罗（火）　冰妖（水）　叶蛇（土）\n.迎战 血侍名"
+    actions = weekly.panel("yuejing", text, members)[2]
+    # At 13176330 the solo fire-root member lost 青纹; 雷 was redundantly
+    # sent to help an already countered 土 guard. Reinforce that weak lane.
+    assert dict(actions)[1] == dict(actions)[2] == ".迎战 青纹"
+    assert {command for _, command in actions} == {".迎战 青纹", ".迎战 铁罗", ".迎战 冰妖", ".迎战 叶蛇"}
+
+
+def test_yinming_balances_remaining_rewards_before_helper_runs(env):
+    env.members[:] = env.members[:3]
+    env.ctx.members = lambda _kind: env.members
+    env.enabled.clear(); env.enabled.add("yinming")
+    env.records["quotas"] = {"yinming": {str(i): {"week": weekly.week_key(env.now[0]), "used": 1} for i in [1, 2]}}
+
+    async def run():
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["yinming"]
+        assert [m["identity_id"] for m in record["members"]] == [3, 1]
+        await weekly.game_event(env.ctx, event(env, "【走出阴冥】\n@member3 修为+100 灵石+10\n@member1 修为+100 灵石+10"))
+        env.now[0] += 3600
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert [m["identity_id"] for m in env.records["runs"]["yinming"]["members"]] == [2, 3]
+        await weekly.game_event(env.ctx, event(env, "【走出阴冥】\n@member2 修为+100 灵石+10\n@member3 修为+100 灵石+10", mid=1000))
+        assert all(q["used"] == 2 for q in env.records["quotas"]["yinming"].values())
+
+    asyncio.run(run())
 
 
 def test_weekly_realm_selection_excludes_two_jiedan_accounts(monkeypatch):

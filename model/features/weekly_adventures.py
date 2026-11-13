@@ -77,7 +77,10 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
             actions = [(member["identity_id"], ".迎战 " + guard)
                        for member, (guard, _element) in zip(best, guards)]
             assigned = {i for i, _ in actions}
-            actions += [(i, ".迎战 " + guards[-1][0]) for i in ids if i not in assigned]
+            # Reinforce the uncovered element instead of duplicating an
+            # already countered guard while another solo fighter escapes.
+            support = min(zip(best, guards), key=lambda pair: counter[pair[1][1]] in str(pair[0].get("linggen") or ""))[1][0]
+            actions += [(i, ".迎战 " + support) for i in ids if i not in assigned]
             return 4, 90, actions
         match = re.search(r"第\s*([1-5])/5\s*回合.*?真凰符\s*(\d+)\s*张\n征兆[：:]([^\n]+)", text, re.S)
         if match and ".破幕 / .闪身 / .强攻" in text:
@@ -142,6 +145,12 @@ def terminal(kind, text):
 
 def names(text):
     return {name.lower() for name in _NAMES.findall(text)}
+
+
+def reward_line(username, text):
+    return next((line for line in text.splitlines()
+                 if re.match("@" + re.escape(username) + r"(?:[：:\s])", line, re.I)
+                 and ("本周有奖次数已满" in line or "修为+" in line)), "")
 
 
 def _ours(run, text):
@@ -243,6 +252,8 @@ async def scheduler(ctx, now):
             if float(old.get("next_at") or 0) > now or not unfinished:
                 continue
             if kind == "yinming":
+                unfinished.sort(key=lambda m: int(progress.get(str(m["identity_id"]), {}).get("used") or 0)
+                                if progress.get(str(m["identity_id"]), {}).get("week") == week_key(now) else 0)
                 chosen = (unfinished + [m for m in eligible if m not in unfinished])[:2]
             else:
                 chosen = eligible[:5]
@@ -275,9 +286,7 @@ async def game_event(ctx, event):
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             if terminal(kind, text) and _ours(run, text):
                 for member in run["members"]:
-                    line = next((line for line in text.splitlines() if re.match(
-                        "@" + re.escape(member["username"]) + r"(?:[：:\s])", line, re.I)), "")
-                    if not line or not ("本周有奖次数已满" in line or "修为+" in line):
+                    if not reward_line(member["username"], text):
                         await hold(ctx, run, "结算缺少成员奖励明细")
                         return True
                 quotas = ctx.records().setdefault("quotas", {}).setdefault(kind, {})
@@ -285,11 +294,10 @@ async def game_event(ctx, event):
                     key = str(member["identity_id"])
                     old = quotas.get(key, {})
                     used = int(old.get("used") or 0) if old.get("week") == week_key(run["started_at"]) else 0
-                    line = next(line for line in text.splitlines() if re.match(
-                        "@" + re.escape(member["username"]) + r"(?:[：:\s])", line, re.I))
+                    line = reward_line(member["username"], text)
                     quotas[key] = {"week": week_key(run["started_at"]), "used": 2 if "本周有奖次数已满" in line else min(2, used + 1),
                                    "source_msg_id": int(getattr(event, "id", 0)), "at": ctx.event_time(event)}
-                run.update(phase="done", result=text[:4000], completed_at=ctx.event_time(event), requires_reconciliation=False,
+                run.update(phase="done", result=text[:4000], completed_at=ctx.event_time(event), requires_reconciliation=False, last_error=None,
                            next_at=time.time() + 300)
                 receipt_key = f"{getattr(event, 'chat_id', 0)}:{getattr(event, 'id', 0)}"
                 evidence = ctx.records().setdefault("receipt_keys", [])
