@@ -6537,6 +6537,10 @@ async def handle_log_group_command(event):
     if not raw_text:
         return False
 
+    if raw_text.startswith((".开启玄骨 ", ".解散玄骨", ".确认玄骨结束 ")):
+        from .app_xuangu import handle_xuangu_group_command
+        return await handle_xuangu_group_command(event)
+
     if raw_text.startswith((".猎妖", ".长风试炼")):
         from .app_expeditions import handle_expedition_log_command
         handled, message = await handle_expedition_log_command(event)

@@ -6,7 +6,7 @@ from .app_hunt import hunt_target
 from .activity_occupancy import get_activity_block_reason
 from .app_message_log import (
     _get_replica_event_listener_account_id, _is_replica_listener_self_event,
-    _send_replica_group_message,
+    _send_replica_group_message, _get_group_event_listener_account_id,
 )
 from .features import xuangu
 from .features.expedition_store import FubenFlowStore
@@ -22,6 +22,13 @@ from .state import (
 
 _TASKS = set()
 _LOCK = asyncio.Lock()
+
+
+def _listener_account_id(event):
+    # A configured assembly group may also be the admin log group. The general
+    # replica listener excludes that group; Xuangu still validates its mapped client.
+    return (_get_replica_event_listener_account_id(event)
+            or _get_group_event_listener_account_id(event, get_replica_group_ids(), get_replica_listener_account_map()))
 
 
 def _enabled(identity_id=None, _kind=None):
@@ -101,7 +108,7 @@ def _context():
         flows=store.collection("xuangu_auto", "rosters"),
         messages=XuanguMessages(
             game_command=_send, audit=_audit, group_message=_send_replica_group_message,
-            notice_by_chat=_notice, listener_account_id=_get_replica_event_listener_account_id,
+            notice_by_chat=_notice, listener_account_id=_listener_account_id,
             is_listener_self=_is_replica_listener_self_event, group_ids=get_replica_group_ids,
             definitely_unsent=is_game_send_definitely_unsent,
         ),

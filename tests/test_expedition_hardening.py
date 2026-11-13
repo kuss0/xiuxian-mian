@@ -328,3 +328,28 @@ def test_read_only_dwelling_profile_never_applies_wrong_or_changed_identity(monk
     result = asyncio.run(cave.run_cave_public_profile(1, "https://t.me/fanrenxiuxian_bot?startapp=df_TEST"))
     assert result["ok"] is expected
     assert apply.called is expected
+
+
+def test_shared_log_and_assembly_group_reaches_xuangu_only_for_admin(monkeypatch):
+    from model import control
+    monkeypatch.setattr(control, "LOG_GROUP_ID", -100)
+    monkeypatch.setattr(control, "ADMIN_IDS", {1})
+    handler = AsyncMock(return_value=True)
+    monkeypatch.setattr(app_xuangu, "handle_xuangu_group_command", handler)
+    message = SimpleNamespace(chat_id=-100, sender_id=1, raw_text=".开启玄骨 @aaa @bbb @ccc @ddd @eee")
+    assert asyncio.run(control.handle_log_group_command(message))
+    handler.assert_awaited_once_with(message)
+    message.sender_id = 2
+    assert not asyncio.run(control.handle_log_group_command(message))
+    assert handler.await_count == 1
+
+
+def test_shared_group_listener_requires_configured_client(monkeypatch):
+    from model import app_message_log
+    owner, stranger = object(), object()
+    monkeypatch.setattr(app_xuangu, "_get_replica_event_listener_account_id", lambda _: 0)
+    monkeypatch.setattr(app_xuangu, "get_replica_group_ids", lambda: [-100])
+    monkeypatch.setattr(app_xuangu, "get_replica_listener_account_map", lambda: {"-100": 1})
+    monkeypatch.setattr(app_message_log, "get_all_clients", lambda: {1: owner})
+    assert app_xuangu._listener_account_id(SimpleNamespace(chat_id=-100, client=owner)) == 1
+    assert app_xuangu._listener_account_id(SimpleNamespace(chat_id=-100, client=stranger)) == 0
