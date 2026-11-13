@@ -85,18 +85,18 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
         match = re.search(r"第\s*([1-5])/5\s*回合.*?真凰符\s*(\d+)\s*张\n征兆[：:]([^\n]+)", text, re.S)
         if match and ".破幕 / .闪身 / .强攻" in text:
             clue = match[3]
-            # Spend the two talismans on the deliberately ambiguous feints.
-            # Remaining explicit telegraphs can be answered without guessing.
+            # These are base telegraphs, not guaranteed answers: real logs
+            # show feints even for the wall and open-mouth clues.
             action = next((a for phrase, a in (
                 ("血雾向教主身前聚拢", "破幕"), ("十指暴长", "闪身"),
                 ("仰头张口", "强攻"), ("双手结印", "强攻"),
-                ("厚茧", "闪身"), ("影子忽然拉长", "破幕"),
+                ("厚茧", "破幕"), ("影子忽然拉长", "闪身"),
             ) if phrase in clue), "")
-            if int(match[2]) > 0 and (not action or any(p in clue for p in ("厚茧", "影子忽然拉长", "双手结印"))):
-                return 4 + int(match[1]), 45, [(ids[0], ".真凰符")]
-            # The wall can be a feint too. Use a talisman when one is available;
-            # after both are gone, retain the explicit base-action fallback.
-            if "一面墙" in clue and int(match[2]) > 0:
+            health = re.search(r"教主\s*(\d+)\s*/\s*\d+", text)
+            talismans = int(match[2])
+            secured = health and int(health[1]) <= len(ids) * talismans
+            if talismans > 0 and (secured or not action or any(p in clue for p in (
+                    "厚茧", "影子忽然拉长", "双手结印", "一面墙", "仰头张口"))):
                 return 4 + int(match[1]), 45, [(ids[0], ".真凰符")]
             return 4 + int(match[1]), 45, [(i, "." + action) for i in ids] if action else []
     elif kind == "tianlan":

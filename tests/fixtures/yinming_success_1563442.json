@@ -1,0 +1,293 @@
+{
+  "members": [
+    {
+      "identity_id": 8651626389,
+      "username": "YanYueZong"
+    },
+    {
+      "identity_id": 8753832413,
+      "username": "LuanXingHaii"
+    }
+  ],
+  "events": [
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563382,
+      "reply_to_msg_id": 1563381,
+      "sender_id": 8861328042,
+      "server_event_at": 1794460383.0,
+      "text": "【阴冥之地】@YanYueZong 立在鬼雾边上，等一位同行者。2 分钟内发 .同入阴冥（元婴以上，另一主魂）。进去后每一步的线索都公开在群里。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563383,
+      "reply_to_msg_id": 0,
+      "sender_id": 8753832413,
+      "server_event_at": 1794460384.0,
+      "text": ".同入阴冥"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563385,
+      "reply_to_msg_id": 0,
+      "sender_id": 8788895566,
+      "server_event_at": 1794460389.0,
+      "text": "【阴冥之地】一阵鬼雾卷过，@YanYueZong（感魂）、@LuanXingHaii（辨路） 不见了踪影。\n鬼雾翻涌，你们落在一片灰白的荒原上。体内法力像被抽干，储物袋怎么也打不开。\n每一步的线索都公开在群里：两人一起推出活路，再 .往 左/中/右。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563386,
+      "reply_to_msg_id": 0,
+      "sender_id": 8964348409,
+      "server_event_at": 1794460393.0,
+      "text": "【阴冥 第1/6步】雾中三条路：左、中、右。\n辨路者：死路不在左边。感魂者：阴魂守在正中那条路上。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563387,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460394.0,
+      "text": ".往 左"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563389,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794460408.0,
+      "text": "@YanYueZong 选了左边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563390,
+      "reply_to_msg_id": 0,
+      "sender_id": 8944702077,
+      "server_event_at": 1794460411.0,
+      "text": "【阴冥 第2/6步】荒原尽头是一道峡谷，三条岔路隐在雾里。\n辨路者：死路不在右边。感魂者：阴魂不在右边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563391,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460412.0,
+      "text": ".往 右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563395,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794460426.0,
+      "text": "@YanYueZong 选了右边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563396,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794460431.0,
+      "text": "【阴冥 第3/6步】远处有火光，是此地的凡人部落。他们的长老盯着你们看了很久。\n辨路者：死路不在中边。感魂者：阴魂不在中边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563397,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460431.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563401,
+      "reply_to_msg_id": 0,
+      "sender_id": 8980154525,
+      "server_event_at": 1794460446.0,
+      "text": "@YanYueZong 选了中边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563402,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794460450.0,
+      "text": "【阴冥 第4/6步】部落里的人说，外来者要么做祭品，要么自己走出去。你们决定连夜离开。\n辨路者：死路不在中边。感魂者：阴魂在两侧的某一条路上。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563404,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460450.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563409,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794460464.0,
+      "text": "@YanYueZong 选了中边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563410,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794460469.0,
+      "text": "【阴冥 第5/6步】一头小兽从你袖中钻出，冲着雾里的阴兽低吼——阴兽的精魂被它一口吞下。\n辨路者：死路不在中边。感魂者：阴魂在两侧的某一条路上。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563411,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460470.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563415,
+      "reply_to_msg_id": 0,
+      "sender_id": 8980154525,
+      "server_event_at": 1794460483.0,
+      "text": "@YanYueZong 选了中边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563416,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794460487.0,
+      "text": "【阴冥 第6/6步】雾散了一角，前面就是暴风山。山顶站着一个人：温天仁。\n辨路者：死路不在中边。感魂者：阴魂不在中边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563418,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460487.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563420,
+      "reply_to_msg_id": 0,
+      "sender_id": 8816935632,
+      "server_event_at": 1794460500.0,
+      "text": "@YanYueZong 选了中边——雾气渐淡，路是通的。\n雾散了一角，前面就是暴风山。山顶站着一个人：温天仁。\n这里同样用不了法力。只能徒手相搏。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563422,
+      "reply_to_msg_id": 0,
+      "sender_id": 8917921351,
+      "server_event_at": 1794460504.0,
+      "text": "【暴风山 第1/3招】温天仁出手了！破招口诀：沉肩→侧闪；扫腿→下压；虚晃→不动。辨路者看温天仁的起手，是「虚晃」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563423,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460505.0,
+      "text": ".应招 不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563428,
+      "reply_to_msg_id": 0,
+      "sender_id": 8788895566,
+      "server_event_at": 1794460518.0,
+      "text": "@YanYueZong 不动——正是破虚晃的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563430,
+      "reply_to_msg_id": 0,
+      "sender_id": 8964348409,
+      "server_event_at": 1794460522.0,
+      "text": "【暴风山 第2/3招】温天仁出手了！破招口诀：沉肩→侧闪；扫腿→下压；虚晃→不动。辨路者看温天仁的起手，是「虚晃」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563431,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460523.0,
+      "text": ".应招 不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563433,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794460537.0,
+      "text": "@YanYueZong 不动——正是破虚晃的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563435,
+      "reply_to_msg_id": 0,
+      "sender_id": 8816935632,
+      "server_event_at": 1794460541.0,
+      "text": "【暴风山 第3/3招】温天仁出手了！破招口诀：沉肩→侧闪；扫腿→下压；虚晃→不动。辨路者看温天仁的起手，是「沉肩」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563436,
+      "reply_to_msg_id": 0,
+      "sender_id": 8651626389,
+      "server_event_at": 1794460541.0,
+      "text": ".应招 侧闪"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563439,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794460555.0,
+      "text": "@YanYueZong 侧闪——正是破沉肩的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1563442,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794460564.0,
+      "text": "【走出阴冥】\n@YanYueZong 修为+21428 灵石+1171\n@LuanXingHaii 修为+21428 灵石+1171"
+    }
+  ]
+}

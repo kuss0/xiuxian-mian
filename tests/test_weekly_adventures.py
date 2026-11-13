@@ -411,6 +411,48 @@ def test_yinming_missing_or_invalid_counter_rules_never_guess(rules):
     assert weekly.panel("yinming", text, [{"identity_id": 1}, {"identity_id": 2}])[2] == []
 
 
+@pytest.mark.parametrize("terminal_id", [1563442, 1568925])
+def test_real_other_players_full_yinming_success_matches_all_choices(env, terminal_id):
+    fixture = json.loads((Path(__file__).parent / f"fixtures/yinming_success_{terminal_id}.json").read_text())
+    env.members[:] = fixture["members"]
+    rows = fixture["events"]
+    ids = {m["identity_id"] for m in env.members}
+    env.ctx.target = lambda: (rows[0]["chat_id"], rows[0]["topic_id"])
+    env.ctx.bot_ids = lambda: list({r["sender_id"] for r in rows if r["sender_id"] not in ids})
+
+    async def run():
+        env.enabled.clear(); env.enabled.add("yinming")
+        env.now[0] = rows[0]["server_event_at"] - 2
+        await weekly.scheduler(env.ctx, env.now[0])
+        choices = []
+        for row in rows:
+            env.now[0] = row["server_event_at"]
+            if row["sender_id"] in ids and row["text"].startswith((".往 ", ".应招 ")):
+                choices.append(row["text"])
+            elif row["sender_id"] in env.ctx.bot_ids():
+                await weekly.game_event(env.ctx, event(env, row["text"], sender=row["sender_id"],
+                    chat=row["chat_id"], topic=row["topic_id"], reply=row["reply_to_msg_id"] or 0, mid=row["message_id"]))
+        emitted = [cmd for cmd, _kwargs in env.sends if cmd.startswith((".往 ", ".应招 "))]
+        assert emitted == choices and len(choices) == 9
+        record = env.records["runs"]["yinming"]
+        assert record["phase"] == "done" and record["last_error"] is None
+        assert all(q["used"] == 1 for q in env.records["quotas"]["yinming"].values())
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("clue,answer", [("厚茧", "破幕"), ("影子忽然拉长", "闪身")])
+def test_yuejing_without_talismans_uses_observed_base_move(clue, answer):
+    text = f"第 3/5 回合　教主 5/15　血祭 40%　真凰符 0 张\n征兆：{clue}。\n.破幕 / .闪身 / .强攻"
+    assert weekly.panel("yuejing", text, [{"identity_id": i} for i in range(1, 6)])[2] == [(i, "." + answer) for i in range(1, 6)]
+
+
+@pytest.mark.parametrize("health,talismans", [(5, 1), (10, 2)])
+def test_yuejing_guaranteed_talisman_finish_never_asks_five_manual_moves(health, talismans):
+    text = f"第 3/5 回合　教主 {health}/15　血祭 80%　真凰符 {talismans} 张\n征兆：教主十指暴长。\n.破幕 / .闪身 / .强攻"
+    assert weekly.panel("yuejing", text, [{"identity_id": i} for i in range(1, 6)])[2] == [(1, ".真凰符")]
+
+
 @pytest.mark.parametrize("path_actor,soul_actor", [(1, 2), (2, 1)])
 @pytest.mark.parametrize("moves,counter", [("沉肩」就是「扫腿", "侧闪"), ("扫腿」就是「虚晃", "不动"), ("虚晃」就是「沉肩", "下压")])
 def test_real_yinming_roles_and_public_counter_instructions(env, path_actor, soul_actor, moves, counter):

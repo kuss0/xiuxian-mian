@@ -1,0 +1,293 @@
+{
+  "members": [
+    {
+      "identity_id": 1089925593,
+      "username": "CqdOps"
+    },
+    {
+      "identity_id": 6884505898,
+      "username": "LazyDaemo"
+    }
+  ],
+  "events": [
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568855,
+      "reply_to_msg_id": 1568853,
+      "sender_id": 8964348409,
+      "server_event_at": 1794495393.0,
+      "text": "【阴冥之地】@CqdOps 立在鬼雾边上，等一位同行者。2 分钟内发 .同入阴冥（元婴以上，另一主魂）。进去后每一步的线索都公开在群里。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568856,
+      "reply_to_msg_id": 0,
+      "sender_id": 6884505898,
+      "server_event_at": 1794495394.0,
+      "text": ".同入阴冥"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568859,
+      "reply_to_msg_id": 0,
+      "sender_id": 8944702077,
+      "server_event_at": 1794495402.0,
+      "text": "【阴冥之地】一阵鬼雾卷过，@CqdOps（辨路）、@LazyDaemo（感魂） 不见了踪影。\n鬼雾翻涌，你们落在一片灰白的荒原上。体内法力像被抽干，储物袋怎么也打不开。\n每一步的线索都公开在群里：两人一起推出活路，再 .往 左/中/右。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568860,
+      "reply_to_msg_id": 0,
+      "sender_id": 8816935632,
+      "server_event_at": 1794495406.0,
+      "text": "【阴冥 第1/6步】雾中三条路：左、中、右。\n辨路者：死路不在中边。感魂者：阴魂在两侧的某一条路上。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568861,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495407.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568865,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794495420.0,
+      "text": "@CqdOps 选了中边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568867,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794495425.0,
+      "text": "【阴冥 第2/6步】荒原尽头是一道峡谷，三条岔路隐在雾里。\n辨路者：死路不在中边。感魂者：阴魂不在中边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568868,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495425.0,
+      "text": ".往 中"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568873,
+      "reply_to_msg_id": 0,
+      "sender_id": 8816935632,
+      "server_event_at": 1794495440.0,
+      "text": "@CqdOps 选了中边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568877,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794495443.0,
+      "text": "【阴冥 第3/6步】远处有火光，是此地的凡人部落。他们的长老盯着你们看了很久。\n辨路者：死路在阴魂的左手边。感魂者：阴魂不在右边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568878,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495444.0,
+      "text": ".往 右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568884,
+      "reply_to_msg_id": 0,
+      "sender_id": 8980154525,
+      "server_event_at": 1794495458.0,
+      "text": "@CqdOps 选了右边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568885,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794495462.0,
+      "text": "【阴冥 第4/6步】部落里的人说，外来者要么做祭品，要么自己走出去。你们决定连夜离开。\n辨路者：死路不在左边。感魂者：阴魂不在左边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568886,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495462.0,
+      "text": ".往 左"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568890,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794495477.0,
+      "text": "@CqdOps 选了左边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568891,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794495481.0,
+      "text": "【阴冥 第5/6步】一头小兽从你袖中钻出，冲着雾里的阴兽低吼——阴兽的精魂被它一口吞下。\n辨路者：死路不在左边。感魂者：阴魂不在左边。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568892,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495482.0,
+      "text": ".往 左"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568896,
+      "reply_to_msg_id": 0,
+      "sender_id": 8980154525,
+      "server_event_at": 1794495497.0,
+      "text": "@CqdOps 选了左边——雾气渐淡，路是通的。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568897,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794495500.0,
+      "text": "【阴冥 第6/6步】雾散了一角，前面就是暴风山。山顶站着一个人：温天仁。\n辨路者：死路不在左边。感魂者：阴魂守在正中那条路上。\n阳气 8/8　120 秒内 .往 左/中/右"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568898,
+      "reply_to_msg_id": 0,
+      "sender_id": 1089925593,
+      "server_event_at": 1794495500.0,
+      "text": ".往 左"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568903,
+      "reply_to_msg_id": 0,
+      "sender_id": 8735907987,
+      "server_event_at": 1794495514.0,
+      "text": "@CqdOps 选了左边——雾气渐淡，路是通的。\n雾散了一角，前面就是暴风山。山顶站着一个人：温天仁。\n这里同样用不了法力。只能徒手相搏。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568905,
+      "reply_to_msg_id": 0,
+      "sender_id": 8861328042,
+      "server_event_at": 1794495518.0,
+      "text": "【暴风山 第1/3招】温天仁出手了！破招口诀：沉肩→下压；扫腿→不动；虚晃→侧闪。辨路者看温天仁的起手，是「沉肩」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568906,
+      "reply_to_msg_id": 0,
+      "sender_id": 6884505898,
+      "server_event_at": 1794495518.0,
+      "text": ".应招 下压"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568909,
+      "reply_to_msg_id": 0,
+      "sender_id": 8964348409,
+      "server_event_at": 1794495532.0,
+      "text": "@LazyDaemo 下压——正是破沉肩的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568912,
+      "reply_to_msg_id": 0,
+      "sender_id": 7965897083,
+      "server_event_at": 1794495536.0,
+      "text": "【暴风山 第2/3招】温天仁出手了！破招口诀：沉肩→下压；扫腿→不动；虚晃→侧闪。辨路者看温天仁的起手，不是「扫腿」就是「虚晃」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568913,
+      "reply_to_msg_id": 0,
+      "sender_id": 6884505898,
+      "server_event_at": 1794495537.0,
+      "text": ".应招 不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568916,
+      "reply_to_msg_id": 0,
+      "sender_id": 8735907987,
+      "server_event_at": 1794495550.0,
+      "text": "@LazyDaemo 不动——正是破扫腿的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568919,
+      "reply_to_msg_id": 0,
+      "sender_id": 8918867302,
+      "server_event_at": 1794495555.0,
+      "text": "【暴风山 第3/3招】温天仁出手了！破招口诀：沉肩→下压；扫腿→不动；虚晃→侧闪。辨路者看温天仁的起手，不是「沉肩」就是「虚晃」。\n阳气 8/8　感魂者 120 秒内 .应招 侧闪/下压/不动"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568920,
+      "reply_to_msg_id": 0,
+      "sender_id": 6884505898,
+      "server_event_at": 1794495556.0,
+      "text": ".应招 下压"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568923,
+      "reply_to_msg_id": 0,
+      "sender_id": 8980154525,
+      "server_event_at": 1794495569.0,
+      "text": "@LazyDaemo 下压——正是破沉肩的法子，温天仁一招落空。"
+    },
+    {
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "message_id": 1568925,
+      "reply_to_msg_id": 0,
+      "sender_id": 8816935632,
+      "server_event_at": 1794495577.0,
+      "text": "【走出阴冥】\n@CqdOps 修为+57142 灵石+1912\n@LazyDaemo 修为+21428 灵石+1171"
+    }
+  ]
+}
