@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -72,6 +72,9 @@ def test_log_group_confirmation_reaches_weekly_state_only_for_fresh_admin(env, m
     monkeypatch.setattr(control, "ADMIN_IDS", {1})
     monkeypatch.setattr(control, "reply_log_group_message", AsyncMock())
     monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+    backfill, save = Mock(), Mock()
+    monkeypatch.setattr(app_weekly_adventures, "_backfill_weekly_receipts", backfill)
+    monkeypatch.setattr(app_weekly_adventures, "_save", save)
 
     async def run():
         record = await open_run(env)
@@ -82,6 +85,7 @@ def test_log_group_confirmation_reaches_weekly_state_only_for_fresh_admin(env, m
         assert handled is (sender == 1 and chat == -10)
         assert (record["phase"] == "operator_confirmed") is confirmed
         assert record["requires_reconciliation"] is (not confirmed)
+        assert backfill.call_count == save.call_count == int(confirmed)
 
     asyncio.run(run())
 

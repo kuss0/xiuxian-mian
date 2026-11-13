@@ -145,7 +145,14 @@ async def handle_expedition_log_command(event):
             date = getattr(event, "date", None)
             if date is None or not 0 <= time.time() - date.timestamp() <= 60:
                 return True, "确认指令已过期，请重新发送"
-            return True, (await confirm_finished(_context(), parts[2], parts[3]))[1]
+            ok, message = await confirm_finished(_context(), parts[2], parts[3])
+            if ok:
+                # A roster conflict can finish with fewer than the intended
+                # members. Retain their real rewards before arranging a new run.
+                from .app_weekly_adventures import _backfill_weekly_receipts, _save
+                _backfill_weekly_receipts()
+                _save()
+            return True, message
         return True, "待核对玩法须先核对游戏结果，再发送 .周常 确认结束 tianlan/yuejing/yinming 记录号"
     if not text.startswith(".长风试炼"):
         return False, ""
