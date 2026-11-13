@@ -18,15 +18,39 @@ ACTIVE_PHASES = {"opening", "recruiting", "sailing", "voting", "scouting", "awai
 CONTROL_RE = re.compile(r"^\.猎妖\s+(出发|停止|出手|护船|探路|祭符)(?:\s+(\S+))?\s*$")
 DAY_RE = re.compile(r"^【猎妖船】第([123])日(?:，选海域|\s*·)")
 NAME_RE = re.compile(r"@([^\s…，。；｜|]+)")
+HULL_RE = re.compile(r"^船体[^\r\n\d]*(\d+)\s*/\s*(\d+)\s+舱中收获", re.M)
 _LOCKS = {}
 
 
 def get_team_seas(team):
     """Three-day route, with backwards compatibility for a single old sea."""
-    seas = team.get("seas") if "seas" in team else [team.get("sea", "近海")] * 3
+    seas = team.get("seas") if "seas" in team else [team.get("sea", "外海")] * 3
     if not isinstance(seas, list) or len(seas) != 3 or any(sea not in SEAS for sea in seas):
         raise ValueError("请为第 1、2、3 日分别选择近海、暗礁或外海")
     return list(seas)
+
+
+def choose_sea(run, panel):
+    """Apply the configured preference to this owned day's fresh hull panel."""
+    preferred = get_team_seas(run)[run["day"] - 1]
+    match = HULL_RE.search(panel)
+    hull = int(match.group(1)) if match else None
+    maximum = int(match.group(2)) if match else None
+    if match and (maximum <= 0 or not 0 < hull <= maximum):
+        hull = None
+    if preferred == "外海":
+        if hull is None:
+            raise ValueError("本轮船体未识别，未猜测外海风险")
+        # User-supplied game rule: an outer-sea mistake costs at most 35.
+        # At 36+ it cannot sink the ship in a single encounter.
+        selected = "外海" if hull >= 36 else "近海"
+    else:
+        selected = preferred
+    run.setdefault("route_decisions", {})[str(run["day"])] = {
+        "preferred": preferred, "selected": selected, "hull": hull,
+        "reason": "船体不足36，退近海降低风险" if selected != preferred else "按首选航向",
+    }
+    return selected
 
 
 def normalize_teams(raw, known_ids, root_for_identity):
@@ -470,11 +494,16 @@ async def game_event(ctx, event, *, event_type="message"):
             run.update(phase="voting", day=day, action_sent=[], action_confirmed=[],
                        action_failed=[], action_rejected=[], action="", action_source="",
                        sea_event="", scout_text="", scout_msg_id=0, deadline=_event_time(event) + 30)
+            try:
+                sea = choose_sea(run, text)
+            except ValueError as error:
+                await _fail(ctx, run, str(error))
+                return True
             ctx.save()
             # One captain vote chooses the configured route. Having every crew
             # member vote consumes send slots and can start the sea stage early,
             # leaving the scout and response chain behind the local throttle.
-            if not await _send(ctx, run, run["members"][0], ".航向 " + get_team_seas(run)[day - 1], deadline=run["deadline"]):
+            if not await _send(ctx, run, run["members"][0], ".航向 " + sea, deadline=run["deadline"]):
                 await _fail(ctx, run, "航向发送失败/超时，本次已停止")
                 return True
             return True

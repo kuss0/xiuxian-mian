@@ -198,3 +198,59 @@ def test_operator_confirmation_keeps_receipts_and_forces_fresh_quotas(weekly_env
     assert run["command_attempts"]["open"]["status"] == "unknown"
     if expected:
         assert not env.weekly["周常队"]["counters"]
+
+
+def test_route_edit_keeps_current_voyage_and_post_return_wait(weekly_env):
+    env = weekly_env
+    async def run():
+        await check_quotas(env, [2, 2])
+        original = env.runs["周常队"]
+        env.teams[0]["seas"] = ["外海"] * 3
+        sent = len(env.sends)
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == sent
+        assert env.weekly["周常队"]["phase"] == "running"
+        assert env.weekly["周常队"]["run_started_at"] == original["started_at"]
+        assert original["seas"] == ["近海"] * 3
+        original.update(phase="done", finished_at=env.now[0])
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        env.teams[0]["seas"] = ["暗礁"] * 3
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == sent
+        env.now[0] += hunt_weekly.BETWEEN_VOYAGES + 1
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert env.sends[-1][0] == ".船况"
+    asyncio.run(run())
+
+
+def test_team_edit_cannot_release_an_unknown_boat(weekly_env):
+    env = weekly_env
+    env.weekly["周常队"] = {"phase": "held", "team": copy.deepcopy(env.teams[0])}
+    env.runs["周常队"] = {"phase": "held", "requires_reconciliation": True}
+    env.teams[0]["seas"] = ["外海"] * 3
+    asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0]))
+    assert env.weekly["周常队"]["phase"] == "held"
+    assert not env.sends
+
+
+def test_changed_completed_team_rechecks_quotas_before_next_week(weekly_env):
+    env = weekly_env
+    async def run():
+        await check_quotas(env, [5, 5])
+        env.teams[0]["seas"] = ["外海"] * 3
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert env.weekly["周常队"]["phase"] == "checking"
+        assert env.sends[-1][0] == ".船况"
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("hull,expected", [(100,"外海"),(65,"外海"),(36,"外海"),(35,"近海"),(1,"近海")])
+def test_outer_sea_survival_boundary(hull, expected):
+    run = {"day": 1, "seas": ["外海"] * 3}
+    assert hunt.choose_sea(run, f"船体 █ {hull}/100　舱中收获 0.0") == expected
+
+
+@pytest.mark.parametrize("hull", ["0/100", "101/100", "36/0", "未知"])
+def test_outer_sea_invalid_hull_never_guesses(hull):
+    with pytest.raises(ValueError):
+        hunt.choose_sea({"day": 1, "seas": ["外海"] * 3}, f"船体 █ {hull}　舱中收获 0.0")

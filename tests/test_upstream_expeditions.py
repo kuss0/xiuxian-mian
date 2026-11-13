@@ -93,6 +93,32 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(".航向 近海", 1)],
                          [(command, kwargs["send_as_id"]) for command, kwargs in votes])
 
+    async def test_outer_preference_uses_each_owned_day_hull_and_ignores_foreign_panel(self):
+        self.team["seas"] = ["外海"] * 3
+        await self.recruit()
+        before = len(self.sends)
+        foreign = "【猎妖船】第1日，选海域\n船体 █ 1/100　舱中收获 0.0\n船员：@other @mate\n剩余 30 秒"
+        await hunt.game_event(self.ctx, event(foreign))
+        self.assertEqual(before, len(self.sends))
+        for day, hull in enumerate((100, 65, 30), 1):
+            panel = f"【猎妖船】第{day}日，选海域\n船体 █ {hull}/100　舱中收获 0.0\n船员：@captain @mate\n剩余 30 秒"
+            await hunt.game_event(self.ctx, event(panel))
+            await hunt.game_event(self.ctx, event(panel), event_type="edit")
+        self.assertEqual([".航向 外海", ".航向 外海", ".航向 近海"],
+                         [command for command, _ in self.sends[before:]])
+        decisions = self.runs["本机队"]["route_decisions"]
+        self.assertEqual([100, 65, 30], [decisions[str(day)]["hull"] for day in (1, 2, 3)])
+
+    async def test_outer_preference_never_uses_old_hull_when_new_panel_is_missing_it(self):
+        self.team["seas"] = ["外海"] * 3
+        await self.recruit()
+        await hunt.game_event(self.ctx, event("【猎妖船】第1日，选海域\n船体 █ 100/100　舱中收获 0.0\n船员：@captain @mate\n剩余 30 秒"))
+        before = len(self.sends)
+        await hunt.game_event(self.ctx, event("【猎妖船】第2日，选海域\n船员：@captain @mate\n剩余 30 秒"))
+        self.assertEqual(before, len(self.sends))
+        self.assertEqual("held", self.runs["本机队"]["phase"])
+        self.assertTrue(self.runs["本机队"]["requires_reconciliation"])
+
     async def test_two_player_combat_fits_paced_send_window(self):
         await self.recruit()
         now = [time.time()]

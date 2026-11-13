@@ -410,7 +410,7 @@ function renderHuntTeamRow(team, replica) {
   team = team || {};
   const options = replica.identity_options || [];
   const members = team.member_identity_ids || [];
-  const seas = team.seas || ['近海', '近海', '近海'];
+  const seas = team.seas || [team.sea || '外海', team.sea || '外海', team.sea || '外海'];
   const selectOptions = function(values, selected) {
     return values.map(function(value) {
       return '<option value="' + escapeHtml(value) + '"' + (String(value) === String(selected) ? ' selected' : '') + '>' + escapeHtml(value) + '</option>';
@@ -421,7 +421,7 @@ function renderHuntTeamRow(team, replica) {
     + '<label class="form-label">游戏群<select class="text-input" data-hunt-role><option value="primary"' + (team.group_role === 'primary' ? ' selected' : '') + '>主群</option><option value="secondary"' + (team.group_role !== 'primary' ? ' selected' : '') + '>副群</option></select></label></div>'
     + '<div class="replica-config-grid">' + [0, 1, 2].map(function(day) {
       return '<label class="form-label">第 ' + (day + 1) + ' 日航向<select class="text-input" data-hunt-sea>' + selectOptions(['近海', '暗礁', '外海'], seas[day]) + '</select></label>';
-    }).join('') + '</div><div class="replica-config-grid">'
+    }).join('') + '</div><p class="form-help">选择外海时优先外海；本轮船体低于36则退近海降低风险，船体缺失时暂停。</p><div class="replica-config-grid">'
     + [0, 1, 2, 3, 4].map(function(index) {
       return '<label class="form-label">' + (index ? '成员 ' + (index + 1) : '船长兼探路者') + '<select class="text-input" data-hunt-member><option value="">不选择</option>'
         + options.map(function(identity) {

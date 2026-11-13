@@ -83,7 +83,7 @@ def main():
                     page.wait_for_function("document.querySelector('#expedition-config-form').dataset.dirty !== '1'")
                     saved = next(item["payload"] for item in reversed(writes) if item["path"] == "/api/expedition-config")
                     assert saved["hunt_teams"][-1]["member_identity_ids"] == ["990001", "990002"]
-                    assert saved["hunt_teams"][-1]["seas"] == ["近海", "暗礁", "近海"]
+                    assert saved["hunt_teams"][-1]["seas"] == ["外海", "暗礁", "外海"]
                     assert saved["hunt_teams"][-1]["auto_weekly"] is True
                     assert saved["xuangu"]["enabled"] is False and saved["changfeng"]["enabled"] is False
                     assert saved["xuangu"]["participant_identity_ids"] == ["990001"]

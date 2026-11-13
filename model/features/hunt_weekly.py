@@ -62,8 +62,18 @@ async def scheduler(ctx, now):
             record = ctx.weekly().setdefault(team["name"], {"phase": "idle"})
             # A changed team needs fresh per-member quota evidence.
             if record.get("team") != team:
+                run = ctx.runs().get(team["name"], {})
+                # Editing a route must not erase the ongoing voyage or the
+                # post-return wait, nor recover a held/unknown boat.
+                next_at = float(record.get("next_at") or 0) if record.get("phase") == "idle" else 0
+                if run.get("phase") == "done":
+                    next_at = max(next_at, float(run.get("finished_at") or 0) + BETWEEN_VOYAGES)
                 record.clear()
-                record.update(phase="idle", team=dict(team), counters={})
+                record.update(phase="idle", team=dict(team), counters={}, next_at=next_at)
+                if run.get("requires_reconciliation"):
+                    record.update(phase="held", last_error="原船结果仍待核对，配置变更不能解除")
+                elif hunt._active(run):
+                    record.update(phase="running", run_started_at=run["started_at"])
                 ctx.save()
             if record.get("phase") == "held":
                 continue
