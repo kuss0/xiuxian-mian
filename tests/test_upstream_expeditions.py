@@ -208,6 +208,65 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, kwargs["max_retry"])
         self.assertTrue(kwargs["operation_check"]())
 
+    async def test_live_17_then_24_second_queue_delay_no_longer_drops_captain(self):
+        await self.recruit()
+        now = [time.time()]
+        run = self.runs["本机队"]
+        run.update(phase="voting", day=3)
+        last_identity = {}
+        blocked = []
+
+        async def transport(command, **kwargs):
+            identity = kwargs["send_as_id"]
+            if command == ".探路":
+                delay = 2
+            elif kwargs["priority"] == "urgent_reactive":
+                delay = 3
+            else:
+                delay = 17 if identity == 2 else 24
+            now[0] = max(now[0] + delay, last_identity.get(identity, 0) + 10)
+            if not kwargs["operation_check"]():
+                blocked.append(command)
+                return None
+            self.sends.append((command, kwargs))
+            last_identity[identity] = now[0]
+            now[0] += 1
+            return SimpleNamespace(id=len(self.sends) + 100)
+
+        self.ctx.send = app_hunt._send_hunt_command
+        def at_current_time(text, **kwargs):
+            sample = event(text, **kwargs)
+            sample.date = datetime.fromtimestamp(now[0], timezone.utc)
+            return sample
+
+        with patch.object(hunt.time, "time", side_effect=lambda: now[0]), \
+                patch.object(app_hunt, "hunt_target", return_value=(-100, 300)), \
+                patch.object(app_hunt, "send_game_command", side_effect=transport):
+            await hunt.game_event(self.ctx, at_current_time(
+                "【猎妖船】第3日 · 外海　征兆：罗盘乱转\n船体 █ 100/100　舱中收获 4.8\n船员：@captain @mate\n剩余 45 秒"))
+            scout_id = len(self.sends) + 100
+            await hunt.game_event(self.ctx, at_current_time(
+                "你攀上桅杆看清了：是【磁山崩落】。", reply=scout_id))
+        self.assertEqual([], blocked)
+        self.assertEqual([2, 1], run["action_sent"])
+        self.assertLess(now[0], run["deadline"])
+        self.assertTrue(all(kwargs["priority"] == "urgent_reactive" for _, kwargs in self.sends[-3:]))
+        self.assertTrue(all("skip_throttle" not in kwargs for _, kwargs in self.sends[-3:]))
+
+    async def test_hunt_deadline_is_checked_again_inside_send_queue(self):
+        now = [time.time()]
+        with patch.object(app_hunt.time, "time", side_effect=lambda: now[0]), \
+                patch.object(app_hunt, "hunt_target", return_value=(-100, 300)), \
+                patch.object(app_hunt, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=1))) as send:
+            await app_hunt._send_hunt_command(".护船", send_as_id=1, target_group_role="secondary",
+                                              send_guard=lambda: True, deadline=now[0] + 5)
+            kwargs = send.await_args.kwargs
+            self.assertEqual("urgent_reactive", kwargs["priority"])
+            self.assertLessEqual(kwargs["queue_timeout"], 5)
+            self.assertTrue(kwargs["operation_check"]())
+            now[0] += 6
+            self.assertFalse(kwargs["operation_check"]())
+
 
 class LongwindProtocolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

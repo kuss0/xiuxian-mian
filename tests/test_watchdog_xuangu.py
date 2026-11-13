@@ -48,3 +48,16 @@ def test_owned_finish_is_recognized_without_exempting_other_rounds():
     assert watchdog.is_safe_global_gap_pair(previous, current)
     current["chain_id"] = prefix + ":4"
     assert not watchdog.is_safe_global_gap_pair(previous, current)
+
+
+@pytest.mark.parametrize("changes", [{}, {"sender_id": 2}, {"priority": "chain"},
+                                   {"chain_id": "hunt:1794534886.0619228:2"},
+                                   {"text": ".起锚"}, {"source_module": "其他"}])
+def test_hunt_urgent_gap_requires_exact_owned_day_and_action(changes):
+    previous = {"_epoch": 1000, "op_id": "previous"}
+    current = {"_epoch": 1003, "sender_id": 301299112, "text": ".护船",
+               "source_module": "出海猎妖", "priority": "urgent_reactive",
+               "op_id": "hunt:1794534886.0619228:3:301299112:.护船",
+               "chain_id": "hunt:1794534886.0619228:3"}
+    current.update(changes)
+    assert watchdog.is_safe_global_gap_pair(previous, current) is (not changes)

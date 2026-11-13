@@ -361,6 +361,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_safe_heart_global_gap_pair(prev, cur)
         or is_safe_divination_exchange_global_gap_pair(prev, cur)
         or is_safe_xuangu_reactive_gap_pair(prev, cur)
+        or is_safe_hunt_reactive_gap_pair(prev, cur)
     )
 
 
@@ -391,6 +392,17 @@ def is_safe_xuangu_reactive_gap_pair(prev: dict, cur: dict) -> bool:
         return False
     stage = action.group(1) if action else "5"
     return str(cur.get("chain_id") or "") == f"{prefix}:{stage}"
+
+
+def is_safe_hunt_reactive_gap_pair(prev: dict, cur: dict) -> bool:
+    if (cur.get("source_module") != "出海猎妖" or cur.get("priority") != "urgent_reactive"
+            or cur.get("text") not in {".探路", ".出手", ".护船", ".祭符"}
+            or float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 1
+            or prev.get("op_id") == cur.get("op_id")):
+        return False
+    op = re.fullmatch(r"hunt:([1-9]\d*(?:\.\d+)?):([1-3]):([1-9]\d*):(\.[^:]+)", str(cur.get("op_id") or ""))
+    return bool(op and str(cur.get("sender_id")) == op.group(3) and cur.get("text") == op.group(4)
+                and cur.get("chain_id") == f"hunt:{op.group(1)}:{op.group(2)}")
 
 
 def is_sect_teach_command(text: str) -> bool:

@@ -1,4 +1,5 @@
 """Bind upstream hunting to the local guarded send and persistent state APIs."""
+import time
 from types import SimpleNamespace
 
 from .activity_occupancy import get_activity_block_reason
@@ -45,12 +46,15 @@ def _members(identity_ids):
 
 async def _send_hunt_command(command, *, send_as_id, target_group_role, send_guard, deadline=0, op_id=None, chain_id=None, **_ignored):
     chat_id, _topic_id = hunt_target(target_group_role)
-    if not chat_id or not send_guard():
+    if not chat_id or not send_guard() or (deadline and time.time() >= deadline):
         return None
+    critical = command in {".探路", ".出手", ".护船", ".祭符"} and deadline > 0
+    queue_timeout = min(45.0, max(0.1, deadline - time.time())) if deadline else 45.0
     return await send_game_command(
         command, track=False, send_as_id=send_as_id, target_chat_id=chat_id,
-        operation_check=send_guard, priority="chain", max_retry=0,
-        source_module="出海猎妖", queue_timeout=45, op_id=op_id, chain_id=chain_id,
+        operation_check=lambda: send_guard() and (not deadline or time.time() < deadline),
+        priority="urgent_reactive" if critical else "chain", max_retry=0,
+        source_module="出海猎妖", queue_timeout=queue_timeout, op_id=op_id, chain_id=chain_id,
     )
 
 
