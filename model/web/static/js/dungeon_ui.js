@@ -427,7 +427,8 @@ function renderHuntTeamRow(team, replica) {
         + options.map(function(identity) {
           return '<option value="' + escapeHtml(identity.identity_id) + '"' + (String(identity.identity_id) === String(members[index]) ? ' selected' : '') + '>' + escapeHtml(identity.display_name || identity.username || identity.identity_id) + '</option>';
         }).join('') + '</select></label>';
-    }).join('') + '</div><button type="button" class="btn btn-secondary" data-hunt-remove>删除队伍</button></fieldset>';
+    }).join('') + '</div><label class="form-label"><input type="checkbox" data-hunt-weekly' + (team.auto_weekly ? ' checked' : '') + '> 每周自动补满5次有奖出海</label>'
+    + '<button type="button" class="btn btn-secondary" data-hunt-remove>删除队伍</button></fieldset>';
 }
 
 function renderExpeditionConfig(replica) {
@@ -442,12 +443,22 @@ function renderExpeditionConfig(replica) {
     }).join('') + '</div>';
   };
   const records = (config.hunt_runs || []).concat(config.xuangu_runs || [], config.changfeng_runs || []);
+  const weeklyStates = {idle: '待核对', checking: '核对船况', starting: '准备出海', running: '出海中', done: '本周已满', held: '待人工核对'};
+  const weekly = (config.hunt_teams || []).filter(function(team) { return team.auto_weekly; }).map(function(team) {
+    const record = (config.hunt_weekly || {})[team.name] || {};
+    const counts = (team.member_identity_ids || []).map(function(id) {
+      const identity = identities.find(function(item) { return String(item.identity_id) === String(id); }) || {};
+      const counter = (record.counters || {})[String(id)];
+      return (identity.display_name || identity.username || id) + ' ' + (counter ? counter.used + '/5' : '待查询');
+    });
+    return '<p data-hunt-weekly-status>' + escapeHtml(team.name + '：' + (weeklyStates[record.phase] || '待核对') + '｜' + counts.join('，') + (record.last_error ? '｜' + record.last_error : '')) + '</p>';
+  }).join('');
   return '<details class="dungeon-section"><summary class="queue-section-title">出海猎妖、玄骨遗府与长风试炼</summary><form id="expedition-config-form">'
-    + '<div class="dungeon-section"><h4>出海猎妖</h4><p>每队选择 2–5 人。保存后，在日志群发送「.猎妖 出发 队伍名」；返航后结束，不会循环开船。</p>'
+    + '<div class="dungeon-section"><h4>出海猎妖</h4><p>每队选择 2–5 人。勾选周常自动补满后，每趟先核对游戏周次数，所有成员达到5/5后停止；异常结果待核对。未勾选时，在日志群发送「.猎妖 出发 队伍名」。</p>'
     + '<div id="hunt-team-rows">' + (config.hunt_teams || []).map(function(team) { return renderHuntTeamRow(team, replica); }).join('') + '</div>'
-    + '<button type="button" class="btn btn-secondary" data-hunt-add>新增队伍</button></div>'
+    + '<button type="button" class="btn btn-secondary" data-hunt-add>新增队伍</button>' + weekly + '</div>'
     + '<div class="dungeon-section"><h4>玄骨遗府</h4><label class="checkbox-inline"><input type="checkbox" name="xuangu_enabled"' + (xuangu.enabled ? ' checked' : '') + ' />开启集结与副群应对</label>'
-    + '<p>在已配置的副本群发送「.开启玄骨 @队长 @队员」，游戏操作固定使用副群。</p>'
+    + '<p>在副本群发送「.开启玄骨 @队长 @队员1 @队员2 @队员3 @队员4」，五人须结丹以上，游戏操作使用副群。</p>'
     + members('xuangu', xuangu.participant_identity_ids)
     + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
       return '<option' + ((xuangu.finish_choice || '收拢遗宝') === choice ? ' selected' : '') + '>' + choice + '</option>';
@@ -460,7 +471,8 @@ function renderExpeditionConfig(replica) {
       return '<label class="checkbox-inline"><input type="checkbox" data-changfeng-arena="' + arena + '"' + ((changfeng.arenas || ['longwind', 'bamboo']).includes(arena) ? ' checked' : '') + ' />' + (arena === 'longwind' ? '麦田试炼' : '竹林试炼') + '</label>';
     }).join('') + '</div></div>'
     + '<div class="dungeon-section">' + records.map(function(record) {
-      return '<p>' + escapeHtml(record.name || record.identity_id || '') + '：' + escapeHtml(record.phase || '') + ' ' + escapeHtml(record.result || record.outcome || record.last_error || '') + '</p>';
+      return '<p>' + escapeHtml(record.name || record.identity_id || '') + '：' + escapeHtml(record.phase || '') + ' ' + escapeHtml(record.result || record.outcome || record.last_error || '')
+        + (record.requires_reconciliation ? '｜记录号 ' + escapeHtml(record.roster_id || record.started_at || '') : '') + '</p>';
     }).join('') + '</div><button type="submit" class="btn">保存活动配置</button></form></details>';
 }
 
@@ -491,6 +503,7 @@ document.addEventListener('submit', async function(event) {
   const payload = {
     hunt_teams: Array.from(form.querySelectorAll('[data-hunt-team]')).map(function(row) {
       return {name: row.querySelector('[data-hunt-name]').value.trim(), group_role: row.querySelector('[data-hunt-role]').value,
+        auto_weekly: row.querySelector('[data-hunt-weekly]').checked,
         seas: Array.from(row.querySelectorAll('[data-hunt-sea]')).map(function(select) { return select.value; }),
         member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
     }),

@@ -1432,6 +1432,45 @@ async def run_cave_public_inventory(identity_id, public_entry_url, *, now=None):
         }
 
 
+async def run_cave_public_profile(identity_id, public_entry_url, *, now=None):
+    """One explicit read of the selected dwelling identity's current realm."""
+    from ..profile_observation import apply_profile_observation
+    from ..state import REALM_SORT_ORDER
+
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+
+    def allowed():
+        return (owner is not None and owner.is_current()
+                and is_cave_public_identity_available(identity_id) and _public_entry_allowed())
+
+    if error or not allowed():
+        return {"ok": False, "message": error or "身份不可用", "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id, token, webview_url, now=now,
+            capture_source=f"cave_public_profile:{identity_id}",
+            include_details=False, operation_check=allowed,
+        )
+        overview = ((session.get("result") or {}).get("data") or {}).get("overview") or {}
+        realm = str(overview.get("cultivation_level") or "").strip()
+        if (not session.get("ok") or not allowed() or realm not in REALM_SORT_ORDER
+                or _normalize_dwelling_identity_id(overview.get("player_id")) != _normalize_dwelling_identity_id(identity_id)):
+            return {"ok": False, "message": "洞府境界读取未确认目标身份或境界", "extra": {}}
+        accepted = apply_profile_observation(
+            identity_id, {"realm": realm}, int(now), evidence={"source": "api", "requested_at": now},
+        )
+        if accepted is None or save_state() is False:
+            return {"ok": False, "message": "境界证据未能保存", "extra": {}}
+        return {"ok": True, "message": f"已读取游戏境界：{realm}",
+                "extra": {"realm": realm, "updated": "realm" in accepted}}
+
+
 async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
     """Perform one read-only dwelling start request for shared entry revalidation."""
     identity_id = _identity_id(identity_id)

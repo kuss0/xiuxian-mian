@@ -25,6 +25,7 @@ class XuanguMessages:
 class XuanguIdentities:
     resolve_selector: Callable[[str], int | None]
     participation_enabled: Callable[[int, str], bool]
+    preflight_error: Callable[[int], str] = lambda _identity: ""
 
 
 @dataclass(frozen=True)

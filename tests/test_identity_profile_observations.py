@@ -102,6 +102,18 @@ def test_old_forward_breakthrough_cannot_override_newer_lower_profile(env):
     control.send_audit_log.assert_not_awaited()
 
 
+def test_live_congratulation_prefix_updates_breakthrough_owner(env):
+    env.now = NOW + 100
+    text = f"灵光一闪！恭喜 @{USERNAME} 道友，修为精进，成功突破至【{LATE_REALM}】！"
+    assert asyncio.run(control.handle_realm_breakthrough_broadcast(text, env.now, event=event(NOW + 20)))
+    assert state_module.get_send_as_profile(IDENTITY)["realm"] == LATE_REALM
+
+
+def test_congratulation_prefix_still_rejects_username_substrings(env):
+    text = f"灵光一闪！恭喜 @{USERNAME}1 道友，修为精进，成功突破至【{LATE_REALM}】！"
+    assert control.match_realm_breakthrough_identity(text)[0] is None
+
+
 def test_same_realm_breakthrough_still_advances_evidence_clock(env):
     state_module.update_send_as_profile(IDENTITY, realm=LATE_REALM)
     env.now = NOW + 100

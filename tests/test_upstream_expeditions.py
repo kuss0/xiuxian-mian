@@ -349,6 +349,7 @@ class XuanguSendTests(unittest.IsolatedAsyncioTestCase):
         message.reply_to_msg_id = 123
         await xuangu._on_xuangu_action_reply(ctx, message, "已提交第1轮【验骨】", time.time())
         self.assertEqual([1], item["round_done"])
+        message.raw_text = "房间 abcd\n收拢遗宝（可选）\n立即撤离（可选）"
         await xuangu._on_xuangu_outcome(ctx, message, "残图异动", time.time())
         self.assertEqual("finishing", item["phase"])
         self.assertEqual("收拢遗宝", item["finish_choice"])

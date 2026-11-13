@@ -40,12 +40,13 @@ def get_expedition_snapshot():
     changfeng = config.get("changfeng", {})
     return {
         "hunt_teams": get_hunt_teams(),
-        "hunt_runs": [{key: copy.deepcopy(run.get(key)) for key in ("name", "phase", "day", "last_error", "result")}
+        "hunt_runs": [{key: copy.deepcopy(run.get(key)) for key in ("name", "phase", "day", "last_error", "result", "started_at", "requires_reconciliation")}
                       for run in get_hunt_run_state().values() if isinstance(run, dict)],
+        "hunt_weekly": copy.deepcopy(get_expedition_run_state().get("hunt_weekly", {})),
         "xuangu": {"enabled": bool(xuangu.get("enabled")), "participant_identity_ids": xuangu.get("participant_identity_ids", []),
                    "finish_choice": xuangu.get("finish_choice", "收拢遗宝")},
         "xuangu_runs": [{"name": f"玄骨 @{run.get('leader_username') or ''}",
-                         **{key: copy.deepcopy(run.get(key)) for key in ("phase", "room_id", "outcome", "last_error")}}
+                         **{key: copy.deepcopy(run.get(key)) for key in ("phase", "room_id", "outcome", "last_error", "roster_id", "requires_reconciliation")}}
                         for run in get_expedition_run_state().get("xuangu_auto", {}).get("rosters", {}).values() if isinstance(run, dict)],
         "changfeng": {"enabled": bool(changfeng.get("enabled")), "participant_identity_ids": changfeng.get("participant_identity_ids", []),
                       "arenas": changfeng.get("arenas", ["longwind", "bamboo"]), "daily_limit": changfeng.get("daily_limit", 1)},
@@ -104,7 +105,7 @@ def ui_set_expedition_config(payload):
         set_hunt_teams(previous_teams)
         set_expedition_config(previous_config)
         return False, "配置未能保存，请稍后重试"
-    return True, "已保存猎妖、玄骨和长风配置；猎妖仍需手动出发"
+    return True, "已保存；猎妖勾选周常自动补满后会核对船况并补至每周5次，其余队伍手动出发"
 
 
 async def handle_expedition_log_command(event):
@@ -157,7 +158,7 @@ def _manual_done(task):
 async def handle_expedition_game_event(event, *, event_type="message"):
     # Feature locks serialize early replies without holding the shared listener pipeline.
     for handler in (handle_hunt_game_event, handle_xuangu_game_event):
-        if handler is handle_hunt_game_event and not get_hunt_run_state():
+        if handler is handle_hunt_game_event and not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()):
             continue
         if handler is handle_xuangu_game_event and not get_expedition_config().get("xuangu", {}).get("enabled"):
             continue
@@ -174,7 +175,7 @@ async def _run_tick(now):
 async def run_expedition_scheduler(now):
     global _TICK_TASK
     config = get_expedition_config()
-    if not get_hunt_run_state() and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng")):
+    if not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng")):
         return
     if _TICK_TASK is not None and not _TICK_TASK.done():
         return

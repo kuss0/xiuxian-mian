@@ -148,6 +148,8 @@ async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, cloc
         result = trial.get("result") or {}
         if result.get("grade") and result["grade"] != "乙":
             raise TrialError("trial_verification_mismatch")
+        if "score" in result and (type(result["score"]) is not int or result["score"] != report_score(serialized)):
+            raise TrialError("trial_verification_mismatch")
         for grant in trial.get("grants") or []:
             if isinstance(grant, dict) and isinstance(grant.get("name"), str) and type(grant.get("quantity")) is int and grant["quantity"] > 0:
                 gains[grant["name"]] = gains.get(grant["name"], 0) + grant["quantity"]

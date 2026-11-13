@@ -9,7 +9,7 @@ def cleanup_collection_items(collection, now=None):
     now = float(now or time.time())
     changed = False
     for item_id, item in list((collection or {}).items()):
-        if not isinstance(item, dict) or (0 < float(item.get("expires_at") or 0) <= now):
+        if not isinstance(item, dict) or (not item.get("requires_reconciliation") and 0 < float(item.get("expires_at") or 0) <= now):
             collection.pop(item_id, None)
             changed = True
     return changed
@@ -122,4 +122,4 @@ class FubenFlowCollection:
 
     def active(self, now):
         return [flow for flow in self.load().values()
-                if isinstance(flow, dict) and float(flow.get("expires_at") or 0) > now]
+                if isinstance(flow, dict) and (flow.get("requires_reconciliation") or float(flow.get("expires_at") or 0) > now)]

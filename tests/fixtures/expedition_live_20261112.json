@@ -1,0 +1,122 @@
+[
+  {
+    "source": "data/messages/2026-11-12.log#1558061",
+    "module": "xuangu",
+    "family": "xuangu_receipt",
+    "event_type": "message",
+    "text": "【玄骨遗府·魂阵溃散】\n残尸引走注意，白骨从背后袭来，魂阵险些散开。\n本轮魂稳 -38，剩余 0。\n本场未能带出战利品，已出发的门票不返还，未消耗今日领奖资格；持新珠可重试。永久傀儡与第二元神均未损失。",
+    "message_id": 1558061,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794417303.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559953",
+    "module": "xuangu",
+    "family": "xuangu_round",
+    "event_type": "message",
+    "text": "【玄骨遗府·第1轮：池中仙莲】\n队长消耗古府寻踪珠×1，珠中路线引你们寻到荒岛。\n你们合力破开外阵，以水器扑灭翅恶，又击退了持花篮的守卫。\n花篮已损，画轴尚可一用；封灵柱下露出乳白玉池与一具白骨。\n\n彩莲悬着七色霞光。池边白骨的右手乌黑，食指还缺了一截；池水乳白，深处却有黑影。先验骨、试池，留人掩护。\n魂稳 100｜傀躯：受控\n已识破：无\n探禁 @BitDrifter｜攻伐 @CqdOps｜护队 @LazyDaemo｜镇魂 @SilLoop｜御傀 @Davecy\n尚未亮招：@BitDrifter、@CqdOps、@LazyDaemo、@SilLoop、@Davecy\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 1 验骨 / .玄骨行动 1 试池 / .玄骨行动 1 护队 / .玄骨行动 1 采莲\n亮招：.玄骨行动 1 亮招 验骨 / .玄骨行动 1 亮招 试池 / .玄骨行动 1 亮招 护队 / .玄骨行动 1 亮招 采莲\n剩余30秒，提交0/5：无；交齐立即结算。",
+    "message_id": 1559953,
+    "reply_to_msg_id": 1559952,
+    "server_event_at": 1794444858.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559956",
+    "module": "xuangu",
+    "family": "xuangu_receipt",
+    "event_type": "message",
+    "text": "已提交第1轮【验骨】，1/5；截止前可修改。",
+    "message_id": 1559956,
+    "reply_to_msg_id": 1559955,
+    "server_event_at": 1794444863.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559961",
+    "module": "xuangu",
+    "family": "xuangu_round",
+    "event_type": "message",
+    "text": "【玄骨遗府·第2轮：妖冠蛇出水】\n白骨伤手与试池反应证实彩莲是诱饵，你们提前护住了池边。\n本轮魂稳 -0，剩余 100。\n\n彩莲缩入水中，竟是妖冠蛇的肉冠！蛇首盯住人群，毒液将随扑击飞溅。需有人引蛇、有人护队，再集中破敌。\n魂稳 100｜傀躯：受控\n已识破：七霞骗局\n探禁 @BitDrifter｜攻伐 @CqdOps｜护队 @LazyDaemo｜镇魂 @SilLoop｜御傀 @Davecy\n尚未亮招：@BitDrifter、@CqdOps、@LazyDaemo、@SilLoop、@Davecy\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 2 引蛇 / .玄骨行动 2 破敌 / .玄骨行动 2 护队 / .玄骨行动 2 镇魂\n亮招：.玄骨行动 2 亮招 引蛇 / .玄骨行动 2 亮招 破敌 / .玄骨行动 2 亮招 护队 / .玄骨行动 2 亮招 镇魂\n剩余30秒，提交0/5：无；交齐立即结算。",
+    "message_id": 1559961,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794444888.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559973",
+    "module": "xuangu",
+    "family": "xuangu_round",
+    "event_type": "message",
+    "text": "【玄骨遗府·第3轮：尸起骨动】\n蛇首被引离人群，众人截住肉冠，将妖蛇斩落。\n本轮魂稳 -0，剩余 100。\n\n池中残尸摇晃着站起，门边散骨却也悄悄挪动。玄骨诱言：‘不想死的，现在就走。’需侦察背后、护队并压制骨傀。\n魂稳 100｜傀躯：受控\n已识破：七霞骗局\n探禁 @BitDrifter｜攻伐 @CqdOps｜护队 @LazyDaemo｜镇魂 @SilLoop｜御傀 @Davecy\n尚未亮招：@BitDrifter、@CqdOps、@LazyDaemo、@SilLoop、@Davecy\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 3 侦察 / .玄骨行动 3 护队 / .玄骨行动 3 破敌\n亮招：.玄骨行动 3 亮招 侦察 / .玄骨行动 3 亮招 护队 / .玄骨行动 3 亮招 破敌\n剩余30秒，提交0/5：无；交齐立即结算。",
+    "message_id": 1559973,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794444922.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559980",
+    "module": "xuangu",
+    "family": "xuangu_round",
+    "event_type": "message",
+    "text": "【玄骨遗府·第4轮：分魂两袭】\n残尸只是幌子！你们看住门边白骨，截下真正的偷袭。\n本轮魂稳 -2，剩余 98。\n\n傀躯气息稳定，队友识海却传来外力，魂影下的火鸟猛扑向人群。真杀机在队友：护队、镇魂，另以侦察或画轴辨明分魂。\n魂稳 98｜傀躯：受控\n已识破：七霞骗局、尸变诱敌\n探禁 @BitDrifter｜攻伐 @CqdOps｜护队 @LazyDaemo｜镇魂 @SilLoop｜御傀 @Davecy\n尚未亮招：@BitDrifter、@CqdOps、@LazyDaemo、@SilLoop、@Davecy\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 4 侦察 / .玄骨行动 4 护傀 / .玄骨行动 4 护队 / .玄骨行动 4 镇魂 / .玄骨行动 4 画轴\n亮招：.玄骨行动 4 亮招 侦察 / .玄骨行动 4 亮招 护傀 / .玄骨行动 4 亮招 护队 / .玄骨行动 4 亮招 镇魂 / .玄骨行动 4 亮招 画轴\n剩余30秒，提交0/5：无；交齐立即结算。",
+    "message_id": 1559980,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794444952.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559991",
+    "module": "xuangu",
+    "family": "xuangu_round",
+    "event_type": "message",
+    "text": "【玄骨遗府·第5轮：收神舍躯】\n你们没有追逐正面假影，真正的摄魂被合力截住。\n本轮魂稳 -1，剩余 97。\n\n玄骨强摄煞丹傀躯！御傀者须收神；队友护队、镇魂并压制追魂。若御傀者失联，两人镇魂加一人收神也可接应。争取全收还需本轮至少一人有效亮招，压出搜宝窗口。\n魂稳 97｜傀躯：待收神\n已识破：七霞骗局、尸变诱敌、分魂夺舍\n探禁 @BitDrifter｜攻伐 @CqdOps｜护队 @LazyDaemo｜镇魂 @SilLoop｜御傀 @Davecy\n尚未亮招：@BitDrifter、@CqdOps、@LazyDaemo、@SilLoop、@Davecy\n玄骨当前防备：无\n本轮动作（均可防守）：.玄骨行动 5 收神 / .玄骨行动 5 护队 / .玄骨行动 5 镇魂 / .玄骨行动 5 破敌\n亮招：.玄骨行动 5 亮招 收神 / .玄骨行动 5 亮招 护队 / .玄骨行动 5 亮招 镇魂 / .玄骨行动 5 亮招 破敌\n剩余30秒，提交0/5：无；交齐立即结算。",
+    "message_id": 1559991,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794444985.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1559993",
+    "module": "xuangu",
+    "family": "xuangu_receipt",
+    "event_type": "message",
+    "text": "已提交第5轮【亮招·破敌】，1/5；截止前可修改。",
+    "message_id": 1559993,
+    "reply_to_msg_id": 1559992,
+    "server_event_at": 1794444991.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1560000",
+    "module": "xuangu",
+    "family": "xuangu_receipt",
+    "event_type": "message",
+    "text": "【玄骨遗府·残图异动】\n分神及时回归，队友截住追魂；玄骨只夺走了空出的傀躯。\n亮招压住杀机，额外挽回8点魂稳；已被看破的亮招收益降低。\n本轮魂稳 -0，剩余 97。\n玄骨记住了你们的亮招，下轮提防：强攻。换招或侦察可避开其防备。\n玄骨夺躯携箭离去，极阴随时可能赶来。\n魂稳 97｜傀躯：已夺舍\n已识破：七霞骗局、尸变诱敌、分魂夺舍\n立即撤离（可选）\n收拢遗宝（可选）\n争取全收（可选）\n队长 .玄骨收尾 立即撤离 / .玄骨收尾 收拢遗宝 / .玄骨收尾 争取全收；30秒内，超时撤离。",
+    "message_id": 1560000,
+    "reply_to_msg_id": 0,
+    "server_event_at": 1794445016.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  },
+  {
+    "source": "data/messages/2026-11-12.log#1560002",
+    "module": "xuangu",
+    "family": "xuangu_receipt",
+    "event_type": "message",
+    "text": "【玄骨遗府·争取全收】\n分神及时回归，队友截住追魂；玄骨只夺走了空出的傀躯。\n亮招压住杀机，额外挽回8点魂稳；已被看破的亮招收益降低。\n本轮魂稳 -0，剩余 97。\n玄骨记住了你们的亮招，下轮提防：强攻。换招或侦察可避开其防备。\n@BitDrifter：修为+9000、贡献+450、魂纹+3；傀儡核心×2、养魂木×4、阴凝之晶×2\n@CqdOps：修为+16000、贡献+450、魂纹+3；傀儡核心×2、傀儡核心×2、养魂木×4\n@LazyDaemo：修为+9000、贡献+450、魂纹+3；傀儡核心×2、养魂木×4、傀儡核心×2\n@SilLoop：修为+9000、贡献+450、魂纹+3；养魂木×4、阴凝之晶×2、养魂木×4\n@Davecy：修为+9000、贡献+450、魂纹+3；阴凝之晶×2、养魂木×4、傀儡核心×2",
+    "message_id": 1560002,
+    "reply_to_msg_id": 1560001,
+    "server_event_at": 1794445022.0,
+    "chat_id": -1002083016447,
+    "topic_id": 0
+  }
+]

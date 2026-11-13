@@ -1945,7 +1945,9 @@ def _format_cangkun_decision_advice(stage_info, text, *, html=False):
         advice = f"建议：选1 匿踪潜行；保守开局先压警戒{sense_note}。"
     elif "第三幕" in title or "玉矶阁取宝" in title:
         status_note = _format_cangkun_status_notes(snapshot, "fissure", "soul", "warning", "greed")
-        if (warning is not None and warning >= 45) or (soul is not None and soul <= 102):
+        if warning is None or soul is None:
+            advice = "建议：选1 先取卷轴；状态数据不完整，先保守推进，不据此增加搜刮。"
+        elif warning >= 45 or soul <= 102:
             advice = "建议：选1 先取卷轴；当前不适合继续加贪，优先卷轴线索与苍坤路线残图权重。"
         else:
             advice = "建议：选3 先探偏殿；当前可承受额外搜刮，偏殿/贪念偏向碧鸠毒囊、紫铖兜图谱等权重。"

@@ -45,6 +45,9 @@ def normalize_teams(raw, known_ids, root_for_identity):
         role = item.get("group_role", "secondary")
         if role not in ("primary", "secondary"):
             raise ValueError(f"{name}：游戏群无效")
+        automatic = item.get("auto_weekly", False)
+        if type(automatic) is not bool:
+            raise ValueError(f"{name}：周常自动补满须为开关")
         try:
             seas = get_team_seas(item)
         except ValueError as error:
@@ -65,7 +68,10 @@ def normalize_teams(raw, known_ids, root_for_identity):
                 raise ValueError(f"{name}：同一主魂只能选择一名成员（含分身）")
             roots.add(root)
             identities.append(identity_id)
-        result.append({"name": name, "group_role": role, "seas": seas, "member_identity_ids": identities})
+        team = {"name": name, "group_role": role, "seas": seas, "member_identity_ids": identities}
+        if automatic:
+            team["auto_weekly"] = True
+        result.append(team)
     return result
 
 
@@ -113,17 +119,29 @@ async def _send(ctx, run, member, command, *, deadline=0):
 
     if not allowed():
         return False
+    key = f"{day}:{member['identity_id']}:{command}"
+    attempts = run.setdefault("command_attempts", {})
+    if key in attempts:
+        return False
+    attempt = {"status": "unknown", "command": command, "identity_id": member["identity_id"], "at": time.time()}
+    attempts[key] = attempt
+    ctx.save()
     try:
         message = await ctx.send(command, track=False, send_as_id=member["identity_id"],
-                                 target_group_role=run["group_role"], skip_throttle=True,
-                                 send_guard=allowed)
+                                 target_group_role=run["group_role"], send_guard=allowed,
+                                 deadline=deadline, op_id=f"hunt:{run['started_at']}:{key}",
+                                 chain_id=f"hunt:{run['started_at']}:{day}")
         msg_id = int(getattr(message, "id", message) or 0)
     except Exception as error:
         run["last_error"] = str(error)
         ctx.save()
         return False
     if not msg_id:
+        if getattr(ctx, "definitely_unsent", lambda *_: False)(member["identity_id"], command):
+            attempt["status"] = "unsent"
+        ctx.save()
         return False
+    attempt.update(status="sent", msg_id=msg_id)
     run.setdefault("sent_commands", {})[str(msg_id)] = {
         "identity_id": member["identity_id"], "command": command, "day": day,
     }
@@ -133,8 +151,11 @@ async def _send(ctx, run, member, command, *, deadline=0):
     return True
 
 
-async def _fail(ctx, run, reason):
-    run.update(phase="failed", last_error=reason, finished_at=time.time())
+async def _fail(ctx, run, reason, *, definitive=False):
+    uncertain = not definitive and any(a.get("status") in {"sent", "unknown"}
+                                       for a in run.get("command_attempts", {}).values())
+    run.update(phase="held" if uncertain else "failed", requires_reconciliation=uncertain,
+               last_error=reason, finished_at=time.time())
     ctx.save()
     await _notice(ctx, run, reason)
 
@@ -210,7 +231,7 @@ async def start(ctx, name):
         if error:
             return False, error
         for run in ctx.runs().values():
-            if not _active(run):
+            if not (_active(run) or run.get("requires_reconciliation")):
                 continue
             if run["name"] == name or run["chat_id"] == chat_id:
                 return False, f"{run['name']} 正在该游戏群猎妖，请等待结束或停止后再出发"
@@ -232,6 +253,21 @@ async def start(ctx, name):
 
 async def control(ctx, event):
     text = (getattr(event, "raw_text", "") or "").strip()
+    confirmation = re.fullmatch(r"\.猎妖\s+确认结束\s+(\S+)\s+(\S+)", text)
+    if confirmation:
+        name, receipt_key = confirmation.groups()
+        run = ctx.runs().get(name, {})
+        if getattr(event, "date", None) is None or not 0 <= time.time() - _event_time(event) <= 60:
+            return True, "确认指令已过期，请重新发送"
+        if not run.get("requires_reconciliation") or str(run.get("started_at") or "") != receipt_key:
+            return True, "须为待核对猎妖记录，并填写状态中显示的准确记录号"
+        run.update(phase="stopped", requires_reconciliation=False, operator_confirmed_at=time.time())
+        if hasattr(ctx, "weekly"):
+            record = ctx.weekly().get(name)
+            if record:
+                record.update(phase="idle", counters={}, query=None, next_at=time.time() + 300)
+        ctx.save()
+        return True, "已记录人工确认结束，保留原回执；周常下一趟会重新核对服务器次数"
     match = CONTROL_RE.fullmatch(text)
     if match is None:
         if text.startswith(".猎妖"):
@@ -252,9 +288,10 @@ async def control(ctx, event):
         if not run or not _active(run):
             return True, f"{name} 没有正在进行的猎妖"
         run["stop_requested"] = True
+        run["requires_reconciliation"] = True
         ctx.save()
         async with _lock(name):
-            run.update(phase="stopped", finished_at=time.time())
+            run.update(phase="held", finished_at=time.time())
             ctx.save()
         return True, f"已停止 {name} 的自动操作（不会自动解散游戏中的船）"
     candidates = [r for r in ctx.runs().values() if _active(r) and r["phase"] == "awaiting_action" and (not name or r["name"] == name)]
@@ -288,7 +325,7 @@ async def game_event(ctx, event, *, event_type="message"):
     if getattr(event, "sender_id", 0) not in ctx.bot_ids():
         return False
     text = (getattr(event, "raw_text", "") or "").strip()
-    candidates = [run for run in ctx.runs().values() if _active(run) and run["chat_id"] == event.chat_id]
+    candidates = [run for run in ctx.runs().values() if (_active(run) or run.get("requires_reconciliation")) and run["chat_id"] == event.chat_id]
     if len(candidates) != 1:
         return False
     run = candidates[0]
@@ -326,7 +363,7 @@ async def game_event(ctx, event, *, event_type="message"):
     # The command ID is registered after send returns. Read it after acquiring
     # the sender's team lock so an early reply sees the completed registration.
     async with _lock(run["name"]):
-        if not _active(run):
+        if not (_active(run) or run.get("requires_reconciliation")):
             return False
         sent = run["sent_commands"].get(str(reply_id))
         if run["topic_id"] and not (top == run["topic_id"] or reply_id == run["topic_id"] or sent):
@@ -346,10 +383,13 @@ async def game_event(ctx, event, *, event_type="message"):
         cancelled = "凑不齐两名船员" in text and run["phase"] == "recruiting"
         sunk = ("沉没" in text or "沉船" in text) and (sent or all("@" + m["username"] in text for m in run["members"]))
         if settlement or cancelled or sunk:
-            run.update(phase="done" if settlement else "failed", result=text, finished_at=time.time())
+            run.update(phase="done" if settlement else "failed", requires_reconciliation=False,
+                       result=text, finished_at=time.time())
             ctx.save()
             await _notice(ctx, run, text)
             return True
+        if run.get("requires_reconciliation"):
+            return False
         if "挂起猎妖旗" in text and run["phase"] == "opening":
             names = NAME_RE.findall(text)
             own_open_reply = sent and sent["command"] == ".出海猎妖" and sent["identity_id"] == run["members"][0]["identity_id"]
@@ -478,7 +518,7 @@ async def game_event(ctx, event, *, event_type="message"):
                     await _notice(ctx, run, f"第{run['day']}日成员 {member_id} 的 .{run['action']} 未被接受：{text}（不自动补发）")
             return True
         if sent and run["phase"] in {"opening", "recruiting", "sailing"} and text and not text.startswith("你投了"):
-            await _fail(ctx, run, "游戏拒绝猎妖指令：" + text)
+            await _fail(ctx, run, "游戏拒绝猎妖指令：" + text, definitive=run["phase"] == "opening")
             return True
         ctx.save()
         return True

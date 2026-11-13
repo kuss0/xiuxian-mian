@@ -11,14 +11,14 @@ def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=
     identity_id = int(identity_id)
     if include_hunt:
         for run in get_hunt_run_state().values():
-            if (isinstance(run, dict) and run.get("phase") in ACTIVE_PHASES | {"interrupted"}
-                    and not run.get("stop_requested") and float(run.get("expires_at") or 0) > now
+            if (isinstance(run, dict) and run.get("phase") in ACTIVE_PHASES | {"interrupted", "held"}
+                    and (run.get("requires_reconciliation") or (not run.get("stop_requested") and float(run.get("expires_at") or 0) > now))
                     and any(int(member.get("identity_id") or 0) == identity_id for member in run.get("members", []))):
                 return f"猎妖船进行中（{run.get('name') or '队伍'}）"
     rosters = get_expedition_run_state().get("xuangu_auto", {}).get("rosters", {})
     for roster in rosters.values() if include_xuangu else ():
-        if (isinstance(roster, dict) and roster.get("phase") in {"waiting_open", "joining", "running", "finishing", "interrupted", "held"}
-                and not roster.get("disbanded") and float(roster.get("expires_at") or 0) > now
+        if (isinstance(roster, dict) and roster.get("phase") in {"waiting_open", "joining", "running", "finishing", "interrupted", "held", "disbanded"}
+                and (roster.get("requires_reconciliation") or (not roster.get("disbanded") and float(roster.get("expires_at") or 0) > now))
                 and any(int(member.get("identity_id") or 0) == identity_id for member in roster.get("my_members", []))):
             return "玄骨遗府进行中"
     if include_changfeng:

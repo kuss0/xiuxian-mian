@@ -5280,7 +5280,9 @@ def match_realm_breakthrough_identity(text):
     if not realm:
         return None, None
 
-    subject = raw_text.split("灵光一闪", 1)[0]
+    # Both "@角色 灵光一闪，成功突破" and the live
+    # "灵光一闪！恭喜 @角色 道友，修为精进，成功突破" name the owner here.
+    subject = raw_text[:realm_match.start()]
     matched_ids = []
     for identity_id in get_identity_ids():
         tags = get_send_as_tags(identity_id)

@@ -22,7 +22,7 @@
       └─ 所有机  → 游戏副群监听 【玄骨遗府·集结 N/5】房间 <roomId>（首位==我方队长）
                      └─ 各自给自己名下队员发 .加入玄骨 <roomId>（队长已自动入队）
   游戏副群 【玄骨遗府·第N轮：XXX】 → 按分工发 .玄骨行动 N <动作>
-  游戏副群 收尾提示              → 队长机发 .玄骨收尾 争取全收
+  游戏副群 收尾提示              → 队长机按可选项保守收拢遗宝
 """
 
 import re
@@ -35,9 +35,9 @@ _FUBEN_KIND_XUANGU = "xuangu"
 # Telegram 新消息和编辑消息可能并发到达，避免同一成员重复派发。
 _XUANGU_DISPATCHING = set()
 
-# 集合群：.开启玄骨 @队长 @队员1..4（1-5 个 @用户名）
+# 集合群：.开启玄骨 @队长 @队员1..4（5 个不同 @用户名）
 _XUANGU_ROSTER_RE = re.compile(r"^\.开启玄骨\s+(?P<roster>(?:@[A-Za-z0-9_]{3,32}\s*)+)$")
-_XUANGU_ROSTER_MIN = 1
+_XUANGU_ROSTER_MIN = 5
 _XUANGU_ROSTER_MAX = 5
 
 # 游戏副群：系统播报
@@ -50,9 +50,9 @@ _XUANGU_MEMBER_ROLE_RE = re.compile(
 _XUANGU_ACTION_ACK_RE = re.compile(r"已提交第(?P<round>\d+)轮【(?P<action>[^】]+)】")
 _XUANGU_ROUND_RE = re.compile(r"【玄骨遗府·第(?P<round>\d)轮：(?P<scene>[^】]+)】")
 _XUANGU_OUTCOME_RE = re.compile(
-    r"【玄骨遗府·(?P<outcome>争取全收|收拢遗宝|一线生机|残图异动|立即撤离|魂阵溃散)】"
+    r"【玄骨遗府·(?P<outcome>争取全收|收拢遗宝|一线生机|残图异动|立即撤离|魂阵溃散|集结取消)】"
 )
-_XUANGU_PANEL_ACTIONS_RE = re.compile(r"本轮动作：(?P<actions>[^（(]+)")
+_XUANGU_PANEL_ACTIONS_RE = re.compile(r"^本轮动作(?:[（(][^）)\n]*[）)])?[：:](?P<actions>[^\r\n]+)", re.M)
 _XUANGU_PANEL_ROLE_RE = re.compile(
     r"(?P<role>探禁|攻伐|护队|镇魂|御傀)\s*@(?P<username>[A-Za-z0-9_]{3,32})"
 )
@@ -69,10 +69,6 @@ _XUANGU_JOIN_WINDOW_SEC = 3 * 60
 _XUANGU_RUN_TTL_SEC = 30 * 60
 _XUANGU_ROSTER_TTL_SEC = 15 * 60
 _XUANGU_JOIN_DISPATCH_GAP_SEC = 2.0
-_XUANGU_MIN_SOUL_FOR_SAFE = 60
-# 收尾三选一：立即撤离 / 收拢遗宝 / 争取全收
-# 争取全收收益最高（首通徽章 + 搜宝窗口），但要求轮5有人亮招且魂稳达标
-_XUANGU_FINISH_CHOICE = "争取全收"
 # 五分工：按花名册顺序确定性分配 —— 所有实例算出的结果一致，跨机无需协调
 _XUANGU_ROLE_ORDER = ("探禁", "攻伐", "护队", "镇魂", "御傀")
 # 五人的分工必须在 bot 面板中确认后才进入；延迟仅用于发送节流。
@@ -86,7 +82,7 @@ _XUANGU_ALREADY_IN_TEAM_RE = re.compile(r"你已在玄骨队伍中")
 
 # 每轮每个分工的计划动作（取自 2026-10-15~17 日志回放的最优解）
 _XUANGU_ROUND_PLAN = {
-    1: {"探禁": "验骨", "攻伐": "护队", "护队": "护队", "镇魂": "验骨", "御傀": "护队"},
+    1: {"探禁": "验骨", "攻伐": "护队", "护队": "护队", "镇魂": "试池", "御傀": "护队"},
     2: {"探禁": "引蛇", "攻伐": "破敌", "护队": "护队", "镇魂": "镇魂", "御傀": "护队"},
     3: {"探禁": "侦察", "攻伐": "破敌", "护队": "护队", "镇魂": "侦察", "御傀": "护队"},
     4: {"探禁": "侦察", "攻伐": "护队", "护队": "护队", "镇魂": "镇魂", "御傀": "护傀"},
@@ -114,7 +110,7 @@ def parse_xuangu_roster_command(text):
             continue
         seen.add(key)
         ordered.append(name)
-    return ordered
+    return ordered if len(ordered) == 5 else None
 
 
 def parse_xuangu_assemble(text):
@@ -135,7 +131,15 @@ def parse_xuangu_round(text):
     actions_match = _XUANGU_PANEL_ACTIONS_RE.search(body)
     actions = []
     if actions_match:
-        actions = [item.strip() for item in actions_match.group("actions").split("/") if item.strip()]
+        for item in actions_match.group("actions").split("/"):
+            action = item.strip()
+            command = re.fullmatch(r"\.玄骨行动\s+(\d+)\s+([^\s]+)", action)
+            if command:
+                if int(command.group(1)) != int(match.group("round")):
+                    continue
+                action = command.group(2)
+            if re.fullmatch(r"[\u4e00-\u9fff]{2,8}", action) and action not in actions:
+                actions.append(action)
     roles = {m.group("role"): m.group("username") for m in _XUANGU_PANEL_ROLE_RE.finditer(body)}
     soul_match = _XUANGU_PANEL_SOUL_RE.search(body)
     body_match = _XUANGU_PANEL_BODY_RE.search(body)
@@ -149,6 +153,7 @@ def parse_xuangu_round(text):
         "body": (body_match.group("body") if body_match else "").strip(),
         "guard": (guard_match.group("guard") if guard_match else "").strip(),
         "finish_prompt": bool(_XUANGU_FINISH_RE.search(body)),
+        "remaining": int(seconds.group(1)) if (seconds := re.search(r"剩余\s*(\d+)\s*秒", body)) else 0,
     }
 
 
@@ -215,10 +220,8 @@ def decide_xuangu_action(round_no, role, panel, *, special_used=False):
     plan = _XUANGU_ROUND_PLAN.get(int(round_no or 0), {})
     planned = plan.get(str(role or ""), "")
 
-    # 保命优先：魂稳偏低时改打护队（护队同时是拿魂纹的条件之一）
-    if int((panel or {}).get("soul") or 0) < _XUANGU_MIN_SOUL_FOR_SAFE and _XUANGU_SAFE_ACTION in pool:
-        return _XUANGU_SAFE_ACTION, False
-
+    # Low soul makes required mechanics more urgent: never replace 引蛇/镇魂/收神
+    # with five copies of 护队. The plan already avoids optional greed actions.
     use_special = False
     if planned.startswith("亮招"):
         planned = planned.split("亮招", 1)[1].strip()
@@ -288,11 +291,20 @@ async def _send_xuangu_command(ctx, command, *, track=False, send_as_id=None):
     if key in attempts:
         return None
     phase, round_no = roster.get("phase"), roster.get("current_round")
+    action_command = command.startswith(".玄骨行动 ")
+    critical = action_command or command.startswith(".玄骨收尾 ")
+    deadline_key = "round_deadline" if action_command else "finish_deadline"
+    deadline = float(roster.get(deadline_key) or 0) if critical else 0
+    if not deadline and phase == "joining":
+        deadline = float(roster.get("room_seen_at") or time.time()) + _XUANGU_JOIN_WINDOW_SEC
 
     def allowed():
         return (ctx.flows.load().get(roster.get("flow_id")) is roster
                 and (not roster.get("disbanded") or is_disband) and roster.get("phase") == phase
                 and roster.get("current_round") == round_no
+                and (not deadline or time.time() < deadline)
+                and (not command.startswith(".玄骨行动 ") or (
+                    not roster.get("terminal_pending") and int(roster.get("observed_round") or 0) <= int(round_no or 0)))
                 and float(roster.get("expires_at") or 0) > time.time()
                 and ctx.identities.participation_enabled(send_as_id, _FUBEN_KIND_XUANGU))
 
@@ -302,7 +314,9 @@ async def _send_xuangu_command(ctx, command, *, track=False, send_as_id=None):
     attempts[key] = {"status": "unknown", "at": time.time()}
     _upsert_xuangu_roster(ctx, roster)
     msg = await ctx.messages.game_command(
-        command, track=track, send_as_id=send_as_id, target_group_role="secondary", send_guard=allowed
+        command, track=track, send_as_id=send_as_id, target_group_role="secondary", send_guard=allowed,
+        deadline=deadline, op_id=f"xuangu:{roster.get('roster_id')}:{key}",
+        chain_id=f"xuangu:{roster.get('roster_id')}:{round_no or phase}",
     )
     attempts[key]["msg_id"] = int(getattr(msg, "id", 0) or 0)
     if attempts[key]["msg_id"]:
@@ -375,11 +389,17 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
         "expires_at": now + _XUANGU_ROSTER_TTL_SEC,
     }
     roster["my_members"] = _my_xuangu_members(ctx, roster)
+    for member in roster["my_members"]:
+        error = getattr(ctx.identities, "preflight_error", lambda _: "")(member["identity_id"])
+        if error:
+            if sender_is_mine:
+                await _reply_assemble(ctx, event, f"玄骨未开房：@{member['username']} {error}")
+            return True
     # Keep one active roster per local identity, including commands from other hosts.
     mine = {member["identity_id"] for member in roster["my_members"]}
     if any(mine & {member.get("identity_id") for member in old.get("my_members", [])}
            for old in _active_xuangu_rosters(ctx, now)
-           if old.get("phase") in {"waiting_open", "joining", "running", "finishing", "held", "interrupted"}):
+           if old.get("requires_reconciliation") or old.get("phase") in {"waiting_open", "joining", "running", "finishing", "held", "interrupted"}):
         if sender_is_mine:
             await _reply_assemble(ctx, event, "本机成员已有玄骨队伍，请先核对原房间")
         return True
@@ -414,6 +434,7 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
         attempt = roster.get("command_attempts", {}).get(f"{leader_identity_id}:{ctx.commands.open}", {})
         known_unsent = attempt.get("status") == "unsent"
         roster["phase"] = "failed" if known_unsent else "held"
+        roster["requires_reconciliation"] = not known_unsent
         roster["last_error"] = "开房命令未发送" if known_unsent else "开房结果未确认，已停止自动操作，请核对游戏房间"
         _upsert_xuangu_roster(ctx, roster)
         await _reply_assemble(ctx, event, f"❌ 玄骨遗府：{roster['last_error']}｜{leader_username}")
@@ -446,6 +467,32 @@ async def handle_xuangu_disband_command(ctx: XuanguContext, event):
         return True
     roster = max(candidates, key=lambda item: float(item.get("seen_at") or 0))
     await _xuangu_disband(ctx, roster, now, "副本监听群手动解散")
+    return True
+
+
+async def handle_xuangu_confirmation(ctx: XuanguContext, event):
+    parts = str(getattr(event, "raw_text", "") or "").split()
+    if len(parts) != 2 or parts[0] != ".确认玄骨结束":
+        return False
+    if int(getattr(event, "chat_id", 0) or 0) not in set(ctx.messages.group_ids() or []):
+        return False
+    listener = ctx.messages.listener_account_id(event)
+    if not ctx.messages.is_listener_self(event, listener):
+        return True
+    date = getattr(event, "date", None)
+    if date is None or not 0 <= time.time() - date.timestamp() <= 60:
+        await _reply_assemble(ctx, event, "确认指令已过期，请重新发送")
+        return True
+    roster = next((r for r in ctx.flows.load().values()
+                   if r.get("roster_id") == parts[1] and r.get("requires_reconciliation")
+                   and int(r.get("assemble_chat_id") or 0) == int(event.chat_id)), None)
+    if roster is None:
+        await _reply_assemble(ctx, event, "须填写待核对玄骨记录的准确记录号")
+        return True
+    roster.update(phase="operator_confirmed", requires_reconciliation=False,
+                  operator_confirmed_at=time.time(), expires_at=time.time() + 300)
+    _upsert_xuangu_roster(ctx, roster)
+    await _reply_assemble(ctx, event, "已记录人工确认结束，保留原回执，不重放旧动作")
     return True
 
 
@@ -699,6 +746,7 @@ async def _xuangu_disband(ctx, roster, now, reason):
     """停止本机后续动作，并由队长在副群发送解散命令。"""
     roster["phase"] = "disbanded"
     roster["disbanded"] = True
+    roster["requires_reconciliation"] = True
     roster["last_error"] = reason
     roster["updated_at"] = now
     roster["expires_at"] = now + 300
@@ -779,10 +827,24 @@ async def _on_xuangu_round(ctx, event, panel, now):
     roster["entered"] = True  # 这是 bot 发布的实际进度，不是发送成功的推断。
     roster["phase"] = "running"
     roster["game_chat_id"] = chat_id
+    date = getattr(event, "date", None)
+    event_at = date.timestamp() if date is not None else now
+    # Legacy injected panels have no timer; real panels must supply their timer.
+    remaining = int(panel.get("remaining", 30))
+    deadline = event_at + min(30, max(0, remaining)) - 1
+    if int(roster.get("deadline_round") or 0) == round_no:
+        deadline = min(deadline, float(roster.get("round_deadline") or deadline))
+    roster.update(round_deadline=deadline, deadline_round=round_no,
+                  observed_round=max(round_no, int(roster.get("observed_round") or 0)))
     roster["expires_at"] = now + _XUANGU_RUN_TTL_SEC
     _upsert_xuangu_roster(ctx, roster)
     roles = panel.get("roles") or {}
-    for member in roster.get("my_members") or []:
+    members = list(roster.get("my_members") or [])
+    if round_no == 1:
+        # The captain just entered; let the other identities act while its
+        # existing per-identity cooldown expires.
+        members.sort(key=lambda member: int(member.get("identity_id") or 0) == int(roster.get("leader_identity_id") or 0))
+    for member in members:
         if roster.get("disbanded") or roster.get("phase") != "running" or int(roster.get("current_round") or 0) != round_no:
             return
         username = str(member.get("username") or "")
@@ -790,6 +852,12 @@ async def _on_xuangu_round(ctx, event, panel, now):
         role = _role_of_username(roles, username)
         if not role:
             continue
+        if time.time() >= deadline or roster.get("terminal_pending") or int(roster.get("observed_round") or 0) > round_no:
+            return
+        if not panel.get("actions"):
+            roster["last_error"] = f"第{round_no}轮动作池无法识别，未猜测或发送防守"
+            _upsert_xuangu_roster(ctx, roster)
+            return
         actions = roster.setdefault("round_actions", {}).setdefault(str(round_no), {})
         if key in actions:
             continue
@@ -810,19 +878,36 @@ async def _on_xuangu_round(ctx, event, panel, now):
         record["sent_at"] = now
         roster["updated_at"] = now
         _upsert_xuangu_roster(ctx, roster)
-        if msg_id > 0:
-            await ctx.sleep(_XUANGU_JOIN_DISPATCH_GAP_SEC)
+        # The shared reactive queue provides pacing; no extra sleep in the
+        # thirty-second action window.
 
 
 async def _on_xuangu_outcome(ctx, event, outcome, now):
     roster = _match_roster_for_outcome(ctx, outcome, now, event=event)
-    if roster is None or roster.get("disbanded"):
+    if roster is None:
         return
     # 残图异动是 bot 给出的收尾选择点，发完选择后仍需等待最终结算回执。
     if outcome == "残图异动":
+        if roster.get("disbanded") or roster.get("phase") != "running":
+            return  # Restart/uncertainty never authorizes resuming an old mutation.
         if roster.get("finish_requested_at"):
             return
+        text = str(getattr(event, "raw_text", "") or "")
+        choices = {choice for choice, status in re.findall(
+            r"^(立即撤离|收拢遗宝|争取全收)[（(](可选|不可选)[）)]", text, re.M) if status == "可选"}
+        choice = next((value for value in (ctx.finish_choice, "收拢遗宝", "立即撤离") if value in choices), "")
+        if not choice:
+            roster.update(phase="held", requires_reconciliation=True, last_error="未识别可用收尾选项，请核对游戏房间")
+            _upsert_xuangu_roster(ctx, roster)
+            return
         roster["phase"] = "finishing"
+        roster["terminal_pending"] = False
+        date = getattr(event, "date", None)
+        roster["finish_deadline"] = (date.timestamp() if date is not None else now) + 29
+        if time.time() >= roster["finish_deadline"]:
+            roster["last_error"] = "收尾提示已过期，未发送旧选择"
+            _upsert_xuangu_roster(ctx, roster)
+            return
         _upsert_xuangu_roster(ctx, roster)
         if roster.get("is_captain"):
             leader_identity_id = int(roster.get("leader_identity_id") or 0)
@@ -830,17 +915,18 @@ async def _on_xuangu_outcome(ctx, event, outcome, now):
             if leader_identity_id > 0 and dispatch_key not in _XUANGU_DISPATCHING:
                 _XUANGU_DISPATCHING.add(dispatch_key)
                 try:
-                    finish = f"{ctx.commands.finish} {ctx.finish_choice}"
+                    finish = f"{ctx.commands.finish} {choice}"
                     msg = await _send_xuangu_command(ctx, finish, send_as_id=leader_identity_id)
                     if int(getattr(msg, "id", 0) or 0) > 0:
                         roster["finish_requested_at"] = now
                         roster["finish_command_msg_id"] = int(msg.id)
-                        roster["finish_choice"] = ctx.finish_choice
+                        roster["finish_choice"] = choice
                         _upsert_xuangu_roster(ctx, roster)
                 finally:
                     _XUANGU_DISPATCHING.discard(dispatch_key)
         return
     roster["phase"] = "settled"
+    roster["requires_reconciliation"] = False
     roster["finished"] = True
     roster["outcome"] = outcome
     roster["updated_at"] = now
@@ -907,27 +993,32 @@ def _match_roster_for_round(ctx, room_id, panel, now, *, event=None):
 
 
 def _match_roster_for_outcome(ctx, outcome, now, *, event=None):
-    """先匹配房间或所回复的本机命令；只有唯一候选时才接受无归属播报。"""
+    """Require room, owned reply, or complete named roster; shared broadcasts
+    never belong to us merely because this host has one active room.
+    """
     candidates = [roster for roster in _active_xuangu_rosters(ctx, now)
-                  if roster.get("phase") in ("joining", "running", "finishing") and not roster.get("disbanded")]
+                  if roster.get("phase") in ("waiting_open", "joining", "running", "finishing", "held", "interrupted", "disbanded")
+                  and (not roster.get("disbanded") or roster.get("requires_reconciliation"))]
     if event is not None:
         candidates = [r for r in candidates if _roster_matches_event(r, event)]
         room_id = _find_room_for_event(None, event)
         if room_id:
             matched = [r for r in candidates if str(r.get("room_id") or "") == room_id]
             return matched[0] if len(matched) == 1 else None
-        names = {name.lower() for name in re.findall(r"@([A-Za-z0-9_]{3,32})", str(getattr(event, "raw_text", "") or ""))}
-        if names:
-            candidates = [r for r in candidates if str(r.get("leader_username") or "").lower() in names]
-        reply_to = int(getattr(event, "reply_to_msg_id", 0) or 0)
+        reply_to = int(getattr(event, "reply_to_msg_id", 0) or getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0)
         if reply_to:
             matched = [r for r in candidates if reply_to in {
                 int(r.get("enter_command_msg_id") or 0), int(r.get("finish_command_msg_id") or 0),
             } or any(int(a.get("msg_id") or 0) == reply_to
-                     for actions in (r.get("round_actions") or {}).values() for a in actions.values())]
+                     for actions in (r.get("round_actions") or {}).values() for a in actions.values())
+                or any(int(a.get("msg_id") or 0) == reply_to for a in r.get("command_attempts", {}).values())]
             if len(matched) == 1:
                 return matched[0]
-    return candidates[0] if len(candidates) == 1 else None
+        names = {name.lower() for name in re.findall(r"@([A-Za-z0-9_]{3,32})", str(getattr(event, "raw_text", "") or ""))}
+        matched = [r for r in candidates if _roster_username_set(r) and _roster_username_set(r).issubset(names)]
+        if len(matched) == 1:
+            return matched[0]
+    return None
 
 
 async def _retry_xuangu_joins(ctx, roster, now):
@@ -1010,6 +1101,20 @@ async def _retry_xuangu_joins(ctx, roster, now):
 async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
     """兜底：清过期花名册、开房超时提醒、加入失败重试。"""
     now = float(now or time.time())
+    for roster in list(ctx.flows.load().values()):
+        phase = roster.get("phase")
+        cutoff = 0
+        if phase == "joining":
+            cutoff = float(roster.get("room_seen_at") or 0) + _XUANGU_JOIN_WINDOW_SEC
+        elif phase == "running" and roster.get("round_deadline"):
+            cutoff = float(roster["round_deadline"]) + 45
+        elif phase == "finishing" and roster.get("finish_deadline"):
+            cutoff = float(roster["finish_deadline"]) + 45
+        if cutoff and now > cutoff:
+            roster.update(phase="held", requires_reconciliation=True,
+                          last_error="未收到下一阶段或最终回执，保留房间待核对", updated_at=now)
+            _upsert_xuangu_roster(ctx, roster)
+            await ctx.messages.audit(f"⚠️ 玄骨待核对｜{roster.get('room_id')}｜{roster['last_error']}", tag="MiniApp")
     _cleanup_xuangu_rosters(ctx, now)
     for roster in _active_xuangu_rosters(ctx, now):
         if roster.get("phase") == "joining" and not roster.get("disbanded") and not roster.get("entered"):
@@ -1023,7 +1128,8 @@ async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
             continue
         if now - float(roster.get("open_requested_at") or 0) < _XUANGU_OPEN_TIMEOUT_SEC:
             continue
-        roster["phase"] = "failed"
+        roster["phase"] = "held"
+        roster["requires_reconciliation"] = True
         roster["last_error"] = "开房超时未收到集结播报"
         roster["updated_at"] = now
         _upsert_xuangu_roster(ctx, roster)

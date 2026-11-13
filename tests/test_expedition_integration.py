@@ -104,6 +104,24 @@ def test_trial_session_failure_before_start_does_not_hold_a_nonexistent_run(tria
     assert state.get_expedition_run_state()["changfeng"]["1"]["phase"] == "idle"
 
 
+def test_same_grade_score_mismatch_stops_before_another_checkpoint(trial_env, monkeypatch):
+    execute = trial.execute_miniapp_http_request
+
+    def mismatch(request, transport, **kwargs):
+        result = execute(request, transport, **kwargs)
+        if request["payload"]["action"] == "checkpoint":
+            score = trial.report_score(request["payload"]["report"])
+            result.data["trial"]["result"] = {"grade": "乙", "score": score - 1}
+        return result
+
+    monkeypatch.setattr(trial, "execute_miniapp_http_request", mismatch)
+    assert not asyncio.run(trial.run_changfeng_once(1, manual=True))[0]
+    record = state.get_expedition_run_state()["changfeng"]["1"]
+    assert record["phase"] == "held" and record["daily_used"] == 1
+    assert len(record["receipts"]) == 1
+    assert [request["action"] for request in trial_env] == ["status", "start", "checkpoint"]
+
+
 def test_trial_transport_unknown_retains_record_without_retry(trial_env, monkeypatch):
     execute = trial.execute_miniapp_http_request
 

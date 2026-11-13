@@ -71,6 +71,7 @@ def main():
                     team.locator("[data-hunt-member]").nth(0).select_option("990001")
                     team.locator("[data-hunt-member]").nth(1).select_option("990002")
                     team.locator("[data-hunt-sea]").nth(1).select_option("暗礁")
+                    team.locator("[data-hunt-weekly]").check()
                     page.locator("[data-expedition-member=xuangu][value='990001']").check()
                     page.locator("[data-expedition-member=changfeng][value='990002']").check()
                     # Polling must preserve a dirty form, including its team order.
@@ -83,6 +84,7 @@ def main():
                     saved = next(item["payload"] for item in reversed(writes) if item["path"] == "/api/expedition-config")
                     assert saved["hunt_teams"][-1]["member_identity_ids"] == ["990001", "990002"]
                     assert saved["hunt_teams"][-1]["seas"] == ["近海", "暗礁", "近海"]
+                    assert saved["hunt_teams"][-1]["auto_weekly"] is True
                     assert saved["xuangu"]["enabled"] is False and saved["changfeng"]["enabled"] is False
                     assert saved["xuangu"]["participant_identity_ids"] == ["990001"]
                     assert saved["changfeng"]["participant_identity_ids"] == ["990002"]
