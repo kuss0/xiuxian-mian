@@ -322,8 +322,10 @@ async def game_event(ctx, event):
                 path_actor = run.get("yinming_roles", {}).get("辨路", run["members"][0]["identity_id"])
                 path_name = next(m["username"].lower() for m in run["members"] if m["identity_id"] == path_actor)
                 if (failed and failed[1].lower() == path_name
-                        and 1 <= run.get("stage", 0) <= 6 and any(
+                        and 1 <= run.get("stage", 0) <= 6
+                        and run.get("path_dead", {}).get(str(run["stage"])) != failed[2] and any(
                             a.get("command") == ".往 " + failed[2] and a.get("stage") == run["stage"] and a.get("status") == "sent"
+                            and ctx.event_time(event) >= a.get("at", 0)
                             for a in run["attempts"].values())):
                     run.setdefault("path_dead", {})[str(run["stage"])] = failed[2]
                     run["retry_step"] = run["stage"]

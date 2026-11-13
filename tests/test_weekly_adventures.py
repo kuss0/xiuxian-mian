@@ -389,6 +389,55 @@ def test_owned_dead_road_receipt_allows_one_evidence_based_alternative(env):
     asyncio.run(run())
 
 
+def test_duplicate_dead_road_receipt_after_alternative_does_not_hold_or_resend(env):
+    async def run():
+        record = await open_run(env, "yinming")
+        text = "【阴冥 第4/6步】雾中三条路\n辨路者：死路不在中边。感魂者：阴魂守在正中那条路上。\n阳气 8/8"
+        await weekly.game_event(env.ctx, event(env, text, mid=13177017))
+        assert env.sends[-1][0] == ".往 左"
+        dead = event(env, "@member1 选了左边——一头撞上死路，折返时又耗了些力气（阳气 -1，剩 7）。", mid=13177020)
+        repeat = event(env, text.replace("8/8", "7/8"), mid=13177021)
+        await weekly.game_event(env.ctx, dead)
+        await weekly.game_event(env.ctx, repeat)
+        assert env.sends[-1][0] == ".往 右"
+        count = len(env.sends)
+        # Another listener can deliver the same death/panel after the first
+        # listener has already sent the confirmed alternative.
+        await weekly.game_event(env.ctx, dead)
+        await weekly.game_event(env.ctx, repeat)
+        assert record["phase"] == "running"
+        assert len(env.sends) == count
+        await weekly.game_event(env.ctx, event(env,
+            "【阴冥 第5/6步】雾中三条路\n辨路者：死路不在右边。感魂者：阴魂守在正中那条路上。\n阳气 7/8", mid=13177025))
+        assert record["stage"] == 5 and env.sends[-1][0] == ".往 右"
+        assert len(env.sends) == count + 1
+
+    asyncio.run(run())
+
+
+def test_delayed_dead_road_receipt_cannot_authorize_retry_of_a_later_stage(env):
+    async def run():
+        record = await open_run(env, "yinming")
+        clue = "辨路者：死路不在中边。感魂者：阴魂守在正中那条路上。\n阳气 8/8"
+        await weekly.game_event(env.ctx, event(env, "【阴冥 第4/6步】\n" + clue))
+        env.now[0] += 5
+        dead = event(env, "@member1 选了左边——一头撞上死路，阳气 -1。")
+        await weekly.game_event(env.ctx, dead)
+        await weekly.game_event(env.ctx, event(env, "【阴冥 第4/6步】\n" + clue.replace("8/8", "7/8")))
+        env.now[0] += 10
+        next_panel = event(env, "【阴冥 第5/6步】\n" + clue.replace("8/8", "7/8"))
+        await weekly.game_event(env.ctx, next_panel)
+        assert env.sends[-1][0] == ".往 左"
+        count = len(env.sends)
+        await weekly.game_event(env.ctx, dead)
+        await weekly.game_event(env.ctx, next_panel)
+        assert record["phase"] == "running" and record["stage"] == 5
+        assert record.get("retry_step") is None and record["path_dead"] == {"4": "左"}
+        assert len(env.sends) == count
+
+    asyncio.run(run())
+
+
 def test_yinming_ambiguous_fight_uses_documented_counter():
     members = [{"identity_id": 1}, {"identity_id": 2}]
     text = "【暴风山 第1/3招】破招口诀：沉肩→侧闪；扫腿→不动；虚晃→下压。辨路者看温天仁的起手，不是「沉肩」就是「扫腿」。\n阳气 {}/8"
