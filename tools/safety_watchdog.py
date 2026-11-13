@@ -362,6 +362,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_safe_divination_exchange_global_gap_pair(prev, cur)
         or is_safe_xuangu_reactive_gap_pair(prev, cur)
         or is_safe_hunt_reactive_gap_pair(prev, cur)
+        or is_safe_weekly_reactive_gap_pair(prev, cur)
     )
 
 
@@ -396,13 +397,31 @@ def is_safe_xuangu_reactive_gap_pair(prev: dict, cur: dict) -> bool:
 
 def is_safe_hunt_reactive_gap_pair(prev: dict, cur: dict) -> bool:
     if (cur.get("source_module") != "出海猎妖" or cur.get("priority") != "urgent_reactive"
-            or cur.get("text") not in {".探路", ".出手", ".护船", ".祭符"}
+            or cur.get("text") not in {".登船", ".探路", ".出手", ".护船", ".祭符"}
             or float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 1
             or prev.get("op_id") == cur.get("op_id")):
         return False
-    op = re.fullmatch(r"hunt:([1-9]\d*(?:\.\d+)?):([1-3]):([1-9]\d*):(\.[^:]+)", str(cur.get("op_id") or ""))
+    op = re.fullmatch(r"hunt:([1-9]\d*(?:\.\d+)?):([0-3]):([1-9]\d*):(\.[^:]+)", str(cur.get("op_id") or ""))
     return bool(op and str(cur.get("sender_id")) == op.group(3) and cur.get("text") == op.group(4)
+                and (op.group(2) == "0") == (cur.get("text") == ".登船")
                 and cur.get("chain_id") == f"hunt:{op.group(1)}:{op.group(2)}")
+
+
+def is_safe_weekly_reactive_gap_pair(prev: dict, cur: dict) -> bool:
+    if (cur.get("source_module") != "组队周常" or cur.get("priority") != "urgent_reactive"
+            or float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 1
+            or prev.get("op_id") == cur.get("op_id")):
+        return False
+    op = re.fullmatch(r"weekly:(tianlan|yuejing|yinming):([1-9]\d*):([1-9]\d*):([1-9]\d*):(\.[^:\r\n]+)", str(cur.get("op_id") or ""))
+    if not op or str(cur.get("sender_id")) != op[4] or cur.get("text") != op[5]:
+        return False
+    commands = {
+        "tianlan": r"\.(?:潜行|斩哨|诱敌|闪避|稳心|封地)",
+        "yuejing": r"\.(?:查访 (?:城南道观|散修集市|秦府夜宴)|迎战 (?:青纹|铁罗|冰妖|叶蛇)|破幕|闪身|强攻|真凰符)",
+        "yinming": r"\.(?:往 [左中右]|应招 (?:侧闪|下压|不动))",
+    }
+    return bool(re.fullmatch(commands[op[1]], op[5])
+                and cur.get("chain_id") == f"weekly:{op[1]}:{op[2]}:{op[3]}")
 
 
 def is_sect_teach_command(text: str) -> bool:
@@ -671,6 +690,8 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
         return False
     if is_safe_storage_bag_retry_repeat(prev, cur, text):
         return True
+    if is_safe_weekly_stage_repeat(prev, cur, text):
+        return True
     if parse_heart_choice_op(prev) and parse_heart_choice_op(cur) and is_safe_heart_global_gap_pair(prev, cur):
         return True
     if str(prev.get("priority") or "").strip().lower() == "retry":
@@ -678,6 +699,20 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     if not is_controlled_retry_event(cur):
         return False
     return has_matching_send_markers(prev, cur)
+
+
+def is_safe_weekly_stage_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if (prev.get("text") != text or cur.get("text") != text
+            or prev.get("sender_id") != cur.get("sender_id")
+            or float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 10):
+        return False
+    for item in (prev, cur):
+        preceding = {"_epoch": float(item.get("_epoch", 0)) - 1, "op_id": "metadata-check"}
+        if not is_safe_weekly_reactive_gap_pair(preceding, item):
+            return False
+    before = str(prev["chain_id"]).split(":")
+    after = str(cur["chain_id"]).split(":")
+    return before[:3] == after[:3] and int(after[3]) > int(before[3])
 
 
 def parse_storage_bag_transfer_op(item: dict, text: str | None = None) -> tuple[str, str, int] | None:

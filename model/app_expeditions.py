@@ -6,7 +6,9 @@ import traceback
 
 from .app_hunt import handle_hunt_game_event, handle_hunt_log_command, hunt_target, reset_hunt_runtime_on_startup, run_hunt_scheduler
 from .app_xuangu import handle_xuangu_game_event, reset_xuangu_runtime_on_startup, run_xuangu_scheduler
+from .app_weekly_adventures import handle_weekly_game_event, reset_weekly_on_startup, run_weekly_scheduler
 from .features import changfeng_trial, hunt
+from .features.weekly_adventures import KINDS
 from .persistence import save_state
 from .runtime import send_audit_log, track_background_task
 from .state import (
@@ -43,8 +45,12 @@ def get_expedition_snapshot():
         "hunt_runs": [{key: copy.deepcopy(run.get(key)) for key in ("name", "phase", "day", "last_error", "result", "started_at", "requires_reconciliation")}
                       for run in get_hunt_run_state().values() if isinstance(run, dict)],
         "hunt_weekly": copy.deepcopy(get_expedition_run_state().get("hunt_weekly", {})),
+        "weekly": copy.deepcopy(config.get("weekly", {})),
+        "weekly_state": copy.deepcopy(get_expedition_run_state().get("weekly", {})),
         "xuangu": {"enabled": bool(xuangu.get("enabled")), "participant_identity_ids": xuangu.get("participant_identity_ids", []),
-                   "finish_choice": xuangu.get("finish_choice", "收拢遗宝")},
+                   "finish_choice": xuangu.get("finish_choice", "收拢遗宝"), "auto_daily": bool(xuangu.get("auto_daily")),
+                   "weekly_limit": xuangu.get("weekly_limit", 3)},
+        "xuangu_daily": copy.deepcopy(get_expedition_run_state().get("xuangu_daily", {})),
         "xuangu_runs": [{"name": f"玄骨 @{run.get('leader_username') or ''}",
                          **{key: copy.deepcopy(run.get(key)) for key in ("phase", "room_id", "outcome", "last_error", "roster_id", "requires_reconciliation")}}
                         for run in get_expedition_run_state().get("xuangu_auto", {}).get("rosters", {}).values() if isinstance(run, dict)],
@@ -83,7 +89,14 @@ def ui_set_expedition_config(payload):
                 raise ValueError("玄骨收尾选项无效")
             if raw.get("enabled") and not hunt_target("secondary")[0]:
                 raise ValueError("请先配置游戏副群")
+            automatic = raw.get("auto_daily", config.get("xuangu", {}).get("auto_daily", False))
+            if type(automatic) is not bool:
+                raise ValueError("玄骨有票自动须为开关")
+            weekly_limit = raw.get("weekly_limit", config.get("xuangu", {}).get("weekly_limit", 3))
+            if type(weekly_limit) is not int or not 1 <= weekly_limit <= 7:
+                raise ValueError("玄骨每周限额须为1–7次")
             config["xuangu"] = {"enabled": raw.get("enabled", False), "finish_choice": choice,
+                                "auto_daily": automatic, "weekly_limit": weekly_limit,
                                 "participant_identity_ids": _participants(raw.get("participant_identity_ids", []))}
         if "changfeng" in payload:
             raw = payload["changfeng"]
@@ -97,6 +110,17 @@ def ui_set_expedition_config(payload):
                 raise ValueError("长风每日限额须为 1–8 场")
             config["changfeng"] = {"enabled": raw.get("enabled", False), "arenas": list(dict.fromkeys(arenas)),
                                    "daily_limit": int(limit), "participant_identity_ids": _participants(raw.get("participant_identity_ids", []))}
+        if "weekly" in payload:
+            raw = payload["weekly"]
+            if not isinstance(raw, dict) or type(raw.get("enabled", False)) is not bool:
+                raise ValueError("组队周常配置格式错误")
+            kinds = raw.get("kinds", list(KINDS))
+            if not isinstance(kinds, list) or any(kind not in KINDS for kind in kinds):
+                raise ValueError("组队周常玩法无效")
+            if raw.get("enabled") and not hunt_target("secondary")[0]:
+                raise ValueError("请先配置游戏副群")
+            config["weekly"] = {"enabled": raw.get("enabled", False), "kinds": list(dict.fromkeys(kinds)),
+                                "participant_identity_ids": _participants(raw.get("participant_identity_ids", []))}
     except (TypeError, ValueError, OverflowError) as exc:
         return False, str(exc)
     set_hunt_teams(teams)
@@ -113,6 +137,16 @@ async def handle_expedition_log_command(event):
     if handled:
         return handled, message
     text = str(getattr(event, "raw_text", "") or "").strip()
+    if text.startswith(".周常"):
+        from .app_weekly_adventures import _context
+        from .features.weekly_adventures import confirm_finished
+        parts = text.split()
+        if len(parts) == 4 and parts[1] == "确认结束":
+            date = getattr(event, "date", None)
+            if date is None or not 0 <= time.time() - date.timestamp() <= 60:
+                return True, "确认指令已过期，请重新发送"
+            return True, (await confirm_finished(_context(), parts[2], parts[3]))[1]
+        return True, "待核对玩法须先核对游戏结果，再发送 .周常 确认结束 tianlan/yuejing/yinming 记录号"
     if not text.startswith(".长风试炼"):
         return False, ""
     parts = text.split()
@@ -157,7 +191,7 @@ def _manual_done(task):
 
 async def handle_expedition_game_event(event, *, event_type="message"):
     # Feature locks serialize early replies without holding the shared listener pipeline.
-    for handler in (handle_hunt_game_event, handle_xuangu_game_event):
+    for handler in (handle_hunt_game_event, handle_xuangu_game_event, handle_weekly_game_event):
         if handler is handle_hunt_game_event and not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()):
             continue
         if handler is handle_xuangu_game_event and not get_expedition_config().get("xuangu", {}).get("enabled"):
@@ -168,14 +202,14 @@ async def handle_expedition_game_event(event, *, event_type="message"):
 
 
 async def _run_tick(now):
-    for handler in (run_hunt_scheduler, run_xuangu_scheduler, changfeng_trial.run_changfeng_scheduler):
+    for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, changfeng_trial.run_changfeng_scheduler):
         await _isolated(handler, now)
 
 
 async def run_expedition_scheduler(now):
     global _TICK_TASK
     config = get_expedition_config()
-    if not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng")):
+    if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "weekly")):
         return
     if _TICK_TASK is not None and not _TICK_TASK.done():
         return
@@ -188,6 +222,7 @@ def reset_expedition_runtime_on_startup():
     reset_hunt_runtime_on_startup()
     reset_xuangu_runtime_on_startup()
     changfeng_trial.reset_changfeng_runtime_on_startup()
+    reset_weekly_on_startup()
 
 
 async def shutdown_expeditions():

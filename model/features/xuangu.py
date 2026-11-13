@@ -358,6 +358,17 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
             await _reply_assemble(ctx, event, "用法：.开启玄骨 @队长 @队员1 @队员2 @队员3 @队员4")
         return True
 
+    return await start_xuangu_roster(ctx, roster_names, int(event.chat_id), sender_is_mine=sender_is_mine, event=event)
+
+
+async def start_xuangu_roster(ctx, roster_names, chat_id, *, sender_is_mine=True, event=None, auto_daily=False):
+    """Share one opening chain between manual assembly and ticket-gated automation."""
+    async def reply(text):
+        if event is not None:
+            await _reply_assemble(ctx, event, text)
+        else:
+            await ctx.messages.audit(text, tag="MiniApp")
+
     now = time.time()
     _cleanup_xuangu_rosters(ctx, now)
     leader_username = roster_names[0]
@@ -368,12 +379,13 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
     )
 
     roster = {
-        "roster_id": _make_xuangu_roster_id(event.chat_id, leader_username, now),
-        "assemble_chat_id": int(getattr(event, "chat_id", 0) or 0),
+        "roster_id": _make_xuangu_roster_id(chat_id, leader_username, now),
+        "assemble_chat_id": chat_id,
         "leader_username": str(leader_username).lstrip("@"),
         "leader_identity_id": int(leader_identity_id or 0),
         "members": [str(name).lstrip("@") for name in roster_names],
         "phase": "waiting_open",
+        "auto_daily": auto_daily,
         "room_id": "",
         "is_captain": captain_mine,
         "my_members": [],
@@ -393,7 +405,7 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
         error = getattr(ctx.identities, "preflight_error", lambda _: "")(member["identity_id"])
         if error:
             if sender_is_mine:
-                await _reply_assemble(ctx, event, f"玄骨未开房：@{member['username']} {error}")
+                await reply(f"玄骨未开房：@{member['username']} {error}")
             return True
     # Keep one active roster per local identity, including commands from other hosts.
     mine = {member["identity_id"] for member in roster["my_members"]}
@@ -401,7 +413,7 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
            for old in _active_xuangu_rosters(ctx, now)
            if old.get("requires_reconciliation") or old.get("phase") in {"waiting_open", "joining", "running", "finishing", "held", "interrupted"}):
         if sender_is_mine:
-            await _reply_assemble(ctx, event, "本机成员已有玄骨队伍，请先核对原房间")
+            await reply("本机成员已有玄骨队伍，请先核对原房间")
         return True
     roster["flow_id"] = roster["roster_id"]
     _upsert_xuangu_roster(ctx, roster)
@@ -415,13 +427,11 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
         roster["last_error"] = "队长不是发起人的账号"
         roster["updated_at"] = time.time()
         _upsert_xuangu_roster(ctx, roster)
-        await _reply_assemble(ctx, event, f"队长不是您的账号：{leader_username}")
+        await reply(f"队长不是您的账号：{leader_username}")
         return True
 
     mates = " ".join("@" + name for name in roster["members"][1:]) or "无"
-    await _reply_assemble(
-        ctx,
-        event,
+    await reply(
         f"玄骨遗府集结：队长 {leader_username}｜队员 {mates}\n"
         f"本机负责 {len(roster['my_members'])} 人｜正在游戏副群开启房间…",
     )
@@ -437,7 +447,7 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
         roster["requires_reconciliation"] = not known_unsent
         roster["last_error"] = "开房命令未发送" if known_unsent else "开房结果未确认，已停止自动操作，请核对游戏房间"
         _upsert_xuangu_roster(ctx, roster)
-        await _reply_assemble(ctx, event, f"❌ 玄骨遗府：{roster['last_error']}｜{leader_username}")
+        await reply(f"❌ 玄骨遗府：{roster['last_error']}｜{leader_username}")
         return True
     roster["updated_at"] = time.time()
     _upsert_xuangu_roster(ctx, roster)
@@ -597,6 +607,17 @@ async def _on_xuangu_assemble(ctx, event, assemble, now):
         return
     if str(roster.get("room_id") or "") and str(roster.get("room_id")) != str(room_id):
         return  # 本花名册已锁定别的房间
+
+    if roster.get("auto_daily"):
+        body = str(getattr(event, "raw_text", "") or "")
+        for name in usernames:
+            key = name.lstrip("@").lower()
+            line = next((line for line in body.splitlines() if line.lower().startswith("@" + key + "｜")), "")
+            if not line.endswith("｜可领奖"):
+                roster.update(room_id=str(room_id), game_chat_id=int(getattr(event, "chat_id", 0) or 0),
+                              game_topic_id=_event_topic_id(event))
+                await _xuangu_disband(ctx, roster, now, "游戏未确认全队可领奖，取消并保留门票")
+                return
 
     if roster.get("game_chat_id") and int(roster["game_chat_id"]) != int(getattr(event, "chat_id", 0) or 0):
         return

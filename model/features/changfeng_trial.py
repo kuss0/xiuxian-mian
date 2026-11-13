@@ -290,8 +290,9 @@ async def run_changfeng_once(identity_id, arena="longwind", *, manual=False, sta
                 status = response.get("status")
                 if not isinstance(status, dict):
                     raise TrialError("trial_status_missing")
-                observed = {key: copy.deepcopy(status[key]) for key in ("used", "limit", "remaining", "carryAvailable", "tier") if key in status}
+                observed = {key: copy.deepcopy(status[key]) for key in ("used", "limit", "remaining", "carryAvailable", "tier", "day", "arena") if key in status}
                 record.update(observed_status=observed, observed_at=time.time())
+                record.setdefault("observed_arenas", {})[arena] = {"status": observed, "observed_at": record["observed_at"]}
                 _save()
                 message = f"游戏状态：{json.dumps(observed, ensure_ascii=False)}；本地阶段 {record['phase']}，核对不会补发动作"
                 await send_audit_log(message, scope="identity", send_as_id=identity_id, limit=700)

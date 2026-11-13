@@ -48,7 +48,7 @@ async def _send_hunt_command(command, *, send_as_id, target_group_role, send_gua
     chat_id, _topic_id = hunt_target(target_group_role)
     if not chat_id or not send_guard() or (deadline and time.time() >= deadline):
         return None
-    critical = command in {".探路", ".出手", ".护船", ".祭符"} and deadline > 0
+    critical = command in {".登船", ".探路", ".出手", ".护船", ".祭符"} and deadline > 0
     queue_timeout = min(45.0, max(0.1, deadline - time.time())) if deadline else 45.0
     return await send_game_command(
         command, track=False, send_as_id=send_as_id, target_chat_id=chat_id,

@@ -423,7 +423,7 @@ async def game_event(ctx, event, *, event_type="message"):
             run.update(phase="recruiting", confirmed=[run["members"][0]["identity_id"]], deadline=time.time() + 92)
             ctx.save()
             for member in run["members"][1:]:
-                if not await _send(ctx, run, member, ".登船"):
+                if not await _send(ctx, run, member, ".登船", deadline=run["deadline"]):
                     run.setdefault("join_rejected", []).append(member["identity_id"])
                     ctx.save()
                     await _notice(ctx, run, f"{member['username']} 登船发送失败，继续等待实际船员面板")

@@ -6,9 +6,14 @@ from .state import get_expedition_run_state, get_hunt_run_state, get_replica_run
 from .features.hunt import ACTIVE_PHASES
 
 
-def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=True, include_changfeng=True, include_replica=True, now=None):
+def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=True, include_changfeng=True, include_replica=True, include_weekly=True, now=None):
     now = time.time() if now is None else float(now)
     identity_id = int(identity_id)
+    if include_weekly:
+        for run in get_expedition_run_state().get("weekly", {}).get("runs", {}).values():
+            if (run.get("phase") in {"opening", "joining", "running", "held", "interrupted"}
+                    and any(int(member.get("identity_id") or 0) == identity_id for member in run.get("members", []))):
+                return "组队周常进行中或待核对"
     if include_hunt:
         for run in get_hunt_run_state().values():
             if (isinstance(run, dict) and run.get("phase") in ACTIVE_PHASES | {"interrupted", "held"}

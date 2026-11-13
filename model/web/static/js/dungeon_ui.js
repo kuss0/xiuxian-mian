@@ -435,6 +435,7 @@ function renderExpeditionConfig(replica) {
   const config = replica.expeditions || {};
   const xuangu = config.xuangu || {};
   const changfeng = config.changfeng || {};
+  const weeklyConfig = config.weekly || {};
   const identities = replica.identity_options || [];
   const members = function(kind, selected) {
     return '<div class="replica-config-grid">' + identities.map(function(identity) {
@@ -459,10 +460,22 @@ function renderExpeditionConfig(replica) {
     + '<button type="button" class="btn btn-secondary" data-hunt-add>新增队伍</button>' + weekly + '</div>'
     + '<div class="dungeon-section"><h4>玄骨遗府</h4><label class="checkbox-inline"><input type="checkbox" name="xuangu_enabled"' + (xuangu.enabled ? ' checked' : '') + ' />开启集结与副群应对</label>'
     + '<p>在副本群发送「.开启玄骨 @队长 @队员1 @队员2 @队员3 @队员4」，五人须结丹以上，游戏操作使用副群。</p>'
+    + '<label class="checkbox-inline"><input type="checkbox" name="xuangu_auto_daily"' + (xuangu.auto_daily ? ' checked' : '') + ' />有古府寻踪珠时自动组队，每天最多一次</label><label class="form-label">每周最多次数<input class="text-input" type="number" name="xuangu_weekly_limit" min="1" max="7" value="' + escapeHtml(xuangu.weekly_limit || 3) + '" /></label><p>默认每周最多三次；开房前刷新背包，入场前核对全队可领奖。无票跳过，不购买或兑换。</p>'
     + members('xuangu', xuangu.participant_identity_ids)
     + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
       return '<option' + ((xuangu.finish_choice || '收拢遗宝') === choice ? ' selected' : '') + '>' + choice + '</option>';
     }).join('') + '</select></label></div>'
+    + '<div class="dungeon-section"><h4>组队周常</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />自动补满每周两次</label><p>天澜草原、阴冥之地要求元婴；越京夜行要求筑基。按当前境界选人，五号统一协调，遇到未知结果停止并保留原局。</p>'
+    + members('weekly', weeklyConfig.participant_identity_ids)
+    + [['tianlan', '天澜草原'], ['yuejing', '越京夜行'], ['yinming', '阴冥之地']].map(function(item) {
+      const run = ((config.weekly_state || {}).runs || {})[item[0]] || {};
+      const quotas = ((config.weekly_state || {}).quotas || {})[item[0]] || {};
+      return '<label class="checkbox-inline"><input type="checkbox" data-weekly-kind="' + item[0] + '"' + ((weeklyConfig.kinds || []).includes(item[0]) ? ' checked' : '') + ' />' + item[1] + '</label><p>'
+        + escapeHtml((run.phase || '待安排') + (run.last_error ? '｜' + run.last_error : '') + '｜' + Object.keys(quotas).map(function(id) {
+          const identity = identities.find(function(row) { return String(row.identity_id) === id; }) || {};
+          return (identity.display_name || id) + ' ' + quotas[id].used + '/2';
+        }).join('，')) + '</p>';
+    }).join('') + '</div>'
     + '<div class="dungeon-section"><h4>长风试炼</h4><label class="checkbox-inline"><input type="checkbox" name="changfeng_enabled"' + (changfeng.enabled ? ' checked' : '') + ' />开启每日试炼</label>'
     + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
     + members('changfeng', changfeng.participant_identity_ids)
@@ -507,7 +520,9 @@ document.addEventListener('submit', async function(event) {
         seas: Array.from(row.querySelectorAll('[data-hunt-sea]')).map(function(select) { return select.value; }),
         member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
     }),
-    xuangu: {enabled: form.elements.xuangu_enabled.checked, finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
+    xuangu: {enabled: form.elements.xuangu_enabled.checked, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
+    weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'),
+      kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; })},
     changfeng: {enabled: form.elements.changfeng_enabled.checked, daily_limit: Number(form.elements.changfeng_limit.value), participant_identity_ids: selectedMembers('changfeng'),
       arenas: Array.from(form.querySelectorAll('[data-changfeng-arena]:checked')).map(function(input) { return input.dataset.changfengArena; })}
   };
