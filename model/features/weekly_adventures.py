@@ -89,7 +89,7 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
                 ("仰头张口", "强攻"), ("双手结印", "强攻"),
                 ("厚茧", "闪身"), ("影子忽然拉长", "破幕"),
             ) if phrase in clue), "")
-            if int(match[2]) > 0 and (not action or "厚茧" in clue or "影子忽然拉长" in clue):
+            if int(match[2]) > 0 and (not action or any(p in clue for p in ("厚茧", "影子忽然拉长", "双手结印"))):
                 return 4 + int(match[1]), 45, [(ids[0], ".真凰符")]
             # The wall can be a feint too. Use a talisman when one is available;
             # after both are gone, retain the explicit base-action fallback.

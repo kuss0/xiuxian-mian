@@ -390,6 +390,14 @@ def test_real_yinming_roles_and_public_counter_instructions(env, path_actor, sou
     asyncio.run(run())
 
 
+def test_real_ambiguous_yuejing_seal_clue_uses_available_talisman():
+    # The same clue led to blood curtain at 13176357 and blood drain at
+    # 13176381. A single fixed counter cannot answer both real outcomes.
+    text = ("第 2/5 回合　教主 10/15　血祭 40%　真凰符 2 张\n"
+            "征兆：教主双手结印，被擒的散修身上飘起缕缕血丝。\n.破幕 / .闪身 / .强攻")
+    assert weekly.panel("yuejing", text, [{"identity_id": 1}])[2] == [(1, ".真凰符")]
+
+
 def test_weekly_realm_selection_excludes_two_jiedan_accounts(monkeypatch):
     monkeypatch.setattr(app_weekly_adventures, "_config", lambda: {"participant_identity_ids": [1, 2, 3, 4, 5]})
     monkeypatch.setattr(app_weekly_adventures, "get_identity_ids", lambda: [1, 2, 3, 4, 5])
