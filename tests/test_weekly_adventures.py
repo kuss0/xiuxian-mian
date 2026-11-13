@@ -48,7 +48,7 @@ async def open_run(env, kind="yuejing"):
     env.enabled.add(kind)
     await weekly.scheduler(env.ctx, env.now[0])
     reply = 100 + len(env.sends)
-    await weekly.game_event(env.ctx, event(env, f"【{weekly.KINDS[kind]['label']}】@member1 要出发，发指令加入。", reply=reply))
+    await weekly.game_event(env.ctx, event(env, f"【{weekly.KINDS[kind]['label']}】@member1 要出发，发 {weekly.KINDS[kind]['join']} 加入。", reply=reply))
     run = env.records["runs"][kind]
     names = "、".join("@" + m["username"] for m in run["members"])
     start = {"yuejing": f"【越京夜行】夜色里，{names} 潜入越国京城。",
@@ -161,6 +161,31 @@ def test_unknown_open_is_not_replayed(env):
         attempt = copy.deepcopy(record["attempts"])
         await weekly.scheduler(env.ctx, env.now[0] + 86400)
         assert record["attempts"] == attempt
+    asyncio.run(run())
+
+
+def test_tianlan_owned_ack_waits_for_separate_named_recruitment(env):
+    async def run():
+        env.enabled.clear(); env.enabled.add("tianlan")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env, "你在草原边上等同行的人。", reply=101))
+        record = env.records["runs"]["tianlan"]
+        assert record["phase"] == "opening" and record["open_acknowledged"]
+        assert len(env.sends) == 1
+        await weekly.game_event(env.ctx, event(env,
+            "【天澜草原】@member1 要横穿天澜草原，2 分钟内发 .同行 加入（元婴以上，不同主魂，3–5 人）。"))
+        assert record["phase"] == "joining" and len(env.sends) == 5
+    asyncio.run(run())
+
+
+def test_yinming_real_recruitment_needs_no_literal_join_word(env):
+    async def run():
+        env.enabled.clear(); env.enabled.add("yinming")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env,
+            "【阴冥之地】@member1 立在鬼雾边上，等一位同行者。2 分钟内发 .同入阴冥（元婴以上，另一主魂）。进去后每一步的线索都公开在群里。", reply=101))
+        assert env.records["runs"]["yinming"]["phase"] == "joining"
+        assert env.sends[-1][0] == ".同入阴冥"
     asyncio.run(run())
 
 

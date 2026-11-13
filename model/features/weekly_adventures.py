@@ -308,8 +308,16 @@ async def game_event(ctx, event):
                     run["retry_step"] = run["stage"]
                     ctx.save()
             spec = KINDS[kind]
-            if (run["phase"] == "opening" and owned and owned["command"] == spec["open"]):
-                if not (spec["label"] in text and "加入" in text and run["members"][0]["username"].lower() in names(text)):
+            recruit = (spec["label"] in text and spec["join"] in text
+                       and names(text) == {run["members"][0]["username"].lower()})
+            own_open = owned and owned["command"] == spec["open"]
+            sent_open = any(a.get("command") == spec["open"] and a.get("status") == "sent" for a in attempts)
+            if run["phase"] == "opening" and (own_open or recruit and sent_open):
+                if own_open and kind == "tianlan" and text == "你在草原边上等同行的人。":
+                    run["open_acknowledged"] = True
+                    ctx.save()
+                    return True  # The separately broadcast named recruitment owns the join chain.
+                if not recruit:
                     await hold(ctx, run, "游戏未确认本队招募：" + text[:250])
                     return True
                 run.update(phase="joining", deadline=ctx.event_time(event) + (300 if kind == "yuejing" else 120))
