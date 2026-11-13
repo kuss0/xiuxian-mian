@@ -412,16 +412,17 @@ def is_safe_weekly_reactive_gap_pair(prev: dict, cur: dict) -> bool:
             or float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 1
             or prev.get("op_id") == cur.get("op_id")):
         return False
-    op = re.fullmatch(r"weekly:(tianlan|yuejing|yinming):([1-9]\d*):(0|[1-9]\d*):([1-9]\d*):(\.[^:\r\n]+)", str(cur.get("op_id") or ""))
+    op = re.fullmatch(r"weekly:(tianlan|yuejing|yinming|qipai):([1-9]\d*):(0|[1-9]\d*):([1-9]\d*):(\.[^:\r\n]+)", str(cur.get("op_id") or ""))
     if not op or str(cur.get("sender_id")) != op[4] or cur.get("text") != op[5]:
         return False
     commands = {
         "tianlan": r"\.(?:潜行|斩哨|诱敌|闪避|稳心|封地)",
         "yuejing": r"\.(?:查访 (?:城南道观|散修集市|秦府夜宴)|迎战 (?:青纹|铁罗|冰妖|叶蛇)|破幕|闪身|强攻|真凰符)",
         "yinming": r"\.(?:往 [左中右]|应招 (?:侧闪|下压|不动))",
+        "qipai": r"\.(?:准|点将 (?:黄枫谷|掩月宗|灵兽山|清虚门|化刀坞|天阙堡|巨剑门)(?: (?:黄枫谷|掩月宗|灵兽山|清虚门|化刀坞|天阙堡|巨剑门)){1,3})",
     }
-    joining = {"tianlan": ".同行", "yuejing": ".同往", "yinming": ".同入阴冥"}
-    valid_command = op[5] == joining[op[1]] if op[3] == "0" else re.fullmatch(commands[op[1]], op[5])
+    joining = {"tianlan": {".同行"}, "yuejing": {".同往"}, "yinming": {".同入阴冥"}, "qipai": {".入议", ".开议"}}
+    valid_command = op[5] in joining[op[1]] if op[3] == "0" else re.fullmatch(commands[op[1]], op[5])
     return bool(valid_command
                 and cur.get("chain_id") == f"weekly:{op[1]}:{op[2]}:{op[3]}")
 

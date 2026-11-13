@@ -52,6 +52,11 @@ async def open_run(env, kind="yuejing"):
     await weekly.game_event(env.ctx, event(env, f"【{weekly.KINDS[kind]['label']}】@member1 要出发，发 {weekly.KINDS[kind]['join']} 加入。", reply=reply))
     run = env.records["runs"][kind]
     names = "、".join("@" + m["username"] for m in run["members"])
+    if kind == "qipai":
+        await weekly.game_event(env.ctx, event(env, f"@member5 入议，现有 5 位长老：{names}", reply=105))
+        await weekly.game_event(env.ctx, event(env, "【七派密议·开议】", reply=106))
+        assert run["bound"] and run["phase"] == "running"
+        return run
     start = {"yuejing": f"【越京夜行】夜色里，{names} 潜入越国京城。",
              "tianlan": f"【天澜草原】{names} 一行进了草原。",
              "yinming": "【阴冥之地】@member1（辨路）、@member2（感魂） 不见了踪影。"}[kind]
@@ -122,7 +127,257 @@ def test_real_public_panels_use_only_documented_actions():
         assert actions, text
         for identity, command in actions:
             assert 1 <= identity <= 5 and command.startswith(".")
+    qipai = json.loads((Path(__file__).parent / "fixtures/qipai_live_20261113.json").read_text())
+    council_members = [{"identity_id": 1, "username": "CqdOps"}, {"identity_id": 2, "username": "LazyDaemo"}]
+    parsed = [weekly.panel("qipai", row["text"], council_members) for row in qipai]
+    assert any(p and p[2] and p[2][0][1].startswith(".点将 ") for p in parsed)
+    assert any(p and p[2] and p[2][0][1] == ".准" for p in parsed)
+    found.add("qipai")
     assert found == set(weekly.KINDS)
+
+
+def test_foreign_replies_and_forwarded_panels_do_not_advance(env):
+    async def run():
+        record = await open_run(env)
+        sent = len(env.sends)
+        text = "第 1/3 轮查访：.查访 地点"
+        await weekly.game_event(env.ctx, event(env, text, reply=123456))
+        forwarded = event(env, text)
+        forwarded.forwarded = True
+        await weekly.game_event(env.ctx, forwarded)
+        assert len(env.sends) == sent and record["stage"] == 0
+    asyncio.run(run())
+
+
+def test_proven_unsent_action_retries_only_within_original_window(env):
+    async def run():
+        record = await open_run(env)
+        normal = env.ctx.send
+        attempts = []
+        async def send(command, **kwargs):
+            attempts.append(command)
+            if len(attempts) == 1:
+                return None
+            return await normal(command, **kwargs)
+        env.ctx.send, env.ctx.unsent = send, lambda *_: True
+        await weekly.game_event(env.ctx, event(env, "第 1/3 轮查访：.查访 地点"))
+        assert record["phase"] == "running" and len(attempts) == 1
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(attempts) == 1
+        env.now[0] += 16
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(attempts) == 6 and "pending_actions" not in record
+        assert next(a for a in record["attempts"].values() if a["stage"] == 1)["tries"] == 2
+    asyncio.run(run())
+
+
+def test_proven_unsent_open_exhaustion_releases_without_consuming_quota(env):
+    async def run():
+        env.ctx.send = AsyncMock(return_value=None)
+        env.ctx.unsent = lambda *_: True
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["yuejing"]
+        for _ in range(2):
+            env.now[0] += 16
+            await weekly.scheduler(env.ctx, env.now[0])
+        assert record["phase"] == "failed" and not record["requires_reconciliation"]
+        assert env.ctx.send.await_count == 3
+        assert not env.records.get("quotas", {}).get("yuejing")
+    asyncio.run(run())
+
+
+def test_fresh_higher_panel_resumes_interrupted_run_without_replaying_old_stage(env):
+    async def run():
+        record = await open_run(env)
+        await weekly.game_event(env.ctx, event(env, "第 1/3 轮查访：.查访 地点"))
+        record.update(phase="interrupted", requires_reconciliation=True)
+        sent = len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "第 2/3 轮查访：.查访 地点"))
+        assert record["phase"] == "running" and record["stage"] == 2
+        assert all(c == ".查访 散修集市" for c, _ in env.sends[sent:])
+    asyncio.run(run())
+
+
+def test_already_backfilled_terminal_closes_run_without_increment(env):
+    async def run():
+        record = await open_run(env)
+        env.records["receipt_keys"] = ["-100:999"]
+        env.records["quotas"] = {"yuejing": {str(i): {"week": weekly.week_key(env.now[0]), "used": 1} for i in range(1, 6)}}
+        result = "【越京夜行·战果】\n" + "\n".join(f"@member{i} 修为+10" for i in range(1, 6))
+        await weekly.game_event(env.ctx, event(env, result))
+        assert record["phase"] == "done"
+        assert all(q["used"] == 1 for q in env.records["quotas"]["yuejing"].values())
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("confirmation", ["你引开了两位仙师。", "你正被两位仙师追着跑，顾不上这边。", "【诱敌】@member5 飞身掠出，两位大仙师果然追了上去"])
+def test_tianlan_decoy_requires_real_confirmation(env, confirmation):
+    async def run():
+        record = await open_run(env, "tianlan")
+        await weekly.game_event(env.ctx, event(env, "【天澜草原·圣女追杀】"))
+        attempt = next(a for a in record["attempts"].values() if a["command"] == ".诱敌")
+        await weekly.game_event(env.ctx, event(env, confirmation, reply=attempt["msg_id"]))
+        assert record["decoy_ids"] == [5]
+        sent = len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "【以鼎收兽·第1/3回合】灵兽仰起头长啸"))
+        assert {k["send_as_id"] for _, k in env.sends[sent:]} == {1, 2, 3, 4}
+    asyncio.run(run())
+
+
+def test_qipai_daily_three_then_next_day_and_anonymous_terminal(env):
+    async def run():
+        record = await open_run(env, "qipai")
+        env.records["quotas"] = {"qipai": {str(i): {"day": weekly.period("qipai", env.now[0]), "used": 2} for i in range(1, 6)}}
+        await weekly.game_event(env.ctx, event(env, "【密议·第 1 关】主帅 @member1 点将：黄枫谷、掩月宗。诸位长老 .准 或 .驳"))
+        await weekly.game_event(env.ctx, event(env, "【七派密议·散议】七派守住三关，越国无恙！\n5 位长老各得修为、灵石（按境界，获胜翻倍）。", reply=100 + len(env.sends)))
+        assert record["phase"] == "done"
+        assert all(q["used"] == 3 for q in env.records["quotas"]["qipai"].values())
+        sent = len(env.sends)
+        env.now[0] += 600
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == sent
+        env.now[0] += 86400
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert env.sends[-1][0] == ".开密议" and len(env.sends) == sent + 1
+    asyncio.run(run())
+
+
+def test_qipai_roster_intruder_dismisses_and_waits_for_own_receipt(env):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env, "【七派密议】@member1 召集密议，发 .入议", reply=101))
+        record = env.records["runs"]["qipai"]
+        await weekly.game_event(env.ctx, event(env, "@intruder 入议，现有 3 位长老：@member1、@member2、@intruder", reply=102))
+        assert env.sends[-1][0] == ".散议" and record["phase"] == "dissolving"
+        mid = 100 + len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "这一场密议散了。", reply=456))
+        assert record["phase"] == "dissolving"
+        await weekly.game_event(env.ctx, event(env, "这一场密议散了。", reply=mid))
+        assert record["phase"] == "cancelled" and not record["requires_reconciliation"]
+        assert not env.records.get("quotas", {}).get("qipai")
+    asyncio.run(run())
+
+
+def test_real_foreign_council_full_replay_never_votes_or_claims_rewards(env):
+    rows = json.loads((Path(__file__).parent / "fixtures/qipai_live_20261113.json").read_text())
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        env.now[0] = min(r["server_event_at"] for r in rows) - 1
+        await weekly.scheduler(env.ctx, env.now[0])
+        for row in rows:
+            env.now[0] = row["server_event_at"]
+            await weekly.game_event(env.ctx, event(env, row["text"], sender=row["sender_id"], reply=row["reply_to_msg_id"], mid=row["message_id"]))
+        assert [c for c, _ in env.sends] == [".开密议"]
+        assert not env.records.get("quotas", {}).get("qipai")
+    # Real bot IDs must be trusted so this tests ownership, not sender rejection.
+    bot_ids = {r["sender_id"] for r in rows if r["text"].startswith(("【", "@"))}
+    env.ctx.bot_ids = lambda: bot_ids
+    asyncio.run(run())
+
+
+def test_qipai_unlinked_anonymous_terminal_cannot_close_our_council(env):
+    async def run():
+        record = await open_run(env, "qipai")
+        await weekly.game_event(env.ctx, event(env, "【七派密议·散议】\n5 位长老各得修为、灵石"))
+        assert record["phase"] == "running" and not record.get("terminal_pending")
+        assert not env.records.get("quotas", {}).get("qipai")
+    asyncio.run(run())
+
+
+def test_yinming_external_spirit_actor_is_waited_for_not_impersonated(env):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("yinming")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env, "【阴冥之地】@member1 立在鬼雾，发 .同入阴冥", reply=101))
+        await weekly.game_event(env.ctx, event(env, "【阴冥之地】@member1（辨路）、@outsider（感魂） 不见了踪影。", reply=12345))
+        record = env.records["runs"]["yinming"]
+        assert record["yinming_roles"] == {"辨路": 1, "感魂": None}
+        sent = len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "【暴风山 第1/3招】辨路者看温天仁的起手「沉肩」\n沉肩→侧闪 扫腿→下压 虚晃→不动"))
+        assert record["phase"] == "running" and record["stage"] == 7 and len(env.sends) == sent
+        assert record["missing_members"] == ["member2"]
+    asyncio.run(run())
+
+
+def test_startup_replays_saved_terminal_locally_once(env, monkeypatch, tmp_path):
+    async def run():
+        record = await open_run(env, "qipai")
+        record.update(phase="interrupted", requires_reconciliation=True)
+        text = "【七派密议·散议】\n5 位长老各得修为、灵石"
+        row = {"text": text, "chat_id": -100, "topic_id": 42, "sender_id": 99, "message_id": 1001,
+               "reply_to_msg_id": 106, "server_event_at": env.now[0]}
+        day = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+        (tmp_path / (day + ".log")).write_text(json.dumps(row, ensure_ascii=False) + "\n")
+        monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0])
+        assert record["phase"] == "done" and not record["requires_reconciliation"]
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0])
+        assert all(q["used"] == 1 for q in env.records["quotas"]["qipai"].values())
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("command,stage,valid", [(".入议", 0, True), (".开议", 0, True), (".准", 2, True),
+    (".点将 黄枫谷 掩月宗", 1, True), (".点将 黄枫谷", 1, False), (".投效 魔道", 1, False), (".散议", 0, False)])
+def test_qipai_watchdog_exact_action_metadata(command, stage, valid):
+    previous = {"_epoch": 1000, "op_id": "unrelated"}
+    current = {"_epoch": 1002, "sender_id": 1, "text": command, "source_module": "组队周常", "priority": "urgent_reactive",
+               "op_id": f"weekly:qipai:123:{stage}:1:{command}", "chain_id": f"weekly:qipai:123:{stage}"}
+    assert safety_watchdog.is_safe_weekly_reactive_gap_pair(previous, current) is valid
+
+
+def test_qipai_real_panel_sequence_updates_posterior_and_finishes_owned_run(env):
+    rows = json.loads((Path(__file__).parent / "fixtures/qipai_live_20261113.json").read_text())
+    usernames = ["CqdOps", "LazyDaemo", "SilLoop", "BitDrifter", "Davecy"]
+    for m, username in zip(env.members, usernames):
+        m["username"] = username
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        env.now[0] = min(r["server_event_at"] for r in rows) - 1
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["qipai"]
+        recruit = next(r for r in rows if r["message_id"] == 1577852)
+        await weekly.game_event(env.ctx, event(env, recruit["text"], reply=101))
+        roster = next(r for r in rows if r["message_id"] == 1577861)
+        await weekly.game_event(env.ctx, event(env, roster["text"], reply=105))
+        for row in rows:
+            if row["message_id"] < 1577870 or not ("【七派密议" in row["text"] or "【密议·" in row["text"]):
+                continue
+            env.now[0] = row["server_event_at"]
+            body = row["text"].replace("8 位长老各得", "5 位长老各得")
+            await weekly.game_event(env.ctx, event(env, body, mid=row["message_id"], reply=100 + len(env.sends)))
+        assert record["phase"] == "done" and len(record["observations"]) == 3
+        assert any(c.startswith(".点将") for c, _ in env.sends)
+        assert all(q["used"] == 1 for q in env.records["quotas"]["qipai"].values())
+    asyncio.run(run())
+
+
+def test_qipai_inconsistent_public_evidence_never_resets_posterior():
+    from model.features import council
+    assert council.choice(2, [{"sects": ["黄枫谷", "掩月宗"], "sabotages": 3}]) == ()
+    observed = [{"sects": ["黄枫谷", "掩月宗"], "sabotages": 2}]
+    assert not set(council.choice(4, observed)) & {"黄枫谷", "掩月宗"}
+
+
+def test_qipai_fast_rounds_respect_same_voter_send_gap(env):
+    async def run():
+        record = await open_run(env, "qipai")
+        waits = []
+        async def sleep(seconds):
+            waits.append(seconds)
+            env.now[0] += seconds
+        env.ctx.sleep = sleep
+        for n in (1, 2):
+            await weekly.game_event(env.ctx, event(env, f"【密议·第 {n} 关】主帅 @member1 点将：黄枫谷、掩月宗。诸位长老 .准 或 .驳"))
+        assert waits == [11]
+        first, second = [record["attempts"][f"{stage}:2:.准"] for stage in (2, 4)]
+        assert second["confirmed_at"] - first["confirmed_at"] >= 11
+    asyncio.run(run())
 
 
 def test_full_owned_yuejing_flow_and_quota_stop(env):
@@ -234,7 +489,7 @@ def test_only_timed_join_and_stage_actions_use_reactive_queue(env, kind):
     asyncio.run(run())
 
 
-def test_foreign_player_start_during_join_invalidates_queued_member(env):
+def test_actual_party_start_during_join_invalidates_missing_queued_member(env):
     normal_send = env.ctx.send
 
     async def interrupted_send(command, **kwargs):
@@ -253,10 +508,16 @@ def test_foreign_player_start_during_join_invalidates_queued_member(env):
         await weekly.game_event(env.ctx, event(env,
             "【越京夜行】@member1 要夜探越国京城，发 .同往 加入。", reply=101))
         record = env.records["runs"]["yuejing"]
-        assert record["phase"] == "held" and not record["bound"]
-        assert record["collision_message_id"] == 888 and "other" in record["collision_names"]
-        assert "其他玩家" in record["last_error"]
+        assert record["phase"] == "joining" and not record["bound"]
+        assert record["departure_pending"] and not record.get("collision")
         assert [kwargs["send_as_id"] for _, kwargs in env.sends] == [1, 2, 3, 4]
+        await weekly.game_event(env.ctx, event(env,
+            "【越京夜行】夜色里，@member1、@member2、@member3、@other、@member4 潜入越国京城。", mid=888, reply=12345))
+        assert record["phase"] == "running" and record["bound"]
+        assert [m["identity_id"] for m in record["members"]] == [1, 2, 3, 4]
+        assert record["missing_members"] == ["member5"]
+        await weekly.game_event(env.ctx, event(env, "第 1/3 轮查访：.查访 地点", mid=889))
+        assert {k["send_as_id"] for c, k in env.sends if c.startswith(".查访")} == {1, 2, 3, 4}
 
     asyncio.run(run())
 

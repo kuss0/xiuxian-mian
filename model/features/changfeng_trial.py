@@ -80,6 +80,10 @@ async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, cloc
     status = trial.get("status")
     if not isinstance(status, dict):
         raise TrialError("trial_status_missing")
+    observed = {key: copy.deepcopy(status[key]) for key in ("used", "limit", "remaining", "carryAvailable", "tier", "day", "arena") if key in status}
+    record.update(observed_status=observed, observed_at=time.time())
+    record.setdefault("observed_arenas", {})[arena] = {"status": observed, "observed_at": record["observed_at"]}
+    save()
     deadline = clock() + 900
     for attempt in range(3):
         tier = (status.get("tier") or {}).get("next")

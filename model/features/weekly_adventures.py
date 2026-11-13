@@ -3,18 +3,33 @@ import asyncio
 import itertools
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 from .hunt_weekly import week_key
+from . import council
 
 KINDS = {
     "tianlan": {"label": "天澜草原", "open": ".天澜草原", "join": ".同行", "minimum": 3, "realm": "元婴初期"},
     "yuejing": {"label": "越京夜行", "open": ".夜探越京", "join": ".同往", "minimum": 3, "realm": "筑基初期"},
     "yinming": {"label": "阴冥之地", "open": ".阴冥之地", "join": ".同入阴冥", "minimum": 2, "realm": "元婴初期"},
+    "qipai": {"label": "七派密议", "open": ".开密议", "join": ".入议", "minimum": 3, "realm": None},
 }
-ACTIVE = {"opening", "joining", "running", "held", "interrupted"}
-START_MARKERS = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）"}
+ACTIVE = {"opening", "joining", "running", "dissolving", "held", "interrupted"}
+START_MARKERS = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）", "qipai": "【七派密议·开议】"}
 _LOCK = asyncio.Lock()
 _NAMES = re.compile(r"@([A-Za-z0-9_]{3,32})")
+PARTIES = {"tianlan": r"【天澜草原】([^\n]+?)\s+一行进了草原",
+           "yuejing": r"【越京夜行】[^\n]*?夜色里，([^\n]+?)\s+潜入越国京城",
+           "yinming": r"【阴冥之地】([^\n]+?)\s+不见了踪影"}
+
+
+def departure(run, text):
+    match = re.search(PARTIES[run["kind"]], text) if run["kind"] in PARTIES else None
+    if not match:
+        return None
+    listed = [name.lower() for name in _NAMES.findall(match[1])]
+    captain = run.get("planned_members", run["members"])[0]["username"].lower()
+    return listed if captain in listed and len(set(listed)) == len(listed) else None
 
 
 def yinming_path(text, *, known_dead=None, allow_risk=False):
@@ -56,9 +71,11 @@ def yinming_path(text, *, known_dead=None, allow_risk=False):
     return ""
 
 
-def panel(kind, text, members, *, path_dead=None, roles=None):
+def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, observations=None):
     """Return a monotonic stage and exact actions, grounded in public game wording."""
     ids = [m["identity_id"] for m in members]
+    if kind == "qipai":
+        return council.panel(text, members, observations or [])
     if kind == "yuejing":
         match = re.search(r"第\s*([1-3])/3\s*轮(?:查访)?[：:]", text)
         if match and ".查访" in text:
@@ -116,13 +133,14 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
                 ("地底钻", "封地"), ("后腿绷", "闪避"), ("长啸", "稳心"),
                 ("仰起头", "稳心"), ("喉", "稳心"),
             ) if phrase in clue), "")
-            return 4 + int(match[1]), 60, [(i, "." + action) for i in ids[:-1]] if action else []
+            fighters = ids[:-1] if decoys is None else [i for i in ids if i not in decoys]
+            return 4 + int(match[1]), 60, [(i, "." + action) for i in fighters] if action else []
     else:
         match = re.search(r"【阴冥 第([1-6])/6步】", text)
         if match:
             road = yinming_path(text, known_dead=path_dead, allow_risk=True)
             actor = (roles or {}).get("辨路", ids[0])
-            return int(match[1]), 120, [(actor, ".往 " + road)] if road else []
+            return int(match[1]), 120, [(actor, ".往 " + road)] if road and actor is not None else []
         match = re.search(r"【暴风山 第([1-3])/3招】", text)
         if match:
             clue = text.split("辨路者看温天仁的起手", 1)[-1].split("\n", 1)[0]
@@ -134,8 +152,8 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
             complete = (len(pairs) == 3 and set(counters) == {"沉肩", "扫腿", "虚晃"}
                         and set(counters.values()) == {"侧闪", "下压", "不动"})
             action = counters.get(moves[0] if moves else "", "") if complete else ""
-            actor = (roles or {}).get("感魂", ids[1])
-            return 6 + int(match[1]), 120, [(actor, ".应招 " + action)] if action else []
+            actor = (roles or {}).get("感魂", ids[-1])
+            return 6 + int(match[1]), 120, [(actor, ".应招 " + action)] if action and actor is not None else []
     return None
 
 
@@ -144,6 +162,7 @@ def terminal(kind, text):
         "tianlan": ("【天澜草原】收兽而归", "【天澜草原】败退而归"),
         "yuejing": ("【越京夜行·战果】",),
         "yinming": ("【走出阴冥】", "【困于阴冥】"),
+        "qipai": ("【七派密议·散议】",),
     }[kind])
 
 
@@ -158,8 +177,27 @@ def reward_line(username, text):
 
 
 def _ours(run, text):
-    expected = {m["username"].lower() for m in run["members"]}
+    expected = set(run.get("party_names") or [m["username"].lower() for m in run["members"]])
     return expected and expected.issubset(names(text))
+
+
+def period(kind, now):
+    return datetime.fromtimestamp(now, timezone(timedelta(hours=8))).strftime("%Y-%m-%d") if kind == "qipai" else week_key(now)
+
+
+def quota_limit(kind):
+    return 3 if kind == "qipai" else 2
+
+
+def _terminal_owned(run, event, text):
+    if run["kind"] != "qipai":
+        return _ours(run, text)
+    count = re.search(r"(\d+)\s*位长老各得修为", text)
+    linked = _reply(event) and _reply(event) != run["topic_id"] and (
+        any(a.get("msg_id") == _reply(event) for a in run.get("attempts", {}).values())
+        or _reply(event) in run.get("known_message_ids", []))
+    return (run.get("bound") and not run.get("collision") and _owned(run, event, text)
+            and (linked or _ours(run, text)) and count and int(count[1]) == len(run["members"]))
 
 
 def _route(ctx, run, event):
@@ -168,22 +206,83 @@ def _route(ctx, run, event):
             and ctx.event_time(event) >= run["started_at"] - 1)
 
 
+def _reply(event):
+    return int(getattr(event, "reply_to_msg_id", 0) or
+               getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0)
+
+
+def _owned(run, event, text):
+    """Port upstream's reply-chain boundary without weakening local collision holds."""
+    reply = _reply(event)
+    if reply and reply != run["topic_id"]:
+        return (any(a.get("msg_id") == reply for a in run.get("attempts", {}).values())
+                or reply in run.get("known_message_ids", []))
+    return not names(text) or names(text).issubset({m["username"].lower() for m in run["members"]}) or _ours(run, text)
+
+
+def _decoy(run, event, text):
+    if run["kind"] != "tianlan" or not run.get("bound"):
+        return
+    owned = next((a for a in run.get("attempts", {}).values() if a.get("msg_id") == _reply(event)), None)
+    actor = None
+    if owned and ((owned["command"] == ".诱敌" and "你引开了两位仙师。" in text)
+                  or "你正被两位仙师追着跑，顾不上这边。" in text):
+        actor = owned["identity_id"]
+    if "【诱敌】" in text and "两位大仙师果然追了上去" in text:
+        actor = next((m["identity_id"] for m in run["members"] if m["username"].lower() in names(text)), actor)
+    if actor is not None and actor not in run.setdefault("decoy_ids", []):
+        run["decoy_ids"].append(actor)
+
+
+def _council_roster(run, event, text):
+    match = re.search(r"@([A-Za-z0-9_]+) 入议，现有\s*(\d+)\s*位长老：([^\n]+)", text)
+    if run["kind"] != "qipai" or not match or run.get("bound") or run["phase"] != "joining":
+        return
+    listed = _NAMES.findall(match[3])
+    listed = [name.lower() for name in listed]
+    known = any(a.get("msg_id") == _reply(event) for a in run["attempts"].values())
+    if not (known or listed[:1] == [run["members"][0]["username"].lower()]):
+        return
+    mid = int(getattr(event, "id", 0) or 0)
+    if mid < run.get("roster_message_id", 0):
+        return
+    expected = {m["username"].lower() for m in run["members"]}
+    confirmed = set(run.get("roster_names", []))
+    run["roster_message_id"] = mid
+    if (int(match[2]) != len(listed) or len(set(listed)) != len(listed)
+            or not set(listed).issubset(expected) or not confirmed.issubset(listed)
+            or match[1].lower() not in listed):
+        run["roster_mismatch"] = True
+    else:
+        run["roster_names"] = listed
+
+
 def observe(ctx, event):
     """Invalidate obsolete queued actions before awaiting the reducer lock."""
     text = str(getattr(event, "raw_text", "") or "")
+    if getattr(event, "sender_id", 0) not in ctx.bot_ids() or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None):
+        return
     for kind, run in ctx.records().get("runs", {}).items():
         if run.get("phase") not in ACTIVE or not _route(ctx, run, event):
             continue
-        complete_start = START_MARKERS[kind] in text and _ours(run, text)
+        _council_roster(run, event, text)
+        party = departure(run, text)
+        if party and not run.get("bound"):
+            run["departure_pending"] = True
+        complete_start = bool(party) or START_MARKERS[kind] in text and (_ours(run, text) or kind == "qipai" and any(
+            a.get("command") == ".开议" and a.get("msg_id") == _reply(event) for a in run.get("attempts", {}).values()))
         foreign = (not complete_start and KINDS[kind]["label"] in text and any(s in text for s in
-                   ("要横穿", "要夜探", "立在鬼雾", "一行进了草原", "潜入越国京城", "（辨路）"))
+                   ("要横穿", "要夜探", "立在鬼雾", "一行进了草原", "潜入越国京城", "（辨路）", "召集密议", "【七派密议·开议】"))
                    and names(text) and not names(text).issubset({m["username"].lower() for m in run["members"]}))
         if foreign:
             run["collision"] = True
             run["collision_names"] = sorted(names(text))
             run["collision_message_id"] = int(getattr(event, "id", 0) or 0)
-        if terminal(kind, text) and _ours(run, text):
+        if terminal(kind, text) and _terminal_owned(run, event, text):
             run["terminal_pending"] = True
+        if not _owned(run, event, text):
+            continue
+        _decoy(run, event, text)
         stage = panel(kind, text, run["members"])
         if stage and run.get("bound"):
             run["observed_stage"] = max(int(run.get("observed_stage") or 0), stage[0])
@@ -208,39 +307,110 @@ async def confirm_finished(ctx, kind, run_id):
 
 async def send(ctx, run, identity_id, command, stage, deadline):
     key = f"{stage}:{identity_id}:{command}"
-    if key in run.setdefault("attempts", {}):
-        return False  # Unknown and definitely-unsent mutations are never replayed.
+    previous = run.setdefault("attempts", {}).get(key)
+    if previous:
+        if previous["status"] == "sent":
+            return True
+        if (previous["status"] != "unsent" or time.time() < previous.get("retry_at", 0)
+                or int(previous.get("tries", 1)) >= 3):
+            return False  # Never replay an unknown mutation.
 
     def allowed():
+        dismiss = command == ".散议" and run["kind"] == "qipai" and run.get("roster_mismatch") and not run.get("bound")
         return (ctx.enabled(run["kind"]) and ctx.records()["runs"].get(run["kind"]) is run
-                and run.get("phase") in {"opening", "joining", "running"}
-                and not run.get("collision") and not run.get("terminal_pending")
+                and (run.get("phase") in {"opening", "joining", "running"} or dismiss and run.get("phase") == "dissolving")
+                and (dismiss or not run.get("collision")) and not run.get("terminal_pending")
+                and (dismiss or not run.get("roster_mismatch"))
+                and not (run.get("departure_pending") and command in {KINDS[run["kind"]]["open"], KINDS[run["kind"]]["join"], ".入城"})
                 and int(run.get("observed_stage") or 0) <= stage
                 and time.time() < deadline and ctx.available(identity_id)
+                and not (run["kind"] == "tianlan" and command in {".闪避", ".稳心", ".封地"}
+                         and identity_id in run.get("decoy_ids", []))
                 and ctx.target() == (run["chat_id"], run["topic_id"]))
 
     if not allowed():
         return False
+    if run["kind"] == "qipai" and command == ".准":
+        recent = [a.get("confirmed_at", a.get("at", 0)) for a in run["attempts"].values()
+                  if a.get("status") == "sent" and a.get("identity_id") == identity_id and a.get("command") == command]
+        wait = max(recent, default=0) + 11 - time.time()
+        if wait > 0:
+            await getattr(ctx, "sleep", asyncio.sleep)(wait)
+            if not allowed():
+                return False
     attempt = {"status": "unknown", "identity_id": identity_id, "command": command, "stage": stage, "at": time.time()}
+    attempt["tries"] = int(previous.get("tries", 1)) + 1 if previous else 1
+    if previous:
+        attempt["previous"] = {k: v for k, v in previous.items() if k != "previous"}
     run["attempts"][key] = attempt
     ctx.save()
     message = await ctx.send(command, send_as_id=identity_id, send_guard=allowed, deadline=deadline,
                              op_id=f"weekly:{run['kind']}:{run['id']}:{key}",
                              chain_id=f"weekly:{run['kind']}:{run['id']}:{stage}",
-                             reactive=stage > 0 or command == KINDS[run["kind"]]["join"])
+                             reactive=stage > 0 or command in {KINDS[run["kind"]]["join"], ".开议"})
     mid = int(getattr(message, "id", 0) or 0)
-    attempt.update(status="sent" if mid else "unknown", msg_id=mid)
+    attempt.update(status="sent" if mid else "unknown", msg_id=mid, confirmed_at=time.time())
     if not mid and ctx.unsent(identity_id, command):
         attempt["status"] = "unsent"
+        attempt["retry_at"] = time.time() + 15
     ctx.save()
     return bool(mid)
+
+
+async def dispatch(ctx, run, actions=None, *, stage=None, deadline=None):
+    """Continue only proven-unsent actions within their original live window."""
+    if actions is not None:
+        run["pending_actions"] = {"actions": actions, "stage": stage, "deadline": deadline}
+        ctx.save()
+    plan = run.get("pending_actions")
+    if not plan or run.get("phase") not in {"opening", "joining", "running", "dissolving"}:
+        return
+    number, expires = plan["stage"], plan["deadline"]
+    if run.get("terminal_pending") or run.get("observed_stage", 0) > number:
+        run.pop("pending_actions", None)
+        ctx.save()
+        return
+    for identity, command in plan["actions"]:
+        if identity in run.get("decoy_ids", []) and command in {".闪避", ".稳心", ".封地"}:
+            continue
+        if await send(ctx, run, identity, command, number, expires):
+            continue
+        attempt = run.get("attempts", {}).get(f"{number}:{identity}:{command}", {})
+        if run.get("departure_pending") and number == 0:
+            run.pop("pending_actions", None)
+            ctx.save()
+            return
+        if (attempt.get("status") == "unsent" and int(attempt.get("tries", 1)) < 3
+                and time.time() < expires):
+            return
+        if (run.get("phase") == "opening" and not run.get("bound") and run.get("attempts")
+                and all(a.get("status") == "unsent" for a in run["attempts"].values())):
+            run.update(phase="failed", requires_reconciliation=False, next_at=time.time() + 900,
+                       last_error="已确认所有开局尝试均未发送，稍后重新安排")
+            run.pop("pending_actions", None)
+            ctx.save()
+            return
+        if not run.get("terminal_pending") and run.get("observed_stage", 0) <= number:
+            await hold(ctx, run, "招募或入场名单出现其他玩家，停止后续入队与动作" if run.get("collision")
+                       else "本轮动作未获发送确认，不补发旧轮")
+        return
+    run.pop("pending_actions", None)
+    ctx.save()
+
+
+async def dismiss_council(ctx, run):
+    if run.get("bound") or run.get("phase") == "dissolving":
+        return
+    run.update(phase="dissolving", deadline=time.time() + 60, last_error="七派名单不符，等待游戏确认散议")
+    await dispatch(ctx, run, [(run["members"][0]["identity_id"], ".散议")], stage=0, deadline=run["deadline"])
 
 
 async def scheduler(ctx, now):
     async with _LOCK:
         records = ctx.records()
         for kind, run in records.setdefault("runs", {}).items():
-            if run.get("phase") in {"opening", "joining", "running"} and now > run["deadline"] + 45:
+            await dispatch(ctx, run)
+            if run.get("phase") in {"opening", "joining", "running", "dissolving"} and now > run["deadline"] + 45:
                 await hold(ctx, run, "未收到下一阶段或结算回执，不重新开局")
         if any(r.get("phase") in ACTIVE for r in records["runs"].values()):
             return
@@ -250,8 +420,11 @@ async def scheduler(ctx, now):
             progress = records.setdefault("quotas", {}).setdefault(kind, {})
             members = ctx.members(kind)
             eligible = [m for m in members if ctx.available(m["identity_id"])]
-            unfinished = [m for m in eligible if progress.get(str(m["identity_id"]), {}).get("week") != week_key(now)
-                          or int(progress[str(m["identity_id"])].get("used") or 0) < 2]
+            if kind == "qipai" and len(eligible) != len(members):
+                continue  # Keep the configured council together while daily solo tasks finish.
+            field = "day" if kind == "qipai" else "week"
+            unfinished = [m for m in eligible if progress.get(str(m["identity_id"]), {}).get(field) != period(kind, now)
+                          or int(progress[str(m["identity_id"])].get("used") or 0) < quota_limit(kind)]
             old = records["runs"].get(kind, {})
             if float(old.get("next_at") or 0) > now or not unfinished:
                 continue
@@ -271,40 +444,52 @@ async def scheduler(ctx, now):
                    "stage": 0, "observed_stage": 0, "bound": False, "attempts": {}}
             records["runs"][kind] = run
             ctx.save()
-            if not await send(ctx, run, chosen[0]["identity_id"], spec["open"], 0, now + 40):
-                await hold(ctx, run, "开局发送未获确认")
+            await dispatch(ctx, run, [(chosen[0]["identity_id"], spec["open"])], stage=0, deadline=now + 40)
             return
 
 
 async def game_event(ctx, event):
-    if getattr(event, "sender_id", 0) not in ctx.bot_ids():
+    if (getattr(event, "sender_id", 0) not in ctx.bot_ids()
+            or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None)):
         return False
     observe(ctx, event)
     async with _LOCK:
         text = str(getattr(event, "raw_text", "") or "")
-        reply = int(getattr(event, "reply_to_msg_id", 0) or 0)
+        reply = _reply(event)
         for kind, run in ctx.records().get("runs", {}).items():
             if run.get("phase") not in ACTIVE or not _route(ctx, run, event):
                 continue
             attempts = run.get("attempts", {}).values()
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
-            if terminal(kind, text) and _ours(run, text):
+            party = departure(run, text)
+            if kind == "qipai" and owned and owned["command"] == ".散议" and text.strip() == "这一场密议散了。" and not run.get("bound"):
+                run.update(phase="cancelled", requires_reconciliation=False, last_error=None, result=text,
+                           completed_at=ctx.event_time(event), next_at=time.time() + 300)
+                run.pop("pending_actions", None)
+                ctx.save()
+                return True
+            if kind == "qipai" and run.get("roster_mismatch") and not run.get("bound"):
+                await dismiss_council(ctx, run)
+                continue
+            if terminal(kind, text) and _terminal_owned(run, event, text):
+                receipt_key = f"{getattr(event, 'chat_id', 0)}:{getattr(event, 'id', 0)}"
+                evidence = ctx.records().setdefault("receipt_keys", [])
                 for member in run["members"]:
-                    if not reward_line(member["username"], text):
+                    if kind != "qipai" and not reward_line(member["username"], text):
                         await hold(ctx, run, "结算缺少成员奖励明细")
                         return True
                 quotas = ctx.records().setdefault("quotas", {}).setdefault(kind, {})
-                for member in run["members"]:
+                for member in (() if receipt_key in evidence else run["members"]):
                     key = str(member["identity_id"])
                     old = quotas.get(key, {})
-                    used = int(old.get("used") or 0) if old.get("week") == week_key(run["started_at"]) else 0
+                    field = "day" if kind == "qipai" else "week"
+                    settled_period = period(kind, ctx.event_time(event))
+                    used = int(old.get("used") or 0) if old.get(field) == settled_period else 0
                     line = reward_line(member["username"], text)
-                    quotas[key] = {"week": week_key(run["started_at"]), "used": 2 if "本周有奖次数已满" in line else min(2, used + 1),
+                    quotas[key] = {field: settled_period, "used": quota_limit(kind) if "本周有奖次数已满" in line else min(quota_limit(kind), used + 1),
                                    "source_msg_id": int(getattr(event, "id", 0)), "at": ctx.event_time(event)}
                 run.update(phase="done", result=text[:4000], completed_at=ctx.event_time(event), requires_reconciliation=False, last_error=None,
                            next_at=time.time() + 300)
-                receipt_key = f"{getattr(event, 'chat_id', 0)}:{getattr(event, 'id', 0)}"
-                evidence = ctx.records().setdefault("receipt_keys", [])
                 if receipt_key not in evidence:
                     evidence.append(receipt_key)
                 ctx.records()["receipt_keys"] = evidence[-200:]
@@ -315,8 +500,38 @@ async def game_event(ctx, event):
                 if run.get("phase") != "held":
                     await hold(ctx, run, "同群出现其他同类队伍，无法可靠归属无房号面板")
                 continue
+            if not party and not _owned(run, event, text):
+                continue
+            if not terminal(kind, text):
+                known = run.setdefault("known_message_ids", [])
+                mid = int(getattr(event, "id", 0) or 0)
+                if mid and mid not in known:
+                    known.append(mid)
+            if party and not run.get("bound") and run.get("phase") in {"held", "interrupted"}:
+                run.update(phase="joining", requires_reconciliation=False, last_error=None)
+            if run.get("phase") in {"held", "interrupted"} and run.get("bound"):
+                resumed = panel(kind, text, run["members"], roles=run.get("yinming_roles"), decoys=run.get("decoy_ids", []))
+                uncertain = [a for a in run.get("attempts", {}).values()
+                             if a.get("status") == "unknown" and int(a.get("stage", 0)) >= (resumed[0] if resumed else 0)]
+                if (resumed and resumed[0] > run.get("stage", 0) and not uncertain
+                        and ctx.event_time(event) + resumed[1] - 3 > time.time()):
+                    run.update(phase="running", requires_reconciliation=False, last_error=None, resumed_at=time.time())
+                    run.pop("pending_actions", None)
+                    ctx.save()
             if run.get("phase") in {"held", "interrupted"}:
                 continue
+            if kind == "qipai":
+                roster = re.search(r"入议，现有\s*(\d+)\s*位长老：([^\n]+)", text)
+                if roster and run["phase"] == "joining":
+                    listed = names(roster[2])
+                    expected = {m["username"].lower() for m in run["members"]}
+                    if listed == expected:
+                        run["roster_confirmed"] = True
+                        await dispatch(ctx, run, [(run["members"][0]["identity_id"], ".开议")], stage=0, deadline=run["deadline"])
+                obs = council.observation(text)
+                if obs and not any(o["round"] == obs["round"] for o in run.setdefault("observations", [])):
+                    run["observations"].append(obs)
+                    ctx.save()
             if kind == "yinming" and run.get("bound"):
                 failed = re.search(r"@([A-Za-z0-9_]+) 选了([左中右])边——一头撞上死路", text)
                 path_actor = run.get("yinming_roles", {}).get("辨路", run["members"][0]["identity_id"])
@@ -345,18 +560,22 @@ async def game_event(ctx, event):
                     return True
                 run.update(phase="joining", deadline=ctx.event_time(event) + (300 if kind == "yuejing" else 120))
                 ctx.save()
-                for member in run["members"][1:]:
-                    if not await send(ctx, run, member["identity_id"], spec["join"], 0, run["deadline"] - 3):
-                        await hold(ctx, run, "招募或入场名单出现其他玩家，停止后续入队与动作"
-                                   if run.get("collision") else "入队发送未获确认")
-                        break
+                await dispatch(ctx, run, [(m["identity_id"], spec["join"]) for m in run["members"][1:]],
+                               stage=0, deadline=run["deadline"] - 3)
                 return True
-            if START_MARKERS[kind] in text and _ours(run, text):
+            council_started = (kind == "qipai" and run.get("roster_confirmed") and owned and owned["command"] == ".开议")
+            if not run.get("bound") and START_MARKERS[kind] in text and (party or _ours(run, text) or council_started):
+                if party and not run.get("bound"):
+                    planned = run.setdefault("planned_members", run["members"])
+                    run["members"] = [m for m in planned if m["username"].lower() in party]
+                    run["party_names"] = party
+                    run["missing_members"] = [m["username"] for m in planned if m not in run["members"]]
+                    run.pop("pending_actions", None)
                 if kind == "yinming":
                     by_name = {m["username"].lower(): m["identity_id"] for m in run["members"]}
                     assignments = re.findall(r"@([A-Za-z0-9_]+)[（(](辨路|感魂)[）)]", text)
-                    roles = {role: by_name[name.lower()] for name, role in assignments if name.lower() in by_name}
-                    if len(assignments) != 2 or set(roles) != {"辨路", "感魂"} or len(set(roles.values())) != 2:
+                    roles = {role: by_name.get(name.lower()) for name, role in assignments}
+                    if len(assignments) != 2 or set(roles) != {"辨路", "感魂"} or len({n.lower() for n, _ in assignments}) != 2:
                         await hold(ctx, run, "入场回执缺少两人实际辨路/感魂分工")
                         return True
                     run["yinming_roles"] = roles
@@ -370,19 +589,16 @@ async def game_event(ctx, event):
             if run.get("bound"):
                 step = re.search(r"【阴冥 第([1-6])/6步】", text) if kind == "yinming" else None
                 stage = panel(kind, text, run["members"], path_dead=run.get("path_dead", {}).get(step[1]) if step else None,
-                              roles=run.get("yinming_roles"))
+                              roles=run.get("yinming_roles"), decoys=run.get("decoy_ids", []), observations=run.get("observations", []))
                 if stage and (stage[0] > int(run.get("stage") or 0) or stage[0] == run.get("retry_step")):
                     number, seconds, actions = stage
-                    if not actions:
+                    external_actor = (kind == "yinming" and run.get("yinming_roles", {}).get("辨路" if number <= 6 else "感魂", True) is None)
+                    if not actions and not external_actor:
                         await hold(ctx, run, "本轮线索无法确定安全动作")
                         return True
                     run.update(stage=number, deadline=ctx.event_time(event) + seconds - 3)
                     run.pop("retry_step", None)
                     ctx.save()
-                    for identity, command in actions:
-                        if not await send(ctx, run, identity, command, number, run["deadline"]):
-                            if not run.get("terminal_pending") and run.get("observed_stage", 0) <= number:
-                                await hold(ctx, run, "本轮动作未获发送确认，不补发旧轮")
-                            break
+                    await dispatch(ctx, run, actions, stage=number, deadline=run["deadline"])
                     return True
         return False

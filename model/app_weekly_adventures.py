@@ -18,6 +18,8 @@ from .state import (
     get_send_as_profile,
 )
 
+_RECOVERY_PENDING = False
+
 
 def _config():
     return get_expedition_config().get("weekly", {})
@@ -35,13 +37,14 @@ def _available(identity_id):
 
 
 def _members(kind):
-    minimum = REALM_SORT_ORDER.index(weekly.KINDS[kind]["realm"])
+    realm_gate = weekly.KINDS[kind]["realm"]
+    minimum = REALM_SORT_ORDER.index(realm_gate) if realm_gate else 0
     members = []
     for identity_id in _config().get("participant_identity_ids", []):
         profile = get_send_as_profile(identity_id)
         realm = profile.get("realm")
         username = str(profile.get("username") or "").strip().lstrip("@")
-        if (realm in REALM_SORT_ORDER and REALM_SORT_ORDER.index(realm) >= minimum
+        if ((not realm_gate or realm in REALM_SORT_ORDER and REALM_SORT_ORDER.index(realm) >= minimum)
                 and username and identity_id in get_identity_ids()):
             members.append({"identity_id": identity_id, "username": username,
                             "linggen": profile.get("spiritual_root_attrs") or ""})
@@ -76,9 +79,13 @@ def _context():
 
 
 async def run_weekly_scheduler(now):
+    global _RECOVERY_PENDING
     if _config().get("enabled") or get_expedition_run_state().get("weekly"):
         if _context().records().get("initialized_participants") != _config().get("participant_identity_ids", []):
             _backfill_weekly_receipts()
+        if _RECOVERY_PENDING:
+            await _recover_terminal_receipts(now)
+            _RECOVERY_PENDING = False
         await weekly.scheduler(_context(), now)
 
 
@@ -89,11 +96,44 @@ async def handle_weekly_game_event(event, **_kwargs):
 
 
 def reset_weekly_on_startup():
+    global _RECOVERY_PENDING
+    _RECOVERY_PENDING = True
     _backfill_weekly_receipts()
     for run in get_expedition_run_state().get("weekly", {}).get("runs", {}).values():
-        if run.get("phase") in {"opening", "joining", "running"}:
+        if run.get("phase") in {"opening", "joining", "running", "dissolving"}:
             run.update(phase="interrupted", requires_reconciliation=True, last_error="程序重启，需核对原局")
             mark_dirty()
+
+
+async def _recover_terminal_receipts(now):
+    """One startup replay from local logs; never issue history/API probes."""
+    ctx = _context()
+    active = [r for r in ctx.records().get("runs", {}).values() if r.get("phase") in weekly.ACTIVE]
+    if not active:
+        return
+    earliest = min(float(r["started_at"]) for r in active)
+    local = datetime.fromtimestamp(now, TZ_LOCAL)
+    days = min(7, max(0, (local.date() - datetime.fromtimestamp(earliest, TZ_LOCAL).date()).days))
+    for offset in range(days, -1, -1):
+        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
+        if not path.is_file():
+            continue
+        with path.open() as stream:
+            for line in stream:
+                if not any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了")):
+                    continue
+                try:
+                    row = json.loads(line)
+                    at = float(row.get("server_event_at") or 0)
+                except (ValueError, TypeError):
+                    continue
+                if at < earliest - 1:
+                    continue
+                event = SimpleNamespace(raw_text=str(row.get("text") or ""), date=datetime.fromtimestamp(at, TZ_LOCAL),
+                    chat_id=row.get("chat_id"), sender_id=row.get("sender_id"), id=row.get("message_id", 0),
+                    topic_id=row.get("topic_id", 0), reply_to_msg_id=row.get("reply_to_msg_id", 0),
+                    reply_to=SimpleNamespace(reply_to_top_id=row.get("topic_id", 0)), forwarded=row.get("forwarded", False))
+                await weekly.game_event(ctx, event)
 
 
 def _backfill_weekly_receipts():

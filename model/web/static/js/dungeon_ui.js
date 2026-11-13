@@ -436,6 +436,7 @@ function renderExpeditionConfig(replica) {
   const xuangu = config.xuangu || {};
   const changfeng = config.changfeng || {};
   const weeklyConfig = config.weekly || {};
+  const war = config.zhengmo || {};
   const identities = replica.identity_options || [];
   const members = function(kind, selected) {
     return '<div class="replica-config-grid">' + identities.map(function(identity) {
@@ -465,17 +466,22 @@ function renderExpeditionConfig(replica) {
     + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
       return '<option' + ((xuangu.finish_choice || '收拢遗宝') === choice ? ' selected' : '') + '>' + choice + '</option>';
     }).join('') + '</select></label></div>'
-    + '<div class="dungeon-section"><h4>组队周常</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />自动补满每周两次</label><p>天澜草原、阴冥之地要求元婴；越京夜行要求筑基。按当前境界选人，五号统一协调，遇到未知结果停止并保留原局。</p>'
+    + '<div class="dungeon-section"><h4>组队活动</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />自动补满有奖场次</label><p>天澜、越京、阴冥每周两次；七派密议每天三局。天澜、阴冥要求元婴，越京要求筑基。按境界选人，遇到未知结果保留原局。</p>'
     + members('weekly', weeklyConfig.participant_identity_ids)
-    + [['tianlan', '天澜草原'], ['yuejing', '越京夜行'], ['yinming', '阴冥之地']].map(function(item) {
+    + [['tianlan', '天澜草原'], ['yuejing', '越京夜行'], ['yinming', '阴冥之地'], ['qipai', '七派密议']].map(function(item) {
       const run = ((config.weekly_state || {}).runs || {})[item[0]] || {};
       const quotas = ((config.weekly_state || {}).quotas || {})[item[0]] || {};
       return '<label class="checkbox-inline"><input type="checkbox" data-weekly-kind="' + item[0] + '"' + ((weeklyConfig.kinds || []).includes(item[0]) ? ' checked' : '') + ' />' + item[1] + '</label><p>'
         + escapeHtml((run.phase || '待安排') + (run.last_error ? '｜' + run.last_error : '') + '｜' + Object.keys(quotas).map(function(id) {
           const identity = identities.find(function(row) { return String(row.identity_id) === id; }) || {};
-          return (identity.display_name || id) + ' ' + quotas[id].used + '/2';
+          return (identity.display_name || id) + ' ' + quotas[id].used + (item[0] === 'qipai' ? '/3（' + quotas[id].day + '）' : '/2');
         }).join('，')) + '</p>';
     }).join('') + '</div>'
+    + '<div class="dungeon-section"><h4>正魔大战</h4><label class="checkbox-inline"><input type="checkbox" name="zhengmo_enabled"' + (war.enabled ? ' checked' : '') + ' />每日自动出征一次</label><p>沿用已有或宗门固定阵营，按本人今日军情推荐出征。无阵营跳过，不自动投效。未确认时先查询战况。</p>'
+    + members('zhengmo', (war.identities || []).map(function(entry) { return entry.identity_id; }))
+    + '<div class="replica-config-grid"><label class="form-label">北京时间开始小时<input class="text-input" type="number" name="zhengmo_hour" min="0" max="23" value="' + escapeHtml(war.hour === undefined ? 9 : war.hour) + '" /></label><label class="form-label">游戏群<select class="text-input" name="zhengmo_role">'
+    + ['primary', 'secondary'].map(function(role) { return '<option value="' + role + '"' + ((war.group_role || 'primary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>'; }).join('') + '</select></label></div>'
+    + Object.keys(config.zhengmo_runs || {}).map(function(root) { const run = config.zhengmo_runs[root]; return '<p>' + escapeHtml(((run.members || [])[0] || {}).username || root) + '：' + escapeHtml((run.phase || '') + '｜' + (run.result || run.last_error || '')) + '</p>'; }).join('') + '</div>'
     + '<div class="dungeon-section"><h4>长风试炼</h4><label class="checkbox-inline"><input type="checkbox" name="changfeng_enabled"' + (changfeng.enabled ? ' checked' : '') + ' />开启每日试炼</label>'
     + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
     + members('changfeng', changfeng.participant_identity_ids)
@@ -523,6 +529,8 @@ document.addEventListener('submit', async function(event) {
     xuangu: {enabled: form.elements.xuangu_enabled.checked, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
     weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'),
       kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; })},
+    zhengmo: {enabled: form.elements.zhengmo_enabled.checked, hour: Number(form.elements.zhengmo_hour.value), group_role: form.elements.zhengmo_role.value,
+      identities: selectedMembers('zhengmo').map(function(id) { return {identity_id: id, faction: ''}; })},
     changfeng: {enabled: form.elements.changfeng_enabled.checked, daily_limit: Number(form.elements.changfeng_limit.value), participant_identity_ids: selectedMembers('changfeng'),
       arenas: Array.from(form.querySelectorAll('[data-changfeng-arena]:checked')).map(function(input) { return input.dataset.changfengArena; })}
   };

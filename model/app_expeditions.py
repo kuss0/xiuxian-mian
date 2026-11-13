@@ -7,7 +7,8 @@ import traceback
 from .app_hunt import handle_hunt_game_event, handle_hunt_log_command, hunt_target, reset_hunt_runtime_on_startup, run_hunt_scheduler
 from .app_xuangu import handle_xuangu_game_event, reset_xuangu_runtime_on_startup, run_xuangu_scheduler
 from .app_weekly_adventures import handle_weekly_game_event, reset_weekly_on_startup, run_weekly_scheduler
-from .features import changfeng_trial, hunt
+from .app_zhengmo import handle_zhengmo_game_event, reset_zhengmo_runtime_on_startup, run_zhengmo_scheduler
+from .features import changfeng_trial, hunt, zhengmo
 from .features.weekly_adventures import KINDS
 from .persistence import save_state
 from .runtime import send_audit_log, track_background_task
@@ -47,6 +48,8 @@ def get_expedition_snapshot():
         "hunt_weekly": copy.deepcopy(get_expedition_run_state().get("hunt_weekly", {})),
         "weekly": copy.deepcopy(config.get("weekly", {})),
         "weekly_state": copy.deepcopy(get_expedition_run_state().get("weekly", {})),
+        "zhengmo": copy.deepcopy(config.get("zhengmo", {})),
+        "zhengmo_runs": copy.deepcopy(get_expedition_run_state().get("zhengmo", {})),
         "xuangu": {"enabled": bool(xuangu.get("enabled")), "participant_identity_ids": xuangu.get("participant_identity_ids", []),
                    "finish_choice": xuangu.get("finish_choice", "收拢遗宝"), "auto_daily": bool(xuangu.get("auto_daily")),
                    "weekly_limit": xuangu.get("weekly_limit", 3)},
@@ -121,6 +124,10 @@ def ui_set_expedition_config(payload):
                 raise ValueError("请先配置游戏副群")
             config["weekly"] = {"enabled": raw.get("enabled", False), "kinds": list(dict.fromkeys(kinds)),
                                 "participant_identity_ids": _participants(raw.get("participant_identity_ids", []))}
+        if "zhengmo" in payload:
+            config["zhengmo"] = zhengmo.normalize_config(payload["zhengmo"], set(get_identity_ids()), lambda i: i)
+            if config["zhengmo"]["enabled"] and not hunt_target(config["zhengmo"]["group_role"])[0]:
+                raise ValueError("请先配置正魔大战使用的游戏群")
     except (TypeError, ValueError, OverflowError) as exc:
         return False, str(exc)
     set_hunt_teams(teams)
@@ -133,6 +140,9 @@ def ui_set_expedition_config(payload):
 
 
 async def handle_expedition_log_command(event):
+    if str(getattr(event, "raw_text", "") or "").strip().startswith(".正魔 "):
+        from .app_zhengmo import _context as war_context
+        return await zhengmo.control(war_context(), event)
     handled, message = await handle_hunt_log_command(event)
     if handled:
         return handled, message
@@ -153,7 +163,7 @@ async def handle_expedition_log_command(event):
                 _backfill_weekly_receipts()
                 _save()
             return True, message
-        return True, "待核对玩法须先核对游戏结果，再发送 .周常 确认结束 tianlan/yuejing/yinming 记录号"
+        return True, "待核对玩法须先核对游戏结果，再发送 .周常 确认结束 tianlan/yuejing/yinming/qipai 记录号"
     if not text.startswith(".长风试炼"):
         return False, ""
     parts = text.split()
@@ -198,7 +208,7 @@ def _manual_done(task):
 
 async def handle_expedition_game_event(event, *, event_type="message"):
     # Feature locks serialize early replies without holding the shared listener pipeline.
-    for handler in (handle_hunt_game_event, handle_xuangu_game_event, handle_weekly_game_event):
+    for handler in (handle_hunt_game_event, handle_xuangu_game_event, handle_weekly_game_event, handle_zhengmo_game_event):
         if handler is handle_hunt_game_event and not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()):
             continue
         if handler is handle_xuangu_game_event and not get_expedition_config().get("xuangu", {}).get("enabled"):
@@ -209,14 +219,14 @@ async def handle_expedition_game_event(event, *, event_type="message"):
 
 
 async def _run_tick(now):
-    for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, changfeng_trial.run_changfeng_scheduler):
+    for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, run_zhengmo_scheduler, changfeng_trial.run_changfeng_scheduler):
         await _isolated(handler, now)
 
 
 async def run_expedition_scheduler(now):
     global _TICK_TASK
     config = get_expedition_config()
-    if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "weekly")):
+    if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "weekly", "zhengmo")):
         return
     if _TICK_TASK is not None and not _TICK_TASK.done():
         return
@@ -226,6 +236,7 @@ async def run_expedition_scheduler(now):
 
 
 def reset_expedition_runtime_on_startup():
+    reset_zhengmo_runtime_on_startup()
     reset_hunt_runtime_on_startup()
     reset_xuangu_runtime_on_startup()
     changfeng_trial.reset_changfeng_runtime_on_startup()

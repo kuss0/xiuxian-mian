@@ -1,0 +1,746 @@
+[
+  {
+    "message_id": 1577851,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549141.0,
+    "text": ".开密议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577852,
+    "reply_to_msg_id": 1577851,
+    "sender_id": 8917921351,
+    "server_event_at": 1794549144.0,
+    "text": "【七派密议】@CqdOps 召集密议：七派里有两家暗投了魔道，要靠诸位长老排查。.入议 加入（3–8 人），人齐后发起人 .开议。.密议帮助 看规则。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577853,
+    "reply_to_msg_id": 0,
+    "sender_id": 6884505898,
+    "server_event_at": 1794549144.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577854,
+    "reply_to_msg_id": 0,
+    "sender_id": 7257448116,
+    "server_event_at": 1794549146.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577855,
+    "reply_to_msg_id": 1577853,
+    "sender_id": 8735907987,
+    "server_event_at": 1794549147.0,
+    "text": "@LazyDaemo 入议，现有 2 位长老：@CqdOps、@LazyDaemo。满 3 人可开议。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577856,
+    "reply_to_msg_id": 0,
+    "sender_id": 7600647366,
+    "server_event_at": 1794549147.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577857,
+    "reply_to_msg_id": 1577854,
+    "sender_id": 8861328042,
+    "server_event_at": 1794549148.0,
+    "text": "@SilLoop 入议，现有 3 位长老：@CqdOps、@LazyDaemo、@SilLoop。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577858,
+    "reply_to_msg_id": 1577856,
+    "sender_id": 8918867302,
+    "server_event_at": 1794549149.0,
+    "text": "@BitDrifter 入议，现有 4 位长老：@CqdOps、@LazyDaemo、@SilLoop、@BitDrifter。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577859,
+    "reply_to_msg_id": 0,
+    "sender_id": 8741482023,
+    "server_event_at": 1794549149.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577860,
+    "reply_to_msg_id": 0,
+    "sender_id": 8668975549,
+    "server_event_at": 1794549151.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577861,
+    "reply_to_msg_id": 1577859,
+    "sender_id": 8788895566,
+    "server_event_at": 1794549152.0,
+    "text": "@Davecy 入议，现有 5 位长老：@CqdOps、@LazyDaemo、@SilLoop、@BitDrifter、@Davecy。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577862,
+    "reply_to_msg_id": 1577860,
+    "sender_id": 8964348409,
+    "server_event_at": 1794549153.0,
+    "text": "@CherryTu 入议，现有 6 位长老：@CqdOps、@LazyDaemo、@SilLoop、@BitDrifter、@Davecy、@CherryTu。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577863,
+    "reply_to_msg_id": 0,
+    "sender_id": 8486624647,
+    "server_event_at": 1794549153.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577864,
+    "reply_to_msg_id": 1577863,
+    "sender_id": 8980154525,
+    "server_event_at": 1794549156.0,
+    "text": "@Sylvendor 入议，现有 7 位长老：@CqdOps、@LazyDaemo、@SilLoop、@BitDrifter、@Davecy、@CherryTu、@Sylvendor。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577865,
+    "reply_to_msg_id": 0,
+    "sender_id": 8893983329,
+    "server_event_at": 1794549156.0,
+    "text": ".入议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577866,
+    "reply_to_msg_id": 0,
+    "sender_id": 8119000135,
+    "server_event_at": 1794549158.0,
+    "text": "速修",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577867,
+    "reply_to_msg_id": 1577865,
+    "sender_id": 7965897083,
+    "server_event_at": 1794549159.0,
+    "text": "@SongYum 入议，现有 8 位长老：@CqdOps、@LazyDaemo、@SilLoop、@BitDrifter、@Davecy、@CherryTu、@Sylvendor、@SongYum。发起人可以 .开议 了。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577868,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549159.0,
+    "text": ".开议",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577869,
+    "reply_to_msg_id": 1577866,
+    "sender_id": 8693675633,
+    "server_event_at": 1794549162.0,
+    "text": ".双修 温养",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577870,
+    "reply_to_msg_id": 1577868,
+    "sender_id": 8944702077,
+    "server_event_at": 1794549162.0,
+    "text": "【七派密议·开议】魔道压境，七派各遣一队弟子听调——其中两家已暗投魔道。五关之中守住三关，越国可保。\n七派：1.黄枫谷　2.掩月宗　3.灵兽山　4.清虚门　5.化刀坞　6.天阙堡　7.巨剑门\n第 1 关（守住 0，失守 0）：主帅 @CqdOps 请 .点将 2 家（派名或编号，120 秒）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577871,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549163.0,
+    "text": ".试探 黄枫谷",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577872,
+    "reply_to_msg_id": 1577869,
+    "sender_id": 8816935632,
+    "server_event_at": 1794549164.0,
+    "text": "契印感应，双方灵力开始共鸣，准备进行温养双修...",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577873,
+    "reply_to_msg_id": 1577871,
+    "sender_id": 8917921351,
+    "server_event_at": 1794549166.0,
+    "text": "【密议·试探】@CqdOps 当众盘问黄枫谷的领队：应对坦荡，滴水不漏。（试探四次里约三次准）",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577874,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549166.0,
+    "text": ".点将 黄枫谷 掩月宗",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577875,
+    "reply_to_msg_id": 1577874,
+    "sender_id": 8735907987,
+    "server_event_at": 1794549169.0,
+    "text": "【密议·第 1 关】主帅 @CqdOps 点将：黄枫谷、掩月宗。诸位长老 .准 或 .驳（60 秒，不表态算准）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577876,
+    "reply_to_msg_id": 0,
+    "sender_id": 6884505898,
+    "server_event_at": 1794549170.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577872,
+    "reply_to_msg_id": 1577869,
+    "sender_id": 8816935632,
+    "server_event_at": 1794549171.0,
+    "text": "【温养双修·大成】\n在同参契印的加持下，你与 @hfsscxf 灵力完美交融，事半功倍！\n@wanglaoban12138 修为增加了 64 点，并获得 15 点宗门贡献！\n@hfsscxf 修为增加了 46 点！",
+    "event_type": "edit"
+  },
+  {
+    "message_id": 1577877,
+    "reply_to_msg_id": 0,
+    "sender_id": 7257448116,
+    "server_event_at": 1794549172.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577878,
+    "reply_to_msg_id": 1577876,
+    "sender_id": 8918867302,
+    "server_event_at": 1794549172.0,
+    "text": "已记下（2/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577879,
+    "reply_to_msg_id": 1577877,
+    "sender_id": 8788895566,
+    "server_event_at": 1794549173.0,
+    "text": "已记下（3/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577880,
+    "reply_to_msg_id": 0,
+    "sender_id": 7600647366,
+    "server_event_at": 1794549174.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577881,
+    "reply_to_msg_id": 1577880,
+    "sender_id": 8964348409,
+    "server_event_at": 1794549177.0,
+    "text": "已记下（4/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577882,
+    "reply_to_msg_id": 0,
+    "sender_id": 8741482023,
+    "server_event_at": 1794549177.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577883,
+    "reply_to_msg_id": 1577882,
+    "sender_id": 8980154525,
+    "server_event_at": 1794549180.0,
+    "text": "已记下（5/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577884,
+    "reply_to_msg_id": 0,
+    "sender_id": 8668975549,
+    "server_event_at": 1794549180.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577885,
+    "reply_to_msg_id": 1577884,
+    "sender_id": 7965897083,
+    "server_event_at": 1794549183.0,
+    "text": "已记下（6/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577886,
+    "reply_to_msg_id": 0,
+    "sender_id": 8486624647,
+    "server_event_at": 1794549184.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577887,
+    "reply_to_msg_id": 1577886,
+    "sender_id": 8944702077,
+    "server_event_at": 1794549186.0,
+    "text": "已记下（7/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577888,
+    "reply_to_msg_id": 0,
+    "sender_id": 8893983329,
+    "server_event_at": 1794549186.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577889,
+    "reply_to_msg_id": 1577888,
+    "sender_id": 8816935632,
+    "server_event_at": 1794549190.0,
+    "text": "【密议·第 1 关】准 8 : 驳 0，黄枫谷、掩月宗 出征：暗通 1 张——关隘失守！\n第 2 关（守住 0，失守 1）：主帅 @LazyDaemo 请 .点将 3 家（派名或编号，120 秒）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577890,
+    "reply_to_msg_id": 0,
+    "sender_id": 6884505898,
+    "server_event_at": 1794549190.0,
+    "text": ".点将 灵兽山 清虚门 化刀坞",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577891,
+    "reply_to_msg_id": 1577890,
+    "sender_id": 8917921351,
+    "server_event_at": 1794549193.0,
+    "text": "【密议·第 2 关】主帅 @LazyDaemo 点将：灵兽山、清虚门、化刀坞。诸位长老 .准 或 .驳（60 秒，不表态算准）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577892,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549193.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577893,
+    "reply_to_msg_id": 0,
+    "sender_id": 7257448116,
+    "server_event_at": 1794549196.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577894,
+    "reply_to_msg_id": 0,
+    "sender_id": 8154524035,
+    "server_event_at": 1794549196.0,
+    "text": ".查看闭关",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577895,
+    "reply_to_msg_id": 1577892,
+    "sender_id": 8735907987,
+    "server_event_at": 1794549196.0,
+    "text": "已记下（2/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577896,
+    "reply_to_msg_id": 1577893,
+    "sender_id": 8861328042,
+    "server_event_at": 1794549197.0,
+    "text": "已记下（3/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577897,
+    "reply_to_msg_id": 0,
+    "sender_id": 7600647366,
+    "server_event_at": 1794549199.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577898,
+    "reply_to_msg_id": 1577897,
+    "sender_id": 8788895566,
+    "server_event_at": 1794549201.0,
+    "text": "已记下（4/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577899,
+    "reply_to_msg_id": 0,
+    "sender_id": 8741482023,
+    "server_event_at": 1794549202.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577900,
+    "reply_to_msg_id": 1577899,
+    "sender_id": 8964348409,
+    "server_event_at": 1794549204.0,
+    "text": "已记下（5/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577901,
+    "reply_to_msg_id": 0,
+    "sender_id": 8668975549,
+    "server_event_at": 1794549205.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577902,
+    "reply_to_msg_id": 1577901,
+    "sender_id": 8980154525,
+    "server_event_at": 1794549207.0,
+    "text": "已记下（6/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577903,
+    "reply_to_msg_id": 0,
+    "sender_id": 8486624647,
+    "server_event_at": 1794549208.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577904,
+    "reply_to_msg_id": 1577903,
+    "sender_id": 7965897083,
+    "server_event_at": 1794549210.0,
+    "text": "已记下（7/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577905,
+    "reply_to_msg_id": 0,
+    "sender_id": 8893983329,
+    "server_event_at": 1794549211.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577906,
+    "reply_to_msg_id": 1577905,
+    "sender_id": 8944702077,
+    "server_event_at": 1794549214.0,
+    "text": "【密议·第 2 关】准 8 : 驳 0，灵兽山、清虚门、化刀坞 出征：关隘无恙。\n第 3 关（守住 1，失守 1）：主帅 @SilLoop 请 .点将 3 家（派名或编号，120 秒）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577907,
+    "reply_to_msg_id": 0,
+    "sender_id": 7257448116,
+    "server_event_at": 1794549215.0,
+    "text": ".点将 灵兽山 清虚门 化刀坞",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577908,
+    "reply_to_msg_id": 1577907,
+    "sender_id": 8816935632,
+    "server_event_at": 1794549216.0,
+    "text": "【密议·第 3 关】主帅 @SilLoop 点将：灵兽山、清虚门、化刀坞。诸位长老 .准 或 .驳（60 秒，不表态算准）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577909,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549217.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577910,
+    "reply_to_msg_id": 1577909,
+    "sender_id": 8917921351,
+    "server_event_at": 1794549219.0,
+    "text": "已记下（2/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577911,
+    "reply_to_msg_id": 0,
+    "sender_id": 6884505898,
+    "server_event_at": 1794549220.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577912,
+    "reply_to_msg_id": 0,
+    "sender_id": 7600647366,
+    "server_event_at": 1794549223.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577913,
+    "reply_to_msg_id": 1577911,
+    "sender_id": 8735907987,
+    "server_event_at": 1794549223.0,
+    "text": "已记下（3/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577914,
+    "reply_to_msg_id": 1577912,
+    "sender_id": 8861328042,
+    "server_event_at": 1794549225.0,
+    "text": "已记下（4/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577915,
+    "reply_to_msg_id": 0,
+    "sender_id": 8741482023,
+    "server_event_at": 1794549226.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577916,
+    "reply_to_msg_id": 1577915,
+    "sender_id": 8918867302,
+    "server_event_at": 1794549228.0,
+    "text": "已记下（5/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577917,
+    "reply_to_msg_id": 0,
+    "sender_id": 8668975549,
+    "server_event_at": 1794549229.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577918,
+    "reply_to_msg_id": 1577917,
+    "sender_id": 8788895566,
+    "server_event_at": 1794549231.0,
+    "text": "已记下（6/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577919,
+    "reply_to_msg_id": 0,
+    "sender_id": 8486624647,
+    "server_event_at": 1794549232.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577920,
+    "reply_to_msg_id": 1577919,
+    "sender_id": 8964348409,
+    "server_event_at": 1794549234.0,
+    "text": "已记下（7/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577921,
+    "reply_to_msg_id": 0,
+    "sender_id": 8893983329,
+    "server_event_at": 1794549235.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577922,
+    "reply_to_msg_id": 1577921,
+    "sender_id": 8980154525,
+    "server_event_at": 1794549237.0,
+    "text": "【密议·第 3 关】准 8 : 驳 0，灵兽山、清虚门、化刀坞 出征：关隘无恙。\n第 4 关（守住 2，失守 1）：主帅 @BitDrifter 请 .点将 4 家（派名或编号，120 秒）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577923,
+    "reply_to_msg_id": 0,
+    "sender_id": 7600647366,
+    "server_event_at": 1794549238.0,
+    "text": ".点将 灵兽山 清虚门 化刀坞 天阙堡",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577924,
+    "reply_to_msg_id": 1577923,
+    "sender_id": 7965897083,
+    "server_event_at": 1794549241.0,
+    "text": "【密议·第 4 关】主帅 @BitDrifter 点将：灵兽山、清虚门、化刀坞、天阙堡。诸位长老 .准 或 .驳（60 秒，不表态算准）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577925,
+    "reply_to_msg_id": 0,
+    "sender_id": 1089925593,
+    "server_event_at": 1794549244.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577926,
+    "reply_to_msg_id": 1577925,
+    "sender_id": 8816935632,
+    "server_event_at": 1794549247.0,
+    "text": "已记下（2/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577927,
+    "reply_to_msg_id": 0,
+    "sender_id": 6884505898,
+    "server_event_at": 1794549247.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577928,
+    "reply_to_msg_id": 0,
+    "sender_id": 8660600308,
+    "server_event_at": 1794549250.0,
+    "text": ".宗门点卯",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577929,
+    "reply_to_msg_id": 1577927,
+    "sender_id": 8917921351,
+    "server_event_at": 1794549250.0,
+    "text": "已记下（3/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577930,
+    "reply_to_msg_id": 0,
+    "sender_id": 7257448116,
+    "server_event_at": 1794549250.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577931,
+    "reply_to_msg_id": 1577928,
+    "sender_id": 8735907987,
+    "server_event_at": 1794549251.0,
+    "text": "散修无需点卯，速速寻一宗门拜入吧。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577932,
+    "reply_to_msg_id": 1577930,
+    "sender_id": 8861328042,
+    "server_event_at": 1794549253.0,
+    "text": "已记下（4/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577933,
+    "reply_to_msg_id": 0,
+    "sender_id": 8227977060,
+    "server_event_at": 1794549253.0,
+    "text": ".宗门点卯",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577934,
+    "reply_to_msg_id": 0,
+    "sender_id": 8741482023,
+    "server_event_at": 1794549253.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577935,
+    "reply_to_msg_id": 1577933,
+    "sender_id": 8788895566,
+    "server_event_at": 1794549255.0,
+    "text": "散修无需点卯，速速寻一宗门拜入吧。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577936,
+    "reply_to_msg_id": 1577934,
+    "sender_id": 8918867302,
+    "server_event_at": 1794549255.0,
+    "text": "已记下（5/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577937,
+    "reply_to_msg_id": 0,
+    "sender_id": 8668975549,
+    "server_event_at": 1794549256.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577938,
+    "reply_to_msg_id": 1577937,
+    "sender_id": 8964348409,
+    "server_event_at": 1794549259.0,
+    "text": "已记下（6/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577939,
+    "reply_to_msg_id": 0,
+    "sender_id": 8486624647,
+    "server_event_at": 1794549260.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577940,
+    "reply_to_msg_id": 1577939,
+    "sender_id": 8980154525,
+    "server_event_at": 1794549261.0,
+    "text": "已记下（7/8 位表态）。",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577941,
+    "reply_to_msg_id": 0,
+    "sender_id": 8893983329,
+    "server_event_at": 1794549262.0,
+    "text": ".准",
+    "event_type": "message"
+  },
+  {
+    "message_id": 1577942,
+    "reply_to_msg_id": 1577941,
+    "sender_id": 7965897083,
+    "server_event_at": 1794549265.0,
+    "text": "【密议·第 4 关】准 8 : 驳 0，灵兽山、清虚门、化刀坞、天阙堡 出征：关隘无恙。\n【七派密议·散议】七派守住三关，越国无恙！暗投魔道的是：黄枫谷、巨剑门。\n8 位长老各得修为、灵石（按境界，获胜翻倍）。\n正魔大战：魔道战功 +5（@CqdOps）\n正魔大战：正道战功 +5（@LazyDaemo、@SilLoop、@BitDrifter、@Davecy、@CherryTu、@Sylvendor、@SongYum）",
+    "event_type": "message"
+  }
+]

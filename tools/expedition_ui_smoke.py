@@ -74,6 +74,9 @@ def main():
                     team.locator("[data-hunt-weekly]").check()
                     page.locator("[data-expedition-member=xuangu][value='990001']").check()
                     page.locator("[data-expedition-member=changfeng][value='990002']").check()
+                    page.locator("[data-weekly-kind=qipai]").check()
+                    page.locator("[data-expedition-member=zhengmo][value='990001']").check()
+                    page.locator("[name=zhengmo_hour]").fill("8")
                     # Polling must preserve a dirty form, including its team order.
                     page.evaluate("renderDungeonModal()")
                     assert team.locator("[data-hunt-name]").input_value() == f"窄屏<{width}>"
@@ -88,6 +91,8 @@ def main():
                     assert saved["xuangu"]["enabled"] is False and saved["changfeng"]["enabled"] is False
                     assert saved["xuangu"]["participant_identity_ids"] == ["990001"]
                     assert saved["changfeng"]["participant_identity_ids"] == ["990002"]
+                    assert "qipai" in saved["weekly"]["kinds"]
+                    assert saved["zhengmo"] == {"enabled": False, "hour": 8, "group_role": "primary", "identities": [{"identity_id": "990001", "faction": ""}]}
                     page.evaluate("document.querySelectorAll('.modal-backdrop.show').forEach(el => el.classList.remove('show'))")
                     page.locator("[data-open-storage-bag]").click()
                     page.locator("#storage-bag-transfer-open-btn").click()
