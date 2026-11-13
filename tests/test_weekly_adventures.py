@@ -232,6 +232,34 @@ def test_foreign_player_start_during_join_invalidates_queued_member(env):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("prior_collision", [False, True])
+def test_complete_local_tianlan_roster_with_extra_ally_keeps_ownership(env, prior_collision):
+    env.members[:] = env.members[:3]
+
+    async def run():
+        env.enabled.clear(); env.enabled.add("tianlan")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env,
+            "【天澜草原】@member1 要横穿天澜草原，2 分钟内发 .同行 加入。", reply=101))
+        record = env.records["runs"]["tianlan"]
+        if prior_collision:
+            await weekly.game_event(env.ctx, event(env,
+                "【天澜草原】@another 要横穿天澜草原，2 分钟内发 .同行 加入。"))
+        await weekly.game_event(env.ctx, event(env,
+            "【天澜草原】@member1、@member2、@member3、@other 一行进了草原。"))
+        before = len(env.sends)
+        await weekly.game_event(env.ctx, event(env,
+            "【天澜草原·第1站】前方是白狼圣殿。殿前只拴着两匹马，炊烟也淡。\n90 秒内投票：.潜行 或 .斩哨（踪迹 0）"))
+        if prior_collision:
+            assert record["phase"] == "held" and len(env.sends) == before
+        else:
+            assert record["phase"] == "running" and record["bound"]
+            assert [(cmd, kw["send_as_id"]) for cmd, kw in env.sends[before:]] == [(".斩哨", i) for i in [1, 2, 3]]
+            assert not record.get("collision")
+
+    asyncio.run(run())
+
+
 def test_tianlan_owned_ack_waits_for_separate_named_recruitment(env):
     async def run():
         env.enabled.clear(); env.enabled.add("tianlan")

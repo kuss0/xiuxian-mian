@@ -12,6 +12,7 @@ KINDS = {
     "yinming": {"label": "阴冥之地", "open": ".阴冥之地", "join": ".同入阴冥", "minimum": 2, "realm": "元婴初期"},
 }
 ACTIVE = {"opening", "joining", "running", "held", "interrupted"}
+START_MARKERS = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）"}
 _LOCK = asyncio.Lock()
 _NAMES = re.compile(r"@([A-Za-z0-9_]{3,32})")
 
@@ -158,7 +159,8 @@ def observe(ctx, event):
     for kind, run in ctx.records().get("runs", {}).items():
         if run.get("phase") not in ACTIVE or not _route(ctx, run, event):
             continue
-        foreign = (KINDS[kind]["label"] in text and any(s in text for s in
+        complete_start = START_MARKERS[kind] in text and _ours(run, text)
+        foreign = (not complete_start and KINDS[kind]["label"] in text and any(s in text for s in
                    ("要横穿", "要夜探", "立在鬼雾", "一行进了草原", "潜入越国京城", "（辨路）"))
                    and names(text) and not names(text).issubset({m["username"].lower() for m in run["members"]}))
         if foreign:
@@ -331,8 +333,7 @@ async def game_event(ctx, event):
                                    if run.get("collision") else "入队发送未获确认")
                         break
                 return True
-            start_marker = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）"}[kind]
-            if start_marker in text and _ours(run, text):
+            if START_MARKERS[kind] in text and _ours(run, text):
                 run.update(phase="running", bound=True, deadline=ctx.event_time(event) + 130)
                 ctx.save()
             # Yuejing with four eligible members needs explicit entry; five starts automatically.
