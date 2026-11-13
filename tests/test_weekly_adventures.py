@@ -260,6 +260,41 @@ def test_complete_local_tianlan_roster_with_extra_ally_keeps_ownership(env, prio
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("local_count", [3, 5])
+def test_real_successful_tianlan_chain_matches_observed_player_actions(env, local_count):
+    fixture = json.loads((Path(__file__).parent / "fixtures/tianlan_success_20261113.json").read_text())
+    # Keep the actual successful lure in the controlled roster in both cases.
+    selected = fixture["members"] if local_count == 5 else [*fixture["members"][:2], fixture["members"][-1]]
+    env.members[:] = selected
+    controlled = {member["identity_id"] for member in selected}
+    rows = fixture["events"]
+    env.ctx.target = lambda: (rows[0]["chat_id"], rows[0]["topic_id"])
+    env.ctx.bot_ids = lambda: list({row["sender_id"] for row in rows if row["sender_id"] not in {m["identity_id"] for m in fixture["members"]}})
+
+    async def run():
+        env.enabled.clear(); env.enabled.add("tianlan")
+        env.now[0] = rows[0]["server_event_at"] - 2
+        await weekly.scheduler(env.ctx, env.now[0])
+        observed = []
+        for row in rows:
+            env.now[0] = row["server_event_at"]
+            if row["sender_id"] in controlled and row["text"].startswith("."):
+                observed.append((row["sender_id"], row["text"]))
+            elif row["sender_id"] in env.ctx.bot_ids():
+                await weekly.game_event(env.ctx, event(env, row["text"], sender=row["sender_id"],
+                    chat=row["chat_id"], topic=row["topic_id"], reply=row["reply_to_msg_id"] or 0, mid=row["message_id"]))
+        emitted = [(kwargs["send_as_id"], command) for command, kwargs in env.sends
+                   if command not in {".天澜草原", ".同行"}]
+        # Player identities can be emitted in a different order within a vote.
+        assert sorted(emitted) == sorted(observed)
+        record = env.records["runs"]["tianlan"]
+        assert record["phase"] == "done" and record["bound"] and not record.get("collision")
+        assert all(q["used"] == 1 for q in env.records["quotas"]["tianlan"].values())
+        assert len(env.records["quotas"]["tianlan"]) == local_count
+
+    asyncio.run(run())
+
+
 def test_tianlan_owned_ack_waits_for_separate_named_recruitment(env):
     async def run():
         env.enabled.clear(); env.enabled.add("tianlan")
@@ -328,8 +363,31 @@ def test_owned_dead_road_receipt_allows_one_evidence_based_alternative(env):
 def test_yinming_ambiguous_fight_uses_documented_counter():
     members = [{"identity_id": 1}, {"identity_id": 2}]
     text = "【暴风山 第1/3招】破招口诀。辨路者看温天仁的起手，不是「沉肩」就是「扫腿」。\n阳气 {}/8"
-    assert weekly.panel("yinming", text.format(8), members)[2] == [(2, ".应招 下压")]
-    assert weekly.panel("yinming", text.format(6), members)[2] == [(2, ".应招 下压")]
+    assert weekly.panel("yinming", text.format(8), members)[2] == [(2, ".应招 侧闪")]
+    assert weekly.panel("yinming", text.format(6), members)[2] == [(2, ".应招 侧闪")]
+
+
+@pytest.mark.parametrize("path_actor,soul_actor", [(1, 2), (2, 1)])
+@pytest.mark.parametrize("moves,counter", [("沉肩」就是「扫腿", "侧闪"), ("扫腿」就是「虚晃", "不动"), ("虚晃」就是「沉肩", "下压")])
+def test_real_yinming_roles_and_public_counter_instructions(env, path_actor, soul_actor, moves, counter):
+    async def run():
+        env.enabled.clear(); env.enabled.add("yinming")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env,
+            "【阴冥之地】@member1 立在鬼雾边上，发 .同入阴冥。", reply=101))
+        await weekly.game_event(env.ctx, event(env,
+            f"【阴冥之地】一阵鬼雾卷过，@member{path_actor}（辨路）、@member{soul_actor}（感魂） 不见了踪影。"))
+        record = env.records["runs"]["yinming"]
+        assert record["yinming_roles"] == {"辨路": path_actor, "感魂": soul_actor}
+        await weekly.game_event(env.ctx, event(env,
+            "【阴冥 第1/6步】雾中三条路：左、中、右。\n辨路者：死路不在右边。感魂者：阴魂不在右边。\n阳气 8/8"))
+        assert (env.sends[-1][1]["send_as_id"], env.sends[-1][0]) == (path_actor, ".往 右")
+        await weekly.game_event(env.ctx, event(env,
+            "【暴风山 第1/3招】温天仁出手了！破招口诀：沉肩→侧闪；扫腿→不动；虚晃→下压。"
+            f"辨路者看温天仁的起手，不是「{moves}」。\n阳气 7/8　感魂者 120 秒内 .应招 侧闪/下压/不动"))
+        assert (env.sends[-1][1]["send_as_id"], env.sends[-1][0]) == (soul_actor, ".应招 " + counter)
+
+    asyncio.run(run())
 
 
 def test_weekly_realm_selection_excludes_two_jiedan_accounts(monkeypatch):

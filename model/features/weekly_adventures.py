@@ -56,7 +56,7 @@ def yinming_path(text, *, known_dead=None, allow_risk=False):
     return ""
 
 
-def panel(kind, text, members, *, path_dead=None):
+def panel(kind, text, members, *, path_dead=None, roles=None):
     """Return a monotonic stage and exact actions, grounded in public game wording."""
     ids = [m["identity_id"] for m in members]
     if kind == "yuejing":
@@ -118,15 +118,17 @@ def panel(kind, text, members, *, path_dead=None):
         match = re.search(r"【阴冥 第([1-6])/6步】", text)
         if match:
             road = yinming_path(text, known_dead=path_dead, allow_risk=True)
-            return int(match[1]), 120, [(ids[0], ".往 " + road)] if road else []
+            actor = (roles or {}).get("辨路", ids[0])
+            return int(match[1]), 120, [(actor, ".往 " + road)] if road else []
         match = re.search(r"【暴风山 第([1-3])/3招】", text)
         if match:
             clue = text.split("辨路者看温天仁的起手", 1)[-1].split("\n", 1)[0]
             moves = re.findall(r"「(沉肩|扫腿|虚晃)」", clue)
             # Official clues can leave two valid moves. Choose one documented
             # counter rather than timing out (which also loses yang).
-            action = {"沉肩": "下压", "扫腿": "不动", "虚晃": "侧闪"}.get(moves[0] if moves else "", "")
-            return 6 + int(match[1]), 120, [(ids[1], ".应招 " + action)] if action else []
+            action = {"沉肩": "侧闪", "扫腿": "不动", "虚晃": "下压"}.get(moves[0] if moves else "", "")
+            actor = (roles or {}).get("感魂", ids[1])
+            return 6 + int(match[1]), 120, [(actor, ".应招 " + action)] if action else []
     return None
 
 
@@ -305,7 +307,9 @@ async def game_event(ctx, event):
                 continue
             if kind == "yinming" and run.get("bound"):
                 failed = re.search(r"@([A-Za-z0-9_]+) 选了([左中右])边——一头撞上死路", text)
-                if (failed and failed[1].lower() == run["members"][0]["username"].lower()
+                path_actor = run.get("yinming_roles", {}).get("辨路", run["members"][0]["identity_id"])
+                path_name = next(m["username"].lower() for m in run["members"] if m["identity_id"] == path_actor)
+                if (failed and failed[1].lower() == path_name
                         and 1 <= run.get("stage", 0) <= 6 and any(
                             a.get("command") == ".往 " + failed[2] and a.get("stage") == run["stage"] and a.get("status") == "sent"
                             for a in run["attempts"].values())):
@@ -334,6 +338,14 @@ async def game_event(ctx, event):
                         break
                 return True
             if START_MARKERS[kind] in text and _ours(run, text):
+                if kind == "yinming":
+                    by_name = {m["username"].lower(): m["identity_id"] for m in run["members"]}
+                    assignments = re.findall(r"@([A-Za-z0-9_]+)[（(](辨路|感魂)[）)]", text)
+                    roles = {role: by_name[name.lower()] for name, role in assignments if name.lower() in by_name}
+                    if len(assignments) != 2 or set(roles) != {"辨路", "感魂"} or len(set(roles.values())) != 2:
+                        await hold(ctx, run, "入场回执缺少两人实际辨路/感魂分工")
+                        return True
+                    run["yinming_roles"] = roles
                 run.update(phase="running", bound=True, deadline=ctx.event_time(event) + 130)
                 ctx.save()
             # Yuejing with four eligible members needs explicit entry; five starts automatically.
@@ -343,7 +355,8 @@ async def game_event(ctx, event):
                     await send(ctx, run, run["members"][0]["identity_id"], ".入城", 0, run["deadline"] - 3)
             if run.get("bound"):
                 step = re.search(r"【阴冥 第([1-6])/6步】", text) if kind == "yinming" else None
-                stage = panel(kind, text, run["members"], path_dead=run.get("path_dead", {}).get(step[1]) if step else None)
+                stage = panel(kind, text, run["members"], path_dead=run.get("path_dead", {}).get(step[1]) if step else None,
+                              roles=run.get("yinming_roles"))
                 if stage and (stage[0] > int(run.get("stage") or 0) or stage[0] == run.get("retry_step")):
                     number, seconds, actions = stage
                     if not actions:

@@ -1,0 +1,378 @@
+{
+  "source": "Production passive message log, complete successful Tianlan run ending 1576595",
+  "members": [
+    {
+      "identity_id": 8668975549,
+      "username": "CherryTu"
+    },
+    {
+      "identity_id": 8174450434,
+      "username": "Dianells"
+    },
+    {
+      "identity_id": 8569363409,
+      "username": "AeroVines"
+    },
+    {
+      "identity_id": 8675809672,
+      "username": "Venthyrn"
+    },
+    {
+      "identity_id": 8486624647,
+      "username": "Sylvendor"
+    }
+  ],
+  "events": [
+    {
+      "message_id": 1576458,
+      "server_event_at": 1794541452.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 7965897083,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原】@CherryTu 要横穿天澜草原，2 分钟内发 .同行 加入（元婴以上，不同主魂，3–5 人）。"
+    },
+    {
+      "message_id": 1576467,
+      "server_event_at": 1794541466.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8861328042,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原】@CherryTu、@Sylvendor、@Dianells、@AeroVines、@Venthyrn 一行进了草原。天地一色，风吹草低，远处圣殿的白塔隐约可见。"
+    },
+    {
+      "message_id": 1576468,
+      "server_event_at": 1794541470.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8788895566,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原·第1站】前方是白狼圣殿。圣殿的钟声一阵紧过一阵，像是在召人。\n90 秒内投票：.潜行 或 .斩哨（踪迹 0）"
+    },
+    {
+      "message_id": 1576469,
+      "server_event_at": 1794541471.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576471,
+      "server_event_at": 1794541474.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8486624647,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576473,
+      "server_event_at": 1794541477.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576475,
+      "server_event_at": 1794541479.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576477,
+      "server_event_at": 1794541481.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576497,
+      "server_event_at": 1794541577.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8861328042,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原·第2站】前方是青羊圣殿。殿后的马蹄印又深又乱，少说十几骑。\n90 秒内投票：.潜行 或 .斩哨（踪迹 1）"
+    },
+    {
+      "message_id": 1576498,
+      "server_event_at": 1794541577.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576499,
+      "server_event_at": 1794541580.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8486624647,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576503,
+      "server_event_at": 1794541583.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576506,
+      "server_event_at": 1794541586.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576509,
+      "server_event_at": 1794541590.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".潜行"
+    },
+    {
+      "message_id": 1576516,
+      "server_event_at": 1794541674.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8964348409,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原·第3站】前方是金鹰圣殿。殿前只拴着两匹马，炊烟也淡。\n90 秒内投票：.潜行 或 .斩哨（踪迹 2）"
+    },
+    {
+      "message_id": 1576517,
+      "server_event_at": 1794541674.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".斩哨"
+    },
+    {
+      "message_id": 1576518,
+      "server_event_at": 1794541676.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8486624647,
+      "reply_to_msg_id": 0,
+      "text": ".斩哨"
+    },
+    {
+      "message_id": 1576522,
+      "server_event_at": 1794541678.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".斩哨"
+    },
+    {
+      "message_id": 1576525,
+      "server_event_at": 1794541681.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".斩哨"
+    },
+    {
+      "message_id": 1576526,
+      "server_event_at": 1794541683.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".斩哨"
+    },
+    {
+      "message_id": 1576535,
+      "server_event_at": 1794541764.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8735907987,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原·圣女追杀】天边亮起一道白光——天澜圣女林银屏到了。她身后跟着两位大仙师，手中一捏法诀，天上降下一头庞然圣兽的虚影：天澜圣兽的分身！\n60 秒内，可以有一人 .诱敌 把两位仙师引开（像韩立放出第二元婴那样）。圣兽要斗 4 回合。"
+    },
+    {
+      "message_id": 1576536,
+      "server_event_at": 1794541765.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8486624647,
+      "reply_to_msg_id": 0,
+      "text": ".诱敌"
+    },
+    {
+      "message_id": 1576540,
+      "server_event_at": 1794541779.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8788895566,
+      "reply_to_msg_id": 0,
+      "text": "【诱敌】@Sylvendor 化作一道遁光往东北去了，两位大仙师果然追了上去。"
+    },
+    {
+      "message_id": 1576544,
+      "server_event_at": 1794541814.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8917921351,
+      "reply_to_msg_id": 0,
+      "text": "【以鼎收兽·第1/4回合】圣兽伏低前身，四爪扣进草皮，后腿绷得像拉满的弓。\n60 秒内：.闪避 / .稳心 / .封地　（圣兽气势 3，阵脚 3）"
+    },
+    {
+      "message_id": 1576545,
+      "server_event_at": 1794541814.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".闪避"
+    },
+    {
+      "message_id": 1576546,
+      "server_event_at": 1794541816.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".闪避"
+    },
+    {
+      "message_id": 1576551,
+      "server_event_at": 1794541818.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".闪避"
+    },
+    {
+      "message_id": 1576553,
+      "server_event_at": 1794541821.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".闪避"
+    },
+    {
+      "message_id": 1576561,
+      "server_event_at": 1794541883.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 7965897083,
+      "reply_to_msg_id": 0,
+      "text": "【以鼎收兽·第2/4回合】圣兽前爪刨土，身子一缩，竟像要往地底钻去。\n60 秒内：.闪避 / .稳心 / .封地　（圣兽气势 2，阵脚 3）"
+    },
+    {
+      "message_id": 1576562,
+      "server_event_at": 1794541883.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".封地"
+    },
+    {
+      "message_id": 1576564,
+      "server_event_at": 1794541886.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".封地"
+    },
+    {
+      "message_id": 1576566,
+      "server_event_at": 1794541889.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".封地"
+    },
+    {
+      "message_id": 1576567,
+      "server_event_at": 1794541891.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".封地"
+    },
+    {
+      "message_id": 1576577,
+      "server_event_at": 1794541947.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8861328042,
+      "reply_to_msg_id": 0,
+      "text": "【以鼎收兽·第3/4回合】圣兽仰起头，喉间滚出一阵闷雷似的低鸣，众人耳中嗡嗡作响。\n60 秒内：.闪避 / .稳心 / .封地　（圣兽气势 1，阵脚 3）"
+    },
+    {
+      "message_id": 1576578,
+      "server_event_at": 1794541948.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8668975549,
+      "reply_to_msg_id": 0,
+      "text": ".稳心"
+    },
+    {
+      "message_id": 1576580,
+      "server_event_at": 1794541951.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8174450434,
+      "reply_to_msg_id": 0,
+      "text": ".稳心"
+    },
+    {
+      "message_id": 1576581,
+      "server_event_at": 1794541953.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8569363409,
+      "reply_to_msg_id": 0,
+      "text": ".稳心"
+    },
+    {
+      "message_id": 1576585,
+      "server_event_at": 1794541955.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8675809672,
+      "reply_to_msg_id": 0,
+      "text": ".稳心"
+    },
+    {
+      "message_id": 1576595,
+      "server_event_at": 1794542019.0,
+      "chat_id": -1002083016447,
+      "topic_id": 0,
+      "sender_id": 8861328042,
+      "reply_to_msg_id": 0,
+      "text": "【天澜草原】收兽而归！\n@CherryTu 修为+23999 灵石+1903\n@Sylvendor 修为+23999 灵石+1903\n@Dianells 修为+23999 灵石+1903\n@AeroVines 修为+23999 灵石+1903\n@Venthyrn 修为+23999 灵石+1903"
+    }
+  ]
+}
