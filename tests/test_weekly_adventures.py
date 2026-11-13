@@ -59,6 +59,33 @@ async def open_run(env, kind="yuejing"):
     return run
 
 
+@pytest.mark.parametrize("sender,chat,age,confirmed", [
+    (1, -10, 0, True),
+    (2, -10, 0, False),
+    (1, -11, 0, False),
+    (1, -10, 90, False),
+])
+def test_log_group_confirmation_reaches_weekly_state_only_for_fresh_admin(env, monkeypatch, sender, chat, age, confirmed):
+    from model import control
+
+    monkeypatch.setattr(control, "LOG_GROUP_ID", -10)
+    monkeypatch.setattr(control, "ADMIN_IDS", {1})
+    monkeypatch.setattr(control, "reply_log_group_message", AsyncMock())
+    monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+
+    async def run():
+        record = await open_run(env)
+        record.update(phase="held", requires_reconciliation=True)
+        message = event(env, ".周常 确认结束 yuejing " + record["id"],
+                        sender=sender, chat=chat, at=env.now[0] - age)
+        handled = await control.handle_log_group_command(message)
+        assert handled is (sender == 1 and chat == -10)
+        assert (record["phase"] == "operator_confirmed") is confirmed
+        assert record["requires_reconciliation"] is (not confirmed)
+
+    asyncio.run(run())
+
+
 def test_yinming_constraint_solver_including_nonadjacent_relative_clues():
     for clue, road in [
         ("死路不在左边。感魂者：阴魂不在左边。", "左"),
