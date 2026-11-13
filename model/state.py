@@ -2029,6 +2029,22 @@ def get_expedition_config():
     return copy.deepcopy(_get_meta_dict("expedition_config"))
 
 
+def get_avatar_entry(identity_id):
+    return dict(get_expedition_run_state().get("avatars", {}).get("entries", {}).get(str(identity_id), {}))
+
+
+def is_avatar_identity(identity_id=None):
+    return bool(get_avatar_entry(get_current_identity_id() if identity_id is None else identity_id))
+
+
+def get_avatar_owner_id(identity_id):
+    return int(get_avatar_entry(identity_id).get("owner_id") or 0)
+
+
+def resolve_send_as_peer_id(identity_id):
+    return get_avatar_owner_id(identity_id) or int(identity_id)
+
+
 def set_expedition_config(config):
     _set_meta_dict("expedition_config", copy.deepcopy(config))
 
@@ -3095,6 +3111,9 @@ def get_available_module_names(send_as_id=None):
         for module_name in MODULE_NAMES
         if module_name != "观星监控" and not is_module_archived(module_name)
     ]
+    if is_avatar_identity(send_as_id):
+        supported = {"探寻裂缝", "法宝", "温养器灵", "器灵试炼", "慕兰谍影", "慕兰", "问道", "引道", "南陇侯", "点卯", "小世界", "阴罗幡", "搜寻节点", "登天阶", "元婴", "第二元神", "侍妾", "极阴祖师"}
+        available_module_names = [name for name in available_module_names if name in supported]
     sect_name = normalize_sect_name(get_send_as_profile(send_as_id).get("sect_name"))
     if sect_name in NO_SECT_NAMES:
         available_module_names = [
@@ -3144,7 +3163,22 @@ def get_pet_warm_command(send_as_id=None):
 
 
 def get_pet_trial_command(send_as_id=None):
-    return f"{CMD_PET_TRIAL} {get_pet_trial_name(send_as_id)}"
+    command = f"{CMD_PET_TRIAL} {get_pet_trial_name(send_as_id)}"
+    route = get_pet_trial_route(send_as_id)
+    return f"{command} {route}" if route else command
+
+
+def get_pet_trial_route(send_as_id=None):
+    identity_id = int(get_current_identity_id() if send_as_id is None else send_as_id)
+    return str(get_expedition_config().get("pet_trial_routes", {}).get(str(identity_id)) or "")
+
+
+def set_pet_trial_route(send_as_id, route):
+    if route not in {"", "静修", "寻宝", "斗战"}:
+        raise ValueError("器灵试炼路线须为默认、静修、寻宝或斗战")
+    config = get_expedition_config()
+    config.setdefault("pet_trial_routes", {})[str(int(send_as_id))] = route
+    set_expedition_config(config)
 
 
 def get_pet_formation_command(send_as_id=None):

@@ -2427,6 +2427,12 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, c
     root_msg_id = 0
     matched_via = None
     sender_identity_id, _ = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
+    from .state import get_avatar_owner_id, get_expedition_run_state, is_avatar_identity
+    if get_expedition_run_state().get("avatars", {}).get("entries"):
+        tracked_identity, _ = _resolve_identity_message_owner(resolved_reply_to_msg_id, chat_id=chat_id)
+        if (tracked_identity is not None and is_avatar_identity(tracked_identity)
+                and (sender_identity_id is None or get_avatar_owner_id(tracked_identity) == sender_identity_id)):
+            sender_identity_id = tracked_identity
     resolved_send_as_id, matched_via = _resolve_identity_message_owner(
         resolved_reply_to_msg_id,
         send_as_id=sender_identity_id or send_as_id,
@@ -4387,6 +4393,13 @@ def is_identity_weak(send_as_id=None, now=None):
     if send_as_id <= 0 or not has_identity(send_as_id):
         return False
 
+    from .state import get_expedition_run_state
+    if str(send_as_id) in get_expedition_run_state().get("soul_pauses", {}):
+        return True
+    soul = get_expedition_run_state().get("avatars", {}).get("souls", {}).get(str(send_as_id), {})
+    if soul and soul.get("mode") != "main":
+        return True
+
     identity_state = get_identity_state(send_as_id)
     until = float(identity_state.get("weak_until", 0) or 0)
     if until <= 0:
@@ -4415,6 +4428,8 @@ def _is_known_replica_choice_command(command):
 
 
 def _weakness_allows_command(command, send_as_id=None):
+    if str(command).startswith(".切换 "):
+        return True
     if send_as_id is not None:
         identity_state = get_identity_state(send_as_id)
         if str(identity_state.get("weak_source") or "") == "jingsi":
@@ -4742,6 +4757,11 @@ async def _game_send_allowed(
     if is_game_send_quiesced():
         _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
         return False
+    from .avatar_soul import send_block_reason
+    soul_reason = send_block_reason(send_as_id, command)
+    if soul_reason:
+        _record_game_send_block(send_as_id, command, "soul_not_ready", soul_reason, definitely_unsent=True)
+        return False
     if has_identity(send_as_id) and any(
         item.get("send_caller_detached") and get_pending_command(item) == command
         for item in get_identity_state(send_as_id)["pending_tasks"].values()
@@ -5029,7 +5049,8 @@ async def _send_game_command_impl(
                                 rpc_stage = "resolve_group_after_dialogs"
                                 peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
                             rpc_stage = "resolve_send_as"
-                            send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                            from .state import resolve_send_as_peer_id
+                            send_as_peer = await asyncio.wait_for(active_client.get_input_entity(resolve_send_as_peer_id(send_as_id)), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
                             if not await _game_send_allowed(
                                 command,
                                 send_as_id=send_as_id,
@@ -5286,6 +5307,49 @@ async def _send_game_command_impl(
         return None
 
 
+async def send_duel_private_magic(account_id, *, operation_check):
+    """Only the global-duel bot's fixed 神通 action, through the normal send gates."""
+    account_id = int(account_id)
+    if get_identity_account(account_id) != account_id:
+        return None
+    client = get_registered_client(account_id)
+    if client is None:
+        return None
+    owner = get_identity_state(account_id)
+    command = "神通"
+    intent = _normalize_send_intent(command, source_module="全局对决")
+
+    def allowed():
+        return (has_identity(account_id) and get_identity_state(account_id) is owner
+                and get_identity_account(account_id) == account_id and get_global_enabled()
+                and get_identity_enabled(account_id) and operation_check() is True)
+
+    async with _send_slot(SEND_PRIORITY_NORMAL, command=command, send_as_id=account_id, intent=intent, queue_timeout=45):
+        if not allowed() or not await _game_send_allowed(command, send_as_id=account_id, account_id=account_id,
+                send_priority=SEND_PRIORITY_NORMAL, send_intent=intent, owner_check=allowed):
+            return None
+        async with account_rpc_slot(account_id=account_id, client_obj=client):
+            bot = await asyncio.wait_for(client.get_entity("fanrenxiuxian_bot"), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+            if not getattr(bot, "bot", False) or str(getattr(bot, "username", "")).lower() != "fanrenxiuxian_bot":
+                return None
+            if not allowed() or not await _game_send_allowed(command, send_as_id=account_id, account_id=account_id,
+                    send_priority=SEND_PRIORITY_NORMAL, send_intent=intent, owner_check=allowed):
+                return None
+            task, receipt = _start_game_send_rpc(
+                lambda: client.send_message(bot, command), account_id=account_id, command=command,
+                send_as_id=account_id, track=False, send_priority=SEND_PRIORITY_NORMAL,
+                send_intent=intent, game_group_id=bot.id, topic_id=0, can_dispatch=allowed,
+            )
+            try:
+                message = await asyncio.wait_for(asyncio.shield(task), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                _detach_game_send_rpc(task, receipt)
+                raise
+            if not getattr(message, "id", 0):
+                return None
+            return _finalize_game_send_receipt(receipt, msg_id=message.id, sent_at=time.time())
+
+
 async def send_game_command(
     command,
     track=True,
@@ -5328,6 +5392,13 @@ async def send_game_command(
         delete_policy=delete_policy,
     )
     send_priority = _normalize_send_priority(command, priority=priority)
+    from .state import is_avatar_identity
+    from .avatar_soul import ensure_avatar_soul, note_send
+    if shadow_identity_id is not None and is_avatar_identity(shadow_identity_id):
+        if not await ensure_avatar_soul(shadow_identity_id):
+            _record_game_send_block(shadow_identity_id, command, "soul_not_ready", "分身附体未确认", definitely_unsent=True)
+            return None
+        note_send(shadow_identity_id)
     with shadow_attempt_scope(
         command=command,
         send_as_id=shadow_identity_id,
@@ -5339,7 +5410,7 @@ async def send_game_command(
         legacy_op_id=str(normalized_intent.get("op_id") or op_id or ""),
         reply_to_msg_id=int(reply_to or 0),
     ):
-        return await _send_game_command_impl(
+        message = await _send_game_command_impl(
             command,
             track=track,
             reply_to=reply_to,
@@ -5357,6 +5428,9 @@ async def send_game_command(
             target_chat_id=target_chat_id,
             operation_check=operation_check,
         )
+        if message is not None and shadow_identity_id is not None and is_avatar_identity(shadow_identity_id):
+            note_send(shadow_identity_id, message)
+        return message
 
 
 def _get_tracked_identity_message_ids(identity_state):

@@ -174,7 +174,7 @@ _MANIFESTS = (
         replay_required=False,
         duplicate_guard="passive_result",
         archived=True,
-        archive_reason="旧 .一键放养 自动链已归档；等待万兽谷·驭灵行迹 MiniApp Gate C。",
+        archive_reason="旧 .一键放养 自动链已归档；万灵宗驭灵行迹请使用组队活动中的独立配置。",
     ),
     ModuleManifest("野外历练", MODULE_KEY_MAP["野外历练"], replay_modules=("wild_training",), reply_families=("wild_training",), duplicate_guard="reply_msg_id"),
     ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], replay_modules=("stargazer",), reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),

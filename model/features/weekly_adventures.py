@@ -17,7 +17,7 @@ KINDS = {
 ACTIVE = {"opening", "joining", "running", "dissolving", "held", "interrupted"}
 START_MARKERS = {"tianlan": "一行进了草原", "yuejing": "潜入越国京城", "yinming": "（辨路）", "qipai": "【七派密议·开议】"}
 _LOCK = asyncio.Lock()
-_NAMES = re.compile(r"@([A-Za-z0-9_]{3,32})")
+_NAMES = re.compile(r"@([^\s，。、：:；;（）()【】!?！？]+)")
 PARTIES = {"tianlan": r"【天澜草原】([^\n]+?)\s+一行进了草原",
            "yuejing": r"【越京夜行】[^\n]*?夜色里，([^\n]+?)\s+潜入越国京城",
            "yinming": r"【阴冥之地】([^\n]+?)\s+不见了踪影"}
@@ -71,7 +71,7 @@ def yinming_path(text, *, known_dead=None, allow_risk=False):
     return ""
 
 
-def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, observations=None):
+def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, observations=None, route=None, use_talisman=True):
     """Return a monotonic stage and exact actions, grounded in public game wording."""
     ids = [m["identity_id"] for m in members]
     if kind == "qipai":
@@ -80,13 +80,21 @@ def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, obser
         match = re.search(r"第\s*([1-3])/3\s*轮(?:查访)?[：:]", text)
         if match and ".查访" in text:
             # A talisman bypasses feints, market reveals elements, banquet lowers alert.
-            place = {1: "城南道观", 2: "散修集市", 3: "秦府夜宴"}[int(match[1])]
+            place = (route or ["城南道观", "散修集市", "秦府夜宴"])[int(match[1]) - 1]
             return int(match[1]), 60, [(i, ".查访 " + place) for i in ids]
         if "【越京夜行·闯宫】" in text:
             guards = re.findall(r"(青纹|铁罗|冰妖|叶蛇)[（(]([金木水火土])[）)]", text)
-            if len(guards) != 4 or len(ids) < 4:
+            if len(guards) != 4 or not ids:
                 return 4, 90, []
             counter = {"木": "金", "土": "木", "水": "土", "火": "水", "金": "火"}
+            if len(ids) < 4:
+                labels = [guard for guard, _element in guards]
+                elements = dict(guards)
+                assignments = max(itertools.product(labels, repeat=len(members)), key=lambda assigned: (
+                    len(set(assigned)), sum(counter[elements[guard]] in str(member.get("linggen") or "")
+                                            for member, guard in zip(members, assigned))))
+                return 4, 90, [(member["identity_id"], ".迎战 " + guard)
+                               for member, guard in zip(members, assignments)]
             # Cover each guard; optimize available roots without assuming raw strength.
             best = max(itertools.permutations(members, 4), key=lambda assignment: sum(
                 counter[element] in str(member.get("linggen") or "")
@@ -112,7 +120,7 @@ def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, obser
             health = re.search(r"教主\s*(\d+)\s*/\s*\d+", text)
             talismans = int(match[2])
             secured = health and int(health[1]) <= len(ids) * talismans
-            if talismans > 0 and (secured or not action or any(p in clue for p in (
+            if use_talisman and talismans > 0 and (secured or not action or any(p in clue for p in (
                     "厚茧", "影子忽然拉长", "双手结印", "一面墙", "仰头张口"))):
                 return 4 + int(match[1]), 45, [(ids[0], ".真凰符")]
             return 4 + int(match[1]), 45, [(i, "." + action) for i in ids] if action else []
@@ -120,9 +128,8 @@ def panel(kind, text, members, *, path_dead=None, roles=None, decoys=None, obser
         match = re.search(r"【天澜草原·第([1-3])站】", text)
         if match:
             weak = any(s in text for s in ("只拴着两匹马", "只有一个仙师"))
-            strong = any(s in text for s in ("少说十几骑", "钟声一阵紧过一阵"))
-            action = "斩哨" if weak else "潜行" if strong else ""
-            return int(match[1]), 90, [(i, "." + action) for i in ids] if action else []
+            action = "斩哨" if weak else "潜行"
+            return int(match[1]), 90, [(i, "." + action) for i in ids] if ".潜行" in text else []
         if "【天澜草原·圣女追杀】" in text:
             # With three people, two remain to fight after the lure.
             return 4, 60, [(ids[-1], ".诱敌")]
@@ -235,7 +242,7 @@ def _decoy(run, event, text):
 
 
 def _council_roster(run, event, text):
-    match = re.search(r"@([A-Za-z0-9_]+) 入议，现有\s*(\d+)\s*位长老：([^\n]+)", text)
+    match = re.search(r"@([^\s，。、：:；;（）()【】]+) 入议，现有\s*(\d+)\s*位长老：([^\n]+)", text)
     if run["kind"] != "qipai" or not match or run.get("bound") or run["phase"] != "joining":
         return
     listed = _NAMES.findall(match[3])
@@ -263,6 +270,9 @@ def observe(ctx, event):
     if getattr(event, "sender_id", 0) not in ctx.bot_ids() or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None):
         return
     for kind, run in ctx.records().get("runs", {}).items():
+        if not getattr(ctx, "accept_run", lambda r: True)(run):
+            continue
+        kind = run["kind"]
         if kind == "qipai" and run.get("phase") not in ACTIVE and _route(ctx, run, event):
             foreign_start = ("【七派密议】" in text and "召集密议" in text
                              or "【七派密议·开议】" in text)
@@ -303,7 +313,7 @@ async def hold(ctx, run, reason):
     run.update(phase="held", requires_reconciliation=True, last_error=reason)
     ctx.save()
     await ctx.notice(f"{KINDS[run['kind']]['label']}已暂停：{reason}，保留原记录待核对。\n"
-                     f"核对游戏已结束后：.周常 确认结束 {run['kind']} {run['id']}")
+                     f"核对游戏已结束后：.周常 确认结束 {run.get('key', run['kind'])} {run['id']}")
 
 
 async def confirm_finished(ctx, kind, run_id):
@@ -328,7 +338,7 @@ async def send(ctx, run, identity_id, command, stage, deadline):
 
     def allowed():
         dismiss = command == ".散议" and run["kind"] == "qipai" and run.get("roster_mismatch") and not run.get("bound")
-        return (ctx.enabled(run["kind"]) and ctx.records()["runs"].get(run["kind"]) is run
+        return (ctx.enabled(run["kind"]) and ctx.records()["runs"].get(run.get("key", run["kind"])) is run
                 and (run.get("phase") in {"opening", "joining", "running"} or dismiss and run.get("phase") == "dissolving")
                 and (dismiss or not run.get("collision")) and not run.get("terminal_pending")
                 and (dismiss or not run.get("roster_mismatch"))
@@ -420,6 +430,8 @@ async def scheduler(ctx, now):
     async with _LOCK:
         records = ctx.records()
         for kind, run in records.setdefault("runs", {}).items():
+            if not getattr(ctx, "accept_run", lambda r: True)(run):
+                continue
             await dispatch(ctx, run)
             if run.get("phase") in {"opening", "joining", "running", "dissolving"} and now > run["deadline"] + 45:
                 await hold(ctx, run, "未收到下一阶段或结算回执，不重新开局")
@@ -436,16 +448,15 @@ async def scheduler(ctx, now):
             field = "day" if kind == "qipai" else "week"
             unfinished = [m for m in eligible if progress.get(str(m["identity_id"]), {}).get(field) != period(kind, now)
                           or int(progress[str(m["identity_id"])].get("used") or 0) < quota_limit(kind)]
-            old = records["runs"].get(kind, {})
+            key = getattr(ctx, "run_key", lambda k: k)(kind)
+            old = records["runs"].get(key, {})
             if float(old.get("next_at") or 0) > now or not unfinished:
                 continue
-            if kind == "yinming":
-                unfinished.sort(key=lambda m: int(progress.get(str(m["identity_id"]), {}).get("used") or 0)
-                                if progress.get(str(m["identity_id"]), {}).get("week") == week_key(now) else 0)
-                chosen = (unfinished + [m for m in eligible if m not in unfinished])[:2]
-            else:
-                chosen = eligible[:5]
-            if len(chosen) < spec["minimum"] or (kind == "yuejing" and len(chosen) < 4):
+            unfinished.sort(key=lambda m: int(progress.get(str(m["identity_id"]), {}).get("used") or 0)
+                            if progress.get(str(m["identity_id"]), {}).get(field) == period(kind, now) else 0)
+            maximum = 2 if kind == "yinming" else 8 if kind == "qipai" else 5
+            chosen = (unfinished + [m for m in eligible if m not in unfinished])[:maximum]
+            if len(chosen) < spec["minimum"]:
                 continue
             chat, topic = ctx.target()
             if not chat:
@@ -453,7 +464,9 @@ async def scheduler(ctx, now):
             run = {"id": str(int(now * 1000)), "kind": kind, "members": chosen, "started_at": now,
                    "chat_id": chat, "topic_id": topic, "phase": "opening", "deadline": now + 120,
                    "stage": 0, "observed_stage": 0, "bound": False, "attempts": {}}
-            records["runs"][kind] = run
+            run.update(key=key, team=getattr(ctx, "team_name", ""),
+                       route=getattr(ctx, "route", None), use_talisman=getattr(ctx, "use_talisman", True))
+            records["runs"][key] = run
             ctx.save()
             await dispatch(ctx, run, [(chosen[0]["identity_id"], spec["open"])], stage=0, deadline=now + 40)
             return
@@ -468,6 +481,9 @@ async def game_event(ctx, event):
         text = str(getattr(event, "raw_text", "") or "")
         reply = _reply(event)
         for kind, run in ctx.records().get("runs", {}).items():
+            if not getattr(ctx, "accept_run", lambda r: True)(run):
+                continue
+            kind = run["kind"]
             if run.get("phase") not in ACTIVE or not _route(ctx, run, event):
                 continue
             attempts = run.get("attempts", {}).values()
@@ -592,7 +608,7 @@ async def game_event(ctx, event):
                     run.pop("pending_actions", None)
                 if kind == "yinming":
                     by_name = {m["username"].lower(): m["identity_id"] for m in run["members"]}
-                    assignments = re.findall(r"@([A-Za-z0-9_]+)[（(](辨路|感魂)[）)]", text)
+                    assignments = re.findall(r"@([^\s，。、：:；;（）()【】!?！？@]+)[（(](辨路|感魂)[）)]", text)
                     roles = {role: by_name.get(name.lower()) for name, role in assignments}
                     if len(assignments) != 2 or set(roles) != {"辨路", "感魂"} or len({n.lower() for n, _ in assignments}) != 2:
                         await hold(ctx, run, "入场回执缺少两人实际辨路/感魂分工")
@@ -608,7 +624,8 @@ async def game_event(ctx, event):
             if run.get("bound"):
                 step = re.search(r"【阴冥 第([1-6])/6步】", text) if kind == "yinming" else None
                 stage = panel(kind, text, run["members"], path_dead=run.get("path_dead", {}).get(step[1]) if step else None,
-                              roles=run.get("yinming_roles"), decoys=run.get("decoy_ids", []), observations=run.get("observations", []))
+                              roles=run.get("yinming_roles"), decoys=run.get("decoy_ids", []), observations=run.get("observations", []),
+                              route=run.get("route"), use_talisman=run.get("use_talisman", True))
                 if stage and (stage[0] > int(run.get("stage") or 0) or stage[0] == run.get("retry_step")):
                     number, seconds, actions = stage
                     external_actor = (kind == "yinming" and run.get("yinming_roles", {}).get("辨路" if number <= 6 else "感魂", True) is None)

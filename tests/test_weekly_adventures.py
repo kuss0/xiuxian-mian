@@ -111,6 +111,73 @@ def test_yinming_constraint_solver_including_nonadjacent_relative_clues():
     assert weekly.yinming_path(clue, known_dead="右") == "中"
 
 
+@pytest.mark.parametrize("kind,limit,size", [(kind, 3 if kind == "qipai" else 2, size)
+                                          for kind in ("qipai", "yuejing", "tianlan") for size in (5, 6, 9)])
+def test_quota_selection_never_opens_with_only_exhausted_members(env, kind, limit, size):
+    env.enabled.clear()
+    env.enabled.add(kind)
+    env.members[:] = [{"identity_id": i, "username": f"member{i}", "linggen": "金"} for i in range(1, size + 1)]
+    field = "day" if kind == "qipai" else "week"
+    current = weekly.period(kind, env.now[0])
+    env.records["quotas"] = {kind: {str(i): {field: current, "used": limit if i <= 5 else 0}
+                                  for i in range(1, size + 1)}}
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    if size == 5:
+        assert not env.sends
+    else:
+        chosen = env.records["runs"][kind]["members"]
+        assert any(member["identity_id"] > 5 for member in chosen)
+        assert len(chosen) <= (8 if kind == "qipai" else 5)
+        assert chosen[0]["identity_id"] == 6
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_yuejing_mixed_party_all_local_members_fight(env, count):
+    text = "【越京夜行·闯宫】青纹（土） 铁罗（水） 冰妖（木） 叶蛇（金）\n.迎战 血侍名"
+    _stage, _seconds, actions = weekly.panel("yuejing", text, env.members[:count])
+    assert {identity for identity, _command in actions} == set(range(1, count + 1))
+    assert len({command for _identity, command in actions}) == count
+
+
+def test_named_teams_share_quota_and_do_not_open_parallel_games(env):
+    async def run():
+        first = SimpleNamespace(**vars(env.ctx), team_name="一队", run_key=lambda kind: "一队:" + kind,
+                                accept_run=lambda run: run.get("team") == "一队", route=["秦府夜宴"] * 3, use_talisman=False)
+        second = SimpleNamespace(**vars(env.ctx), team_name="二队", run_key=lambda kind: "二队:" + kind,
+                                 accept_run=lambda run: run.get("team") == "二队")
+        await weekly.scheduler(first, env.now[0])
+        await weekly.scheduler(second, env.now[0])
+        assert len(env.sends) == 1
+        record = env.records["runs"]["一队:yuejing"]
+        assert record["route"] == ["秦府夜宴"] * 3 and not record["use_talisman"]
+        record.update(phase="done")
+        env.records["quotas"] = {"yuejing": {str(m["identity_id"]): {"week": weekly.period("yuejing", env.now[0]), "used": 2} for m in env.members}}
+        await weekly.scheduler(second, env.now[0])
+        assert len(env.sends) == 1
+    asyncio.run(run())
+
+
+def test_yuejing_selected_route_is_used(env):
+    stage = weekly.panel("yuejing", "第 2/3 轮查访：.查访 地点", env.members, route=["秦府夜宴"] * 3)
+    assert stage and all(command == ".查访 秦府夜宴" for _identity, command in stage[2])
+
+
+def test_three_member_yuejing_can_start_and_unknown_tianlan_station_uses_sneak(env):
+    env.members[:] = env.members[:3]
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    assert env.sends[0][0] == ".夜探越京"
+    prompt = "【天澜草原·第1站】前方巡哨动静不明。\n90 秒内投票：.潜行 或 .斩哨（踪迹 0）"
+    assert weekly.panel("tianlan", prompt, env.members)[2] == [(i, ".潜行") for i in (1, 2, 3)]
+
+
+def test_game_daohao_is_recognized_in_departure_and_reward(env):
+    env.members[0]["username"] = "玄平翁"
+    run = {"kind": "tianlan", "members": env.members}
+    text = "【天澜草原】@玄平翁、@member2、@member3 一行进了草原。"
+    assert weekly.departure(run, text) == ["玄平翁", "member2", "member3"]
+    assert weekly.reward_line("玄平翁", "@玄平翁 修为+100 灵石+10")
+
+
 def test_real_public_panels_use_only_documented_actions():
     rows = json.loads((Path(__file__).parent / "fixtures/weekly_adventures_live_20261113.json").read_text())
     members = [{"identity_id": i, "username": f"member{i}", "linggen": "金"} for i in range(1, 6)]
@@ -888,10 +955,31 @@ def test_restart_keeps_unknown_ownership(monkeypatch):
     assert "周常" in activity_occupancy.get_activity_block_reason(1)
 
 
+def test_new_participant_backfills_existing_receipt_without_recounting_old_members(env, monkeypatch, tmp_path):
+    record = {"receipt_keys": ["-100:999"], "initialized_participants": [1], "quotas": {
+        "yuejing": {"1": {"week": weekly.week_key(env.now[0]), "used": 1}}}}
+    config = {"participant_identity_ids": [1, 2], "group_role": "primary"}
+    local_day = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+    row = {"chat_id": -100, "topic_id": 42, "message_id": 999, "sender_id": 99, "server_event_at": env.now[0],
+           "text": "【越京夜行·战果】\n@member1 修为+10\n@member2 修为+10"}
+    (tmp_path / (local_day + ".log")).write_text(json.dumps(row, ensure_ascii=False) + "\n")
+    monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+    monkeypatch.setattr(app_weekly_adventures, "_config", lambda: config)
+    monkeypatch.setattr(app_weekly_adventures, "_context", lambda: SimpleNamespace(records=lambda: record))
+    monkeypatch.setattr(app_weekly_adventures, "get_send_as_profile", lambda i: {"username": f"member{i}"})
+    monkeypatch.setattr(app_weekly_adventures, "get_game_bot_ids", lambda: [99])
+    monkeypatch.setattr(app_weekly_adventures, "hunt_target", lambda _: (-100, 42))
+    app_weekly_adventures._backfill_weekly_receipts()
+    app_weekly_adventures._backfill_weekly_receipts()
+    assert record["quotas"]["yuejing"]["1"]["used"] == 1
+    assert record["quotas"]["yuejing"]["2"]["used"] == 1
+
+
 @pytest.fixture
 def daily_env(monkeypatch):
     records = {}
-    now = time.time()
+    now = datetime(2026, 11, 13, 4, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(app_xuangu.time, "time", lambda: now)
     config = {"enabled": True, "auto_daily": True, "participant_identity_ids": [1, 2, 3, 4, 5]}
     monkeypatch.setattr(app_xuangu, "get_expedition_config", lambda: {"xuangu": config})
     monkeypatch.setattr(app_xuangu, "get_expedition_run_state", lambda: records)

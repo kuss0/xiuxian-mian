@@ -111,7 +111,7 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, get_nanlong_pending_state, has_nanlong_pending_action, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
-from .app_expeditions import get_expedition_snapshot, ui_set_expedition_config
+from .app_expeditions import get_expedition_snapshot, ui_additional_activity_action, ui_set_expedition_config
 from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
@@ -322,6 +322,9 @@ from .state import (
     set_pet_name,
     set_pet_warm_name,
     set_pet_trial_name,
+    get_pet_trial_route,
+    get_expedition_config,
+    set_pet_trial_route,
     set_replica_gold_dps_enabled,
     set_replica_dispatch_group_ids,
     set_replica_dispatch_listener_account_map,
@@ -5020,6 +5023,7 @@ def get_identity_ui_snapshot(send_as_id):
             "pet_name": profile.get("pet_name") or "",
             "pet_warm_name": profile.get("pet_warm_name") or profile.get("pet_name") or "",
             "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
+            "pet_trial_route": get_pet_trial_route(send_as_id),
             "sect_name": profile.get("sect_name") or "",
             "sect_contribution": int(profile.get("sect_contribution") or 0),
             "sect_contribution_updated_at": fmt_abs_ts(profile.get("sect_contribution_updated_at") or 0),
@@ -5687,19 +5691,32 @@ async def ui_apply_duel_preset(send_as_id, *, force=True):
     )
 
 
-async def ui_set_pet_name(send_as_id, pet_name, pet_warm_name=None, pet_trial_name=None):
+async def ui_set_pet_name(send_as_id, pet_name, pet_warm_name=None, pet_trial_name=None, pet_trial_route=None):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
     pet_name = (pet_name or "").strip()
     if not pet_name:
         return False, "法宝名称不能为空"
+    if pet_trial_route is not None and pet_trial_route not in {"", "静修", "寻宝", "斗战"}:
+        return False, "器灵试炼路线须为默认、静修、寻宝或斗战"
     pet_warm_name = (pet_warm_name or "").strip() or pet_name
     pet_trial_name = (pet_trial_name or "").strip() or pet_name
+    before_profile = get_send_as_profile(send_as_id)
+    before_expeditions = get_expedition_config()
     set_pet_name(send_as_id, pet_name)
     set_pet_warm_name(send_as_id, pet_warm_name)
     set_pet_trial_name(send_as_id, pet_trial_name)
-    save_state()
+    if pet_trial_route is not None:
+        set_pet_trial_route(send_as_id, pet_trial_route)
+    try:
+        if save_state() is False:
+            raise RuntimeError("法宝配置保存失败")
+    except Exception:
+        update_send_as_profile(send_as_id, **before_profile)
+        from .state import set_expedition_config
+        set_expedition_config(before_expeditions)
+        return False, "法宝配置保存失败，已保留原设置"
     await send_audit_log(
         f"🗡️ 已更新法宝名称：抚摸={pet_name}，温养={pet_warm_name}，试炼={pet_trial_name}",
         scope="identity",
@@ -10235,6 +10252,9 @@ def _ui_actor_id(session):
 # 声明 needs_send_as_id 的路由由分发器统一做缺参校验。差异较大的路由不进这张表，
 # 仍留在下面的 elif 链里 —— 硬塞进来只会把差异藏进参数。
 _UI_JSON_ACTION_ROUTES = {
+    "/api/additional-activity-action": {
+        "handler": lambda payload, session: ui_additional_activity_action(payload),
+    },
     "/api/expedition-config": {
         "handler": lambda payload, session: ui_set_expedition_config(payload),
     },
@@ -11057,7 +11077,8 @@ async def _handle_ui_http_request(reader, writer):
                     if send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
-                        ok, message = await ui_set_pet_name(send_as_id, pet_name, pet_warm_name=pet_warm_name, pet_trial_name=pet_trial_name)
+                        ok, message = await ui_set_pet_name(send_as_id, pet_name, pet_warm_name=pet_warm_name, pet_trial_name=pet_trial_name,
+                                                             pet_trial_route=payload.get("pet_trial_route"))
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/small-world-feature-toggle":
                 if session is None:

@@ -27,6 +27,7 @@ from .miniapp_common import MiniAppIdentityOwner, build_pooled_miniapp_transport
 TRIAL_ARENAS = {"longwind": "麦田试炼", "bamboo": "竹林试炼"}
 TRIAL_CARRY = 3
 TRIAL_PATH = "/api/miniapp/xianxia-dwelling/trial"
+REPORT_PROFILES = {"rough": ("乙", 55, 75), "steady": ("甲", 75, 90), "clean": ("甲上", 90, 101)}
 _TASKS = {}
 
 
@@ -53,17 +54,20 @@ def report_score(report):
             - 3 * metrics["potions"] - metrics["retries"])
 
 
-def _trial_report(_profile, wave, carry, *, rng=None):
-    """Use a varied conservative grade; never emit upstream's fixed top-grade metrics."""
+def _trial_report(profile, wave, carry, *, rng=None):
+    """Generate and verify the selected upstream report profile after serialization."""
+    if profile not in REPORT_PROFILES:
+        raise TrialError("trial_report_profile_invalid")
+    _grade, minimum, maximum = REPORT_PROFILES[profile]
     rng = rng or random.SystemRandom()
     for _ in range(1000):
-        metrics = {"enemyHits": rng.randint(10, 16), "parries": rng.randint(3, 7),
+        metrics = {"enemyHits": rng.randint(5 if profile != "rough" else 10, 16), "parries": rng.randint(3, 7),
                    "reflects": rng.randint(0, 2), "guardBreaks": rng.randint(1, 3),
                    "potions": rng.randint(0, 2), "retries": 0}
         report = {"metrics": metrics, "finisher": None, "hpPotionsUsed": metrics["potions"],
                   "manaPotionsUsed": 0, "carryLeft": max(0, min(TRIAL_CARRY, int(carry)))}
         serialized = json.dumps(report, separators=(",", ":"))
-        if 55 <= report_score(json.loads(serialized)) < 75:
+        if minimum <= report_score(json.loads(serialized)) < maximum:
             return report
     raise TrialError("trial_report_generation_failed")
 
@@ -72,10 +76,14 @@ def _operation_id(kind):
     return f"{kind}-{uuid.uuid4().hex}"
 
 
-async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, clock=time.monotonic, rng=None):
+async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, clock=time.monotonic, rng=None, profile="rough"):
     """Replayable protocol kernel. Transport errors never authorize replay of a mutation."""
     if arena not in TRIAL_ARENAS:
         raise TrialError("trial_arena_invalid")
+    if profile not in REPORT_PROFILES:
+        raise TrialError("trial_report_profile_invalid")
+    grade, minimum, maximum = REPORT_PROFILES[profile]
+    record["report_profile"] = profile
     trial = await call("status", arena=arena)
     status = trial.get("status")
     if not isinstance(status, dict):
@@ -113,16 +121,16 @@ async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, cloc
         record.update(phase="ending", operation_id=_operation_id("end"))
         save()
         await call("end", operationId=record["operation_id"], runId=record["run_id"], reason="quit",
-                   report=_trial_report("rough", 0, carry, rng=rng))
+                   report=_trial_report(profile, 0, carry, rng=rng))
         record.update(phase="done", result="今日有奖次数已用完", exhausted=True)
         save()
         return record
     gains, cultivation = {}, 0
     for wave in range(4):
-        report = _trial_report("rough", wave, carry, rng=rng)
+        report = _trial_report(profile, wave, carry, rng=rng)
         # Recompute the score from the exact serialized payload before transmission.
         serialized = json.loads(json.dumps(report, separators=(",", ":")))
-        if not 55 <= report_score(serialized) < 75:
+        if not minimum <= report_score(serialized) < maximum:
             raise TrialError("trial_report_score_mismatch")
         for _ in range(14):
             if clock() >= deadline:
@@ -150,7 +158,7 @@ async def run_protocol(call, arena, record, save, *, sleeper=asyncio.sleep, cloc
         else:
             raise TrialError("trial_checkpoint_timeout")
         result = trial.get("result") or {}
-        if result.get("grade") and result["grade"] != "乙":
+        if result.get("grade") and result["grade"] != grade:
             raise TrialError("trial_verification_mismatch")
         if "score" in result and (type(result["score"]) is not int or result["score"] != report_score(serialized)):
             raise TrialError("trial_verification_mismatch")
@@ -301,7 +309,7 @@ async def run_changfeng_once(identity_id, arena="longwind", *, manual=False, sta
                 message = f"游戏状态：{json.dumps(observed, ensure_ascii=False)}；本地阶段 {record['phase']}，核对不会补发动作"
                 await send_audit_log(message, scope="identity", send_as_id=identity_id, limit=700)
                 return True, message
-            await run_protocol(call, arena, record, _save)
+            await run_protocol(call, arena, record, _save, profile=config.get("report_profile", "rough"))
             record["next_at"] = (_next_day(time.time(), identity_id) if record.get("exhausted")
                                  or record.get("daily_used", 0) >= int(config.get("daily_limit", 1))
                                  else time.time() + 15 * 60)

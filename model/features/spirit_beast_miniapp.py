@@ -1,8 +1,8 @@
-"""Lab-only protocol surface for the 万兽谷·驭灵行迹 MiniApp.
+"""Protocol surface for the 万兽谷·驭灵行迹 MiniApp.
 
 This module deliberately stops at entry extraction, request construction, and
 safe response summaries. It does not own runtime state, scheduling, or live
-HTTP execution. Production automation needs a separate single-identity gate.
+HTTP execution. app_spirit_beast owns the configured single-identity gate.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ SPIRIT_BEAST_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
 SPIRIT_BEAST_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (r"hantianzun\d+_bot",)
 SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-spirit-beast/"
 SPIRIT_BEAST_MINIAPP_ENDPOINTS = {
+    "action": f"{SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX}action",
+    "abyss_enter": f"{SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX}abyss/enter",
     "start": f"{SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX}start",
     "expedition_start": f"{SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX}expedition/start",
     "expedition_choose": f"{SPIRIT_BEAST_MINIAPP_API_PATH_PREFIX}expedition/choose",

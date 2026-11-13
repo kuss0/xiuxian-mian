@@ -138,6 +138,7 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     f"{CMD_CONCUBINE_VOYAGE} {CONCUBINE_VOYAGE_MOON_ROUTE}",
 })
 CAVE_EXTERNAL_ACTIONS = frozenset({
+    "spirit_beast",
     "fate_cards",
     "trial",
     "tianji_trial",
@@ -939,6 +940,8 @@ def _parse_command_center(account):
 
 def _normalize_cave_inventory_player_id(value):
     player_id = _coerce_int(value, 0)
+    from ..state import get_avatar_entry
+    player_id = int(get_avatar_entry(player_id).get("player_id") or player_id)
     if player_id <= -1_000_000_000_000:
         return -player_id - 1_000_000_000_000
     return player_id

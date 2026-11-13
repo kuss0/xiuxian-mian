@@ -1898,6 +1898,9 @@ async def _dispatch_rebirth(kind, now, *, selected=None, blind=False, index=0):
 
 
 def _mark_rebirth_restored(result_text, now):
+    from .soul_possession import clear_soul_possession_pause
+    from ..state import get_current_identity_id
+    clear_soul_possession_pause(get_current_identity_id())
     state["explore_rift_nascent_escape_weak_until"] = 0
     state["explore_rift_rebirth_required"] = False
     state["explore_rift_rebirth_phase"] = "restored"

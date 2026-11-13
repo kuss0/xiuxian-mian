@@ -3447,6 +3447,12 @@ async def _handle_routed_reply_event(
             return True
 
         handled_any = False
+        from .avatar_soul import note_reply as note_avatar_reply
+        note_avatar_reply(routed_identity_id, now)
+        from .features.soul_possession import handle_soul_weak_reply_event
+        handled_any = await handle_soul_weak_reply_event(
+            event, text, now, identity_id=routed_identity_id, root_msg_id=root_msg_id,
+        )
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
         if matched_family == "hehuan_dual":
             parsed_hehuan = parse_hehuan_text(text, now=now, family=matched_family)
@@ -3855,6 +3861,8 @@ async def on_message(event):
 
     # bot 健康监测：记录 . 开头指令的触发时间
     raw_text = (event.raw_text or "").strip()
+    from .avatar_soul import observe_own_switch
+    observe_own_switch(event)
     sender_id = int(event.sender_id or 0)
     identity_sender_id = _resolve_identity_sender_id(sender_id)
     if identity_sender_id:

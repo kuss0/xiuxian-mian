@@ -5765,6 +5765,9 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 
     set_identity_enabled_profile(send_as_id, enabled)
     if enabled:
+        if source == "ui":
+            from .features.soul_possession import clear_soul_possession_pause
+            clear_soul_possession_pause(send_as_id)
         initialize_identity_runtime(send_as_id, time.time())
     else:
         with use_identity(send_as_id):

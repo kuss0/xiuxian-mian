@@ -409,7 +409,10 @@
           settingSection(
             '器灵试炼',
             '目标：'+(identity.pet_trial_name || identity.pet_name || '未设置'),
-            renderModuleToggle('器灵试炼','开关')+petNameInput('pet_trial_name', '目标', identity.pet_trial_name || identity.pet_name || '')
+            renderModuleToggle('器灵试炼','开关')+petNameInput('pet_trial_name', '目标', identity.pet_trial_name || identity.pet_name || '')+
+            '<label class="module-setting-field"><span>试炼路线</span><select class="text-input" data-pet-trial-route>'+['', '静修', '寻宝', '斗战'].map(function(route){
+              return '<option value="'+route+'"'+((identity.pet_trial_route || '') === route ? ' selected' : '')+'>'+(route || '游戏默认')+'</option>';
+            }).join('')+'</select></label>'
           )+
           settingSection(
             '布下剑阵',
@@ -926,6 +929,8 @@
     inputs.forEach(function(input){
       payload[input.getAttribute('data-pet-inline-name')] = input.value || '';
     });
+    var route = document.querySelector('[data-pet-trial-route]');
+    if(route){ payload.pet_trial_route = route.value || ''; }
     try{
       var data = await postJson('/api/pet-name', payload);
       if(typeof updateFlash === 'function'){

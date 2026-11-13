@@ -431,12 +431,90 @@ function renderHuntTeamRow(team, replica) {
     + '<button type="button" class="btn btn-secondary" data-hunt-remove>删除队伍</button></fieldset>';
 }
 
+function renderWeeklyTeamRow(team, replica) {
+  const options = replica.identity_options || [];
+  return '<fieldset data-weekly-team><label class="form-label">队名<input class="text-input" data-weekly-team-name value="' + escapeHtml(team.name || '') + '" /></label>'
+    + '<label class="checkbox-inline"><input type="checkbox" data-weekly-team-enabled' + (team.enabled ? ' checked' : '') + '>启用此队</label>'
+    + '<label class="form-label">游戏群<select class="text-input" data-weekly-team-role>' + ['primary', 'secondary'].map(function(role) {
+      return '<option value="' + role + '"' + ((team.group_role || 'secondary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
+    }).join('') + '</select></label><div class="replica-config-grid">' + options.map(function(identity) {
+      const id = String(identity.identity_id);
+      return '<label class="form-label"><span><input type="checkbox" data-weekly-team-member value="' + escapeHtml(id) + '"' + ((team.participant_identity_ids || []).map(String).includes(id) ? ' checked' : '') + '>'
+        + escapeHtml(identity.display_name || id) + '</span><input class="text-input" data-weekly-team-alias="' + escapeHtml(id) + '" value="' + escapeHtml((team.member_names || {})[id] || '') + '" placeholder="可选游戏道号" /></label>';
+    }).join('') + '</div>' + [['tianlan', '天澜'], ['yuejing', '越京'], ['yinming', '阴冥'], ['qipai', '七派']].map(function(item) {
+      return '<label class="checkbox-inline"><input type="checkbox" data-weekly-team-kind="' + item[0] + '"' + ((team.kinds || []).includes(item[0]) ? ' checked' : '') + '>' + item[1] + '</label>';
+    }).join('') + '<div class="replica-config-grid">' + [0, 1, 2].map(function(index) {
+      return '<label class="form-label">越京第' + (index + 1) + '轮查访<select class="text-input" data-weekly-team-route>' + ['城南道观', '散修集市', '秦府夜宴'].map(function(place) {
+        return '<option' + ((team.route || ['城南道观', '散修集市', '秦府夜宴'])[index] === place ? ' selected' : '') + '>' + place + '</option>';
+      }).join('') + '</select></label>';
+    }).join('') + '</div><label class="checkbox-inline"><input type="checkbox" data-weekly-team-talisman' + (team.use_talisman !== false ? ' checked' : '') + '>需要时使用真凰符</label>'
+    + '<button type="button" class="btn btn-secondary" data-weekly-team-remove>删除此队</button></fieldset>';
+}
+
+function activityIdentityOptions(replica, selected) {
+  return '<option value="">请选择</option>' + (replica.identity_options || []).map(function(identity) {
+    return '<option value="' + escapeHtml(identity.identity_id) + '"' + (String(identity.identity_id) === String(selected) ? ' selected' : '') + '>' + escapeHtml(identity.display_name || identity.identity_id) + '</option>';
+  }).join('');
+}
+
+function activityRoleOptions(selected) {
+  return ['primary', 'secondary'].map(function(role) {
+    return '<option value="' + role + '"' + ((selected || 'primary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
+  }).join('');
+}
+
+function renderWarmPairRow(pair, replica) {
+  return '<fieldset data-warm-pair><label class="form-label">配对名称<input class="text-input" data-pair-name value="' + escapeHtml(pair.name || '') + '"></label>'
+    + '<div class="replica-config-grid"><label class="form-label">A号发引子<select class="text-input" data-pair-source>' + activityIdentityOptions(replica, pair.source_identity_id) + '</select></label>'
+    + '<label class="form-label">B号温养<select class="text-input" data-pair-target>' + activityIdentityOptions(replica, pair.target_identity_id) + '</select></label>'
+    + '<label class="form-label">游戏群<select class="text-input" data-pair-role>' + activityRoleOptions(pair.group_role) + '</select></label></div>'
+    + '<button type="button" class="btn btn-secondary" data-warm-remove>删除配对</button></fieldset>';
+}
+
+function renderPairedActivityConfig(config, replica) {
+  const warm = config.warm_pairs || {};
+  const duel = config.global_duel || {};
+  return '<div class="dungeon-section"><h4>独立温养配对</h4><label class="checkbox-inline"><input type="checkbox" name="warm_pairs_enabled"' + (warm.enabled ? ' checked' : '') + '>自动温养，每轮结算后等待61–62分钟</label>'
+    + '<p>B号已有合欢自动温养时，此入口不执行。请为每个身份只配置一组配对。</p><label class="form-label">A号引子<input class="text-input" name="warm_pairs_lead" value="' + escapeHtml(warm.lead_text || '修修') + '"></label><div id="warm-pair-rows">'
+    + (warm.pairs || []).map(function(pair) { return renderWarmPairRow(pair, replica); }).join('') + '</div><button type="button" class="btn btn-secondary" data-warm-add>新增温养配对</button></div>'
+    + '<div class="dungeon-section"><h4>全局对决</h4><p>仅支持两个已登录的本人账号。收到第一回合开启后，双方向游戏机器人私聊发送神通；每轮间隔5–6分钟。</p>'
+    + '<label class="checkbox-inline"><input type="checkbox" name="global_duel_enabled"' + (duel.enabled ? ' checked' : '') + '>执行所选账号的对决任务</label><div class="replica-config-grid">'
+    + '<label class="form-label">发起账号<select class="text-input" name="global_duel_source">' + activityIdentityOptions(replica, duel.source_identity_id) + '</select></label>'
+    + '<label class="form-label">目标账号<select class="text-input" name="global_duel_target">' + activityIdentityOptions(replica, duel.target_identity_id) + '</select></label>'
+    + '<label class="form-label">轮数<input class="text-input" name="global_duel_count" type="number" min="1" max="100" value="' + escapeHtml(duel.count || 1) + '"></label>'
+    + '<label class="form-label">游戏群<select class="text-input" name="global_duel_role">' + activityRoleOptions(duel.group_role) + '</select></label></div>'
+    + '<button type="button" class="btn btn-secondary" data-activity-restart>按已保存配置重新安排对决</button></div>'
+    + Object.keys(config.additional_runs || {}).map(function(kind) {
+      return Object.entries(config.additional_runs[kind] || {}).map(function(item) {
+        const run = item[1];
+        return '<p>' + escapeHtml(item[0] + '：' + (run.phase || '待安排') + '｜' + (run.result || run.last_error || run.spirit_beast_last_result || ''))
+          + (run.phase === 'held' ? ' <button type="button" class="btn btn-secondary" data-activity-confirm="' + kind + '" data-run-key="' + escapeHtml(item[0]) + '" data-run-id="' + escapeHtml(run.id || run.started_at) + '">已核对游戏结束</button>' : '') + '</p>';
+      }).join('');
+    }).join('');
+}
+
+function renderAvatarConfig(avatars, replica) {
+  return '<div class="dungeon-section"><h4>身外化身</h4><p>先扫描本人洞府身份，再登记分身。登记后默认关闭；启用后按身份设置中可用的群玩法调度，附体期间主魂暂停，回复结束后收回主魂。组队周常、猎妖和玄骨暂不接受分身。</p>'
+    + '<label class="form-label">所属本人账号<select class="text-input" data-avatar-owner>' + activityIdentityOptions(replica, '') + '</select></label>'
+    + '<button type="button" class="btn btn-secondary" data-avatar-action="scan">扫描所选账号分身</button> <button type="button" class="btn btn-secondary" data-avatar-action="return">收回所选账号主魂</button>'
+    + Object.entries(avatars.scans || {}).map(function(item) {
+      return (item[1].entries || []).map(function(entry) {
+        return '<p>' + escapeHtml(entry.dao_name) + ' <button type="button" class="btn btn-secondary" data-avatar-action="register" data-avatar-owner-id="' + escapeHtml(item[0]) + '" data-avatar-player-id="' + escapeHtml(entry.player_id) + '">登记此分身</button></p>';
+      }).join('');
+    }).join('') + Object.entries(avatars.entries || {}).map(function(item) {
+      return '<p>' + escapeHtml(item[1].dao_name) + ' <button type="button" class="btn btn-secondary" data-avatar-action="profile" data-avatar-identity-id="' + escapeHtml(item[0]) + '">刷新分身资料</button></p>';
+    }).join('') + Object.entries(avatars.souls || {}).filter(function(item) { return item[1].mode !== 'main'; }).map(function(item) {
+      return '<p>' + escapeHtml(item[0] + '：' + item[1].mode + '｜' + (item[1].last_error || '')) + '</p>';
+    }).join('') + '</div>';
+}
+
 function renderExpeditionConfig(replica) {
   const config = replica.expeditions || {};
   const xuangu = config.xuangu || {};
   const changfeng = config.changfeng || {};
   const weeklyConfig = config.weekly || {};
   const war = config.zhengmo || {};
+  const spirit = config.spirit_beast || {};
   const identities = replica.identity_options || [];
   const members = function(kind, selected) {
     return '<div class="replica-config-grid">' + identities.map(function(identity) {
@@ -468,6 +546,11 @@ function renderExpeditionConfig(replica) {
     }).join('') + '</select></label></div>'
     + '<div class="dungeon-section"><h4>组队活动</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />自动补满有奖场次</label><p>天澜、越京、阴冥每周两次；七派密议每天三局。天澜、阴冥要求元婴，越京要求筑基。按境界选人，遇到未知结果保留原局。</p>'
     + members('weekly', weeklyConfig.participant_identity_ids)
+    + '<label class="form-label">游戏群<select class="text-input" name="weekly_role">' + ['primary', 'secondary'].map(function(role) {
+      return '<option value="' + role + '"' + ((weeklyConfig.group_role || 'secondary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
+    }).join('') + '</select></label><details><summary>成员游戏道号（与 Telegram 用户名不同时填写）</summary><div class="replica-config-grid">' + identities.map(function(identity) {
+      return '<label class="form-label">' + escapeHtml(identity.display_name || identity.identity_id) + '<input class="text-input" data-weekly-name="' + escapeHtml(identity.identity_id) + '" value="' + escapeHtml((weeklyConfig.member_names || {})[String(identity.identity_id)] || '') + '" placeholder="游戏 @ 后的道号" /></label>';
+    }).join('') + '</div></details>'
     + [['tianlan', '天澜草原'], ['yuejing', '越京夜行'], ['yinming', '阴冥之地'], ['qipai', '七派密议']].map(function(item) {
       const run = ((config.weekly_state || {}).runs || {})[item[0]] || {};
       const quotas = ((config.weekly_state || {}).quotas || {})[item[0]] || {};
@@ -477,6 +560,9 @@ function renderExpeditionConfig(replica) {
           return (identity.display_name || id) + ' ' + quotas[id].used + (item[0] === 'qipai' ? '/3（' + quotas[id].day + '）' : '/2');
         }).join('，')) + '</p>';
     }).join('') + '</div>'
+    + '<div class="dungeon-section"><h4>具名周常队伍</h4><p>配置具名队伍后按各队执行；不配置时沿用上方统一名单。同一身份共享次数上限。</p><div id="weekly-team-rows">'
+    + (weeklyConfig.teams || []).map(function(team) { return renderWeeklyTeamRow(team, replica); }).join('')
+    + '</div><button type="button" class="btn btn-secondary" data-weekly-team-add>新增周常队伍</button></div>'
     + '<div class="dungeon-section"><h4>正魔大战</h4><label class="checkbox-inline"><input type="checkbox" name="zhengmo_enabled"' + (war.enabled ? ' checked' : '') + ' />每日自动出征一次</label><p>沿用已有或宗门固定阵营，按本人今日军情推荐出征。无阵营跳过，不自动投效。未确认时先查询战况。</p>'
     + members('zhengmo', (war.identities || []).map(function(entry) { return entry.identity_id; }))
     + '<div class="replica-config-grid"><label class="form-label">北京时间开始小时<input class="text-input" type="number" name="zhengmo_hour" min="0" max="23" value="' + escapeHtml(war.hour === undefined ? 9 : war.hour) + '" /></label><label class="form-label">游戏群<select class="text-input" name="zhengmo_role">'
@@ -486,9 +572,16 @@ function renderExpeditionConfig(replica) {
     + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
     + members('changfeng', changfeng.participant_identity_ids)
     + '<div class="replica-config-grid"><label class="form-label">每日场次上限<input class="text-input" type="number" name="changfeng_limit" min="1" max="8" value="' + escapeHtml(changfeng.daily_limit || 1) + '" /></label>'
+    + '<label class="form-label">评定档位<select class="text-input" name="changfeng_profile">' + [['clean', '甲上'], ['steady', '甲'], ['rough', '乙']].map(function(item) {
+      return '<option value="' + item[0] + '"' + ((changfeng.report_profile || 'rough') === item[0] ? ' selected' : '') + '>' + item[1] + '</option>';
+    }).join('') + '</select></label>'
     + ['longwind', 'bamboo'].map(function(arena) {
       return '<label class="checkbox-inline"><input type="checkbox" data-changfeng-arena="' + arena + '"' + ((changfeng.arenas || ['longwind', 'bamboo']).includes(arena) ? ' checked' : '') + ' />' + (arena === 'longwind' ? '麦田试炼' : '竹林试炼') + '</label>';
     }).join('') + '</div></div>'
+    + '<div class="dungeon-section"><h4>驭灵行迹</h4><label class="checkbox-inline"><input type="checkbox" name="spirit_beast_enabled"' + (spirit.enabled ? ' checked' : '') + '>万灵宗账号自动互动、远征和探渊</label><p>按游戏剩余次数与体力安排；缺少确认时暂停。</p>'
+    + members('spirit_beast', spirit.participant_identity_ids) + '</div>'
+    + renderPairedActivityConfig(config, replica)
+    + renderAvatarConfig(config.avatars || {}, replica)
     + '<div class="dungeon-section">' + records.map(function(record) {
       return '<p>' + escapeHtml(record.name || record.identity_id || '') + '：' + escapeHtml(record.phase || '') + ' ' + escapeHtml(record.result || record.outcome || record.last_error || '')
         + (record.requires_reconciliation ? '｜记录号 ' + escapeHtml(record.roster_id || record.started_at || '') : '') + '</p>';
@@ -508,8 +601,40 @@ document.addEventListener('click', function(event) {
     form.querySelector('#hunt-team-rows').insertAdjacentHTML('beforeend', renderHuntTeamRow({}, getReplicaSnapshot()));
     form.dataset.dirty = '1';
   }
+  if (event.target.closest('[data-weekly-team-add]')) {
+    if (form.querySelectorAll('[data-weekly-team]').length >= 20) return;
+    form.querySelector('#weekly-team-rows').insertAdjacentHTML('beforeend', renderWeeklyTeamRow({}, getReplicaSnapshot()));
+    form.dataset.dirty = '1';
+  }
+  const removeWeekly = event.target.closest('[data-weekly-team-remove]');
+  if (removeWeekly) { removeWeekly.closest('[data-weekly-team]').remove(); form.dataset.dirty = '1'; }
+  if (event.target.closest('[data-warm-add]')) {
+    if (form.querySelectorAll('[data-warm-pair]').length >= 20) return;
+    form.querySelector('#warm-pair-rows').insertAdjacentHTML('beforeend', renderWarmPairRow({}, getReplicaSnapshot()));
+    form.dataset.dirty = '1';
+  }
+  const removeWarm = event.target.closest('[data-warm-remove]');
+  if (removeWarm) { removeWarm.closest('[data-warm-pair]').remove(); form.dataset.dirty = '1'; }
   const remove = event.target.closest('[data-hunt-remove]');
   if (remove) { remove.closest('[data-hunt-team]').remove(); form.dataset.dirty = '1'; }
+});
+
+document.addEventListener('click', async function(event) {
+  const button = event.target.closest('[data-avatar-action], [data-activity-confirm], [data-activity-restart]');
+  if (!button || button.disabled) return;
+  const form = button.closest('#expedition-config-form');
+  if (!form) return;
+  const payload = button.hasAttribute('data-activity-restart') ? {action: 'restart_global_duel'} : button.dataset.activityConfirm ? {
+    action: 'confirm_finished', kind: button.dataset.activityConfirm, key: button.dataset.runKey, run_id: button.dataset.runId
+  } : {action: button.dataset.avatarAction, owner_id: button.dataset.avatarOwnerId || form.querySelector('[data-avatar-owner]').value,
+    player_id: button.dataset.avatarPlayerId, identity_id: button.dataset.avatarIdentityId};
+  button.disabled = true;
+  try {
+    const result = await postJson('/api/additional-activity-action', payload);
+    updateFlash(result.message || '已完成操作', false);
+    if (result.snapshot && typeof applySnapshot === 'function') applySnapshot(result.snapshot, {keepFlash: true});
+  } catch (error) { updateFlash(error.message || '活动操作失败', true); }
+  finally { button.disabled = false; }
 });
 
 document.addEventListener('submit', async function(event) {
@@ -527,11 +652,29 @@ document.addEventListener('submit', async function(event) {
         member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
     }),
     xuangu: {enabled: form.elements.xuangu_enabled.checked, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
-    weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'),
-      kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; })},
+    weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'), group_role: form.elements.weekly_role.value,
+      member_names: Object.fromEntries(Array.from(form.querySelectorAll('[data-weekly-name]')).map(function(input) { return [input.dataset.weeklyName, input.value.trim()]; })),
+      kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; }),
+      teams: Array.from(form.querySelectorAll('[data-weekly-team]')).map(function(row) {
+        return {name: row.querySelector('[data-weekly-team-name]').value.trim(), enabled: row.querySelector('[data-weekly-team-enabled]').checked,
+          group_role: row.querySelector('[data-weekly-team-role]').value,
+          participant_identity_ids: Array.from(row.querySelectorAll('[data-weekly-team-member]:checked')).map(function(input) { return input.value; }),
+          member_names: Object.fromEntries(Array.from(row.querySelectorAll('[data-weekly-team-alias]')).map(function(input) { return [input.dataset.weeklyTeamAlias, input.value.trim()]; })),
+          kinds: Array.from(row.querySelectorAll('[data-weekly-team-kind]:checked')).map(function(input) { return input.dataset.weeklyTeamKind; }),
+          route: Array.from(row.querySelectorAll('[data-weekly-team-route]')).map(function(input) { return input.value; }),
+          use_talisman: row.querySelector('[data-weekly-team-talisman]').checked};
+      })},
     zhengmo: {enabled: form.elements.zhengmo_enabled.checked, hour: Number(form.elements.zhengmo_hour.value), group_role: form.elements.zhengmo_role.value,
       identities: selectedMembers('zhengmo').map(function(id) { return {identity_id: id, faction: ''}; })},
-    changfeng: {enabled: form.elements.changfeng_enabled.checked, daily_limit: Number(form.elements.changfeng_limit.value), participant_identity_ids: selectedMembers('changfeng'),
+    spirit_beast: {enabled: form.elements.spirit_beast_enabled.checked, participant_identity_ids: selectedMembers('spirit_beast')},
+    warm_pairs: {enabled: form.elements.warm_pairs_enabled.checked, lead_text: form.elements.warm_pairs_lead.value,
+      pairs: Array.from(form.querySelectorAll('[data-warm-pair]')).map(function(row) {
+        return {name: row.querySelector('[data-pair-name]').value.trim(), source_identity_id: row.querySelector('[data-pair-source]').value,
+          target_identity_id: row.querySelector('[data-pair-target]').value, group_role: row.querySelector('[data-pair-role]').value};
+      })},
+    global_duel: {enabled: form.elements.global_duel_enabled.checked, source_identity_id: form.elements.global_duel_source.value,
+      target_identity_id: form.elements.global_duel_target.value, count: Number(form.elements.global_duel_count.value), group_role: form.elements.global_duel_role.value},
+    changfeng: {enabled: form.elements.changfeng_enabled.checked, daily_limit: Number(form.elements.changfeng_limit.value), report_profile: form.elements.changfeng_profile.value, participant_identity_ids: selectedMembers('changfeng'),
       arenas: Array.from(form.querySelectorAll('[data-changfeng-arena]:checked')).map(function(input) { return input.dataset.changfengArena; })}
   };
   try {

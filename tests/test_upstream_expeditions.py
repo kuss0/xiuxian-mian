@@ -349,15 +349,42 @@ class LongwindProtocolTests(unittest.IsolatedAsyncioTestCase):
             await self.run_trial(call)
         self.assertEqual(1, sum(action == "checkpoint" for action, payload in self.calls))
 
+    async def test_all_profiles_verify_exact_serialized_score(self):
+        for profile, (grade, _minimum, _maximum) in trial.REPORT_PROFILES.items():
+            with self.subTest(profile=profile):
+                self.record = {"daily_used": 0}
+
+                async def call(action, **payload):
+                    result = await self.call(action, **payload)
+                    if action == "checkpoint":
+                        result["result"] = {"grade": grade, "score": trial.report_score(payload["report"])}
+                    return result
+
+                await trial.run_protocol(call, "longwind", self.record, self.save, profile=profile)
+                self.assertEqual("done", self.record["phase"])
+                self.assertEqual(grade, self.record["grade"])
+
+    async def test_score_mismatch_stops_after_first_wave(self):
+        async def call(action, **payload):
+            result = await self.call(action, **payload)
+            if action == "checkpoint":
+                result["result"]["score"] = trial.report_score(payload["report"]) - 1
+            return result
+
+        with self.assertRaisesRegex(trial.TrialError, "verification_mismatch"):
+            await self.run_trial(call)
+        self.assertEqual(1, sum(action == "checkpoint" for action, payload in self.calls))
+
 
 @pytest.mark.parametrize("value,expected", [(0, 0), (None, 3), (1, 1), (-1, 0), (100, 3), ("bad", 0), (float("nan"), 0)])
 def test_carry_preserves_zero(value, expected):
     assert trial._trial_carry({"carryAvailable": value}) == expected
 
 
-def test_serialized_reports_remain_conservative_and_varied():
-    reports = [trial._trial_report("clean", wave % 4, 0) for wave in range(100)]
-    assert all(55 <= trial.report_score(report) < 75 for report in reports)
+@pytest.mark.parametrize("profile,minimum,maximum", [("rough", 55, 75), ("steady", 75, 90), ("clean", 90, 101)])
+def test_serialized_reports_match_selected_profile_and_vary(profile, minimum, maximum):
+    reports = [trial._trial_report(profile, wave % 4, 0) for wave in range(100)]
+    assert all(minimum <= trial.report_score(report) < maximum for report in reports)
     assert all(report["carryLeft"] == 0 for report in reports)
     assert len({tuple(report["metrics"].values()) for report in reports}) > 10
 

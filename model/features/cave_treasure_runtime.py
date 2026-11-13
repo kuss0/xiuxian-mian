@@ -1019,6 +1019,8 @@ def _selected_player_error(overview, identity_id):
 
 def _normalize_dwelling_identity_id(player_id):
     player_id = _parse_int(player_id, 0)
+    from ..state import get_avatar_entry
+    player_id = int(get_avatar_entry(player_id).get("player_id") or player_id)
     if player_id <= -1_000_000_000_000:
         return -player_id - 1_000_000_000_000
     return player_id

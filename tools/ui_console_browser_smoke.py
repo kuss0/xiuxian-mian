@@ -108,6 +108,39 @@ def run(root, browser, snapshot, miniapp, output):
             page.locator(selector).first.click()
             page.wait_for_selector(modal + ".show")
             capture(name)
+            if name == "dungeon":
+                form = page.locator("#expedition-config-form")
+                form.evaluate("form => { form.parentElement.open = true; }")
+                form.locator('[name="changfeng_profile"]').select_option("clean")
+                form.locator("[data-weekly-team-add]").click()
+                team = form.locator("[data-weekly-team]").last
+                team.locator("[data-weekly-team-name]").fill("火云队")
+                team.locator("[data-weekly-team-member]").first.check()
+                team.locator("[data-weekly-team-alias]").first.fill("玄平翁")
+                team.locator("[data-weekly-team-route]").first.select_option(label="秦府夜宴")
+                form.locator("[data-warm-add]").click()
+                pair = form.locator("[data-warm-pair]").last
+                pair.locator("[data-pair-name]").fill("同参")
+                pair.locator("[data-pair-source]").select_option("990001")
+                pair.locator("[data-pair-target]").select_option("990002")
+                capture("dungeon-activities")
+                form.locator('button[type="submit"]').click()
+                page.wait_for_timeout(150)
+                payload = next(row["payload"] for row in reversed(writes) if row["path"] == "/api/expedition-config")
+                assert payload["changfeng"]["report_profile"] == "clean"
+                assert payload["weekly"]["teams"][-1]["member_names"]["990001"] == "玄平翁"
+                assert payload["weekly"]["teams"][-1]["route"][0] == "秦府夜宴"
+                assert payload["warm_pairs"]["pairs"][-1]["target_identity_id"] == "990002"
+                assert not payload["spirit_beast"]["enabled"]
+                form.evaluate("form => { form.parentElement.open = true; }")
+                form.locator('[data-activity-restart]').click()
+                page.wait_for_timeout(100)
+                assert writes[-1] == {"path": "/api/additional-activity-action", "payload": {"action": "restart_global_duel"}}
+                form.evaluate("form => { form.parentElement.open = true; }")
+                form.locator('[data-avatar-action="profile"]').click()
+                page.wait_for_timeout(100)
+                assert writes[-1]["payload"]["action"] == "profile"
+                assert writes[-1]["payload"]["identity_id"] == "5000000000000001"
             page.evaluate("document.querySelectorAll('.modal-backdrop.show').forEach(el=>el.classList.remove('show'))")
 
         page.locator('[data-open-miniapp]').click()
@@ -189,6 +222,8 @@ def main():
             state.update_send_as_profile(identity_id, username="console_test", label=name, daohao=name,
                                          realm="化神后期", sect_name=sect, enabled=True)
         snapshot = ui.get_ui_snapshot()
+        snapshot["replica"]["expeditions"]["avatars"] = {"entries": {
+            "5000000000000001": {"dao_name": "玄平翁", "owner_id": 990001, "player_id": 123}}}
         snapshot.update(generated_at="2026-10-02 12:00:00", config_needed=False)
         miniapp = ui.get_miniapp_status_snapshot(send_as_id=990001)
         with sync_playwright() as playwright:

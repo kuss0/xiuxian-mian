@@ -19,7 +19,7 @@ def test_spirit_beast_adapter_is_manual_only_and_scoped():
     assert adapter.manual_only is True
     assert adapter.default_enabled is False
     assert set(adapter.safe_summary()["endpoint_keys"]) == {
-        "start", "expedition_start", "expedition_choose",
+        "start", "expedition_start", "expedition_choose", "action", "abyss_enter",
     }
     assert adapter.allowed_api_paths == ("/api/miniapp/xianxia-spirit-beast/",)
 
