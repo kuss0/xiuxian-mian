@@ -13,6 +13,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -359,7 +360,37 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
         or is_safe_heart_global_gap_pair(prev, cur)
         or is_safe_divination_exchange_global_gap_pair(prev, cur)
+        or is_safe_xuangu_reactive_gap_pair(prev, cur)
     )
+
+
+def is_safe_xuangu_reactive_gap_pair(prev: dict, cur: dict) -> bool:
+    """Recognize owned Xuangu deadline actions on the existing urgent queue."""
+    if (str(cur.get("source_module") or "") != "玄骨遗府"
+            or str(cur.get("priority") or "") != "urgent_reactive"):
+        return False
+    if float(cur.get("_epoch", 0)) - float(prev.get("_epoch", 0)) < 1:
+        return False
+    if prev.get("op_id") == cur.get("op_id"):
+        return False
+    text = str(cur.get("text") or "").strip()
+    action = re.fullmatch(r"\.玄骨行动 ([1-5]) [^\r\n:]+", text)
+    finish = re.fullmatch(r"\.玄骨收尾 (?:立即撤离|收拢遗宝|争取全收)", text)
+    if not action and not finish:
+        return False
+    try:
+        sender = int(cur.get("sender_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    suffix = f":{sender}:{text}"
+    op_id = str(cur.get("op_id") or "")
+    if sender <= 0 or not op_id.endswith(suffix):
+        return False
+    prefix = op_id[:-len(suffix)]
+    if not re.fullmatch(r"xuangu:-[1-9]\d*:[A-Za-z0-9_]+:[1-9]\d*", prefix):
+        return False
+    stage = action.group(1) if action else "5"
+    return str(cur.get("chain_id") or "") == f"{prefix}:{stage}"
 
 
 def is_sect_teach_command(text: str) -> bool:
