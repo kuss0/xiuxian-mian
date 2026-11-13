@@ -1,6 +1,7 @@
 """Real-message strategies and bounded, restart-safe weekly ownership."""
 import asyncio
 import copy
+import itertools
 import json
 import time
 from datetime import datetime, timezone
@@ -390,9 +391,24 @@ def test_owned_dead_road_receipt_allows_one_evidence_based_alternative(env):
 
 def test_yinming_ambiguous_fight_uses_documented_counter():
     members = [{"identity_id": 1}, {"identity_id": 2}]
-    text = "【暴风山 第1/3招】破招口诀。辨路者看温天仁的起手，不是「沉肩」就是「扫腿」。\n阳气 {}/8"
+    text = "【暴风山 第1/3招】破招口诀：沉肩→侧闪；扫腿→不动；虚晃→下压。辨路者看温天仁的起手，不是「沉肩」就是「扫腿」。\n阳气 {}/8"
     assert weekly.panel("yinming", text.format(8), members)[2] == [(2, ".应招 侧闪")]
     assert weekly.panel("yinming", text.format(6), members)[2] == [(2, ".应招 侧闪")]
+
+
+@pytest.mark.parametrize("answers", list(itertools.permutations(["侧闪", "下压", "不动"])))
+@pytest.mark.parametrize("move", ["沉肩", "扫腿", "虚晃"])
+def test_yinming_reads_current_round_counter_mapping(answers, move):
+    counters = dict(zip(["沉肩", "扫腿", "虚晃"], answers))
+    rules = "；".join(f"{clue}→{answer}" for clue, answer in counters.items())
+    text = f"【暴风山 第1/3招】破招口诀：{rules}。辨路者看温天仁的起手，是「{move}」。\n阳气 8/8"
+    assert weekly.panel("yinming", text, [{"identity_id": 1}, {"identity_id": 2}])[2] == [(2, ".应招 " + counters[move])]
+
+
+@pytest.mark.parametrize("rules", ["", "沉肩→侧闪；扫腿→不动", "沉肩→侧闪；扫腿→侧闪；虚晃→下压"])
+def test_yinming_missing_or_invalid_counter_rules_never_guess(rules):
+    text = f"【暴风山 第1/3招】破招口诀：{rules}。辨路者看温天仁的起手，是「扫腿」。\n阳气 8/8"
+    assert weekly.panel("yinming", text, [{"identity_id": 1}, {"identity_id": 2}])[2] == []
 
 
 @pytest.mark.parametrize("path_actor,soul_actor", [(1, 2), (2, 1)])

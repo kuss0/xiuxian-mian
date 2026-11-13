@@ -129,7 +129,11 @@ def panel(kind, text, members, *, path_dead=None, roles=None):
             moves = re.findall(r"「(沉肩|扫腿|虚晃)」", clue)
             # Official clues can leave two valid moves. Choose one documented
             # counter rather than timing out (which also loses yang).
-            action = {"沉肩": "侧闪", "扫腿": "不动", "虚晃": "下压"}.get(moves[0] if moves else "", "")
+            pairs = re.findall(r"(沉肩|扫腿|虚晃)\s*→\s*(侧闪|下压|不动)", text)
+            counters = dict(pairs)
+            complete = (len(pairs) == 3 and set(counters) == {"沉肩", "扫腿", "虚晃"}
+                        and set(counters.values()) == {"侧闪", "下压", "不动"})
+            action = counters.get(moves[0] if moves else "", "") if complete else ""
             actor = (roles or {}).get("感魂", ids[1])
             return 6 + int(match[1]), 120, [(actor, ".应招 " + action)] if action else []
     return None
