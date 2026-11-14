@@ -24,6 +24,36 @@ from .state import (
 _TICK_TASK = None
 _MANUAL_TASKS = set()
 _EVENT_TASKS = set()
+_SCHEDULER_TASKS = {}
+_SCHEDULER_STARTED = {}
+_LAST_TICK_AT = 0.0
+
+
+def _await_locations(coroutine):
+    locations, seen = [], set()
+    while coroutine is not None and id(coroutine) not in seen and len(locations) < 16:
+        seen.add(id(coroutine))
+        frame = getattr(coroutine, "cr_frame", None) or getattr(coroutine, "gi_frame", None)
+        if frame is not None:
+            locations.append(f"{frame.f_code.co_name}:{frame.f_lineno}")
+        coroutine = getattr(coroutine, "cr_await", None) or getattr(coroutine, "gi_yieldfrom", None)
+    return locations
+
+
+def get_expedition_scheduler_snapshot():
+    now = time.time()
+    try:
+        tasks = asyncio.all_tasks()
+    except RuntimeError:
+        tasks = ()
+    # Names and line numbers only: never expose frame locals, command payloads or credentials.
+    main = next((_await_locations(task.get_coro()) for task in tasks
+                 if any(item.startswith("main_loop:") for item in _await_locations(task.get_coro()))), [])
+    return {"last_tick_at": _LAST_TICK_AT, "main_await": main,
+            "modules": {name: {"running": not task.done(), "started_at": _SCHEDULER_STARTED[name],
+                                "age_sec": round(now - _SCHEDULER_STARTED[name], 1),
+                                "awaiting": _await_locations(task.get_coro()) if not task.done() else []}
+                        for name, task in _SCHEDULER_TASKS.items()}}
 
 
 async def _isolated(handler, *args, **kwargs):
@@ -107,6 +137,7 @@ def get_expedition_snapshot():
     xuangu = config.get("xuangu", {})
     changfeng = config.get("changfeng", {})
     return {
+        "scheduler": get_expedition_scheduler_snapshot(),
         "hunt_teams": get_hunt_teams(),
         "hunt_runs": [{key: copy.deepcopy(run.get(key)) for key in ("name", "phase", "day", "last_error", "result", "started_at", "requires_reconciliation")}
                       for run in get_hunt_run_state().values() if isinstance(run, dict)],
@@ -431,11 +462,19 @@ async def handle_expedition_game_event(event, *, event_type="message"):
 
 async def _run_tick(now):
     for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, run_zhengmo_scheduler, changfeng_trial.run_changfeng_scheduler, app_spirit_beast.scheduler, paired_activities.scheduler, avatar_soul.supervisor):
-        await _isolated(handler, now)
+        name = f"{handler.__module__}.{handler.__name__}"
+        previous = _SCHEDULER_TASKS.get(name)
+        if previous is not None and not previous.done():
+            continue
+        _SCHEDULER_STARTED[name] = time.time()
+        _SCHEDULER_TASKS[name] = track_background_task(asyncio.create_task(_isolated(handler, now), name=name))
+        # Let each module persist its reservation before starting the next one.
+        await asyncio.sleep(0)
 
 
 async def run_expedition_scheduler(now):
-    global _TICK_TASK
+    global _TICK_TASK, _LAST_TICK_AT
+    _LAST_TICK_AT = time.time()
     config = get_expedition_config()
     if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not get_expedition_run_state().get("avatars") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "weekly", "zhengmo", "spirit_beast", "warm_pairs", "global_duel")):
         return
@@ -459,7 +498,7 @@ def reset_expedition_runtime_on_startup():
 
 async def shutdown_expeditions():
     from . import app_xuangu
-    tasks = [*_MANUAL_TASKS, *_EVENT_TASKS, *changfeng_trial._TASKS.values(), *app_xuangu._TASKS, *app_spirit_beast._TASKS.values(), *avatar_soul._TASKS.values()]
+    tasks = [*_MANUAL_TASKS, *_EVENT_TASKS, *_SCHEDULER_TASKS.values(), *changfeng_trial._TASKS.values(), *app_xuangu._TASKS, *app_spirit_beast._TASKS.values(), *avatar_soul._TASKS.values()]
     if _TICK_TASK is not None:
         tasks.append(_TICK_TASK)
     for task in tasks:

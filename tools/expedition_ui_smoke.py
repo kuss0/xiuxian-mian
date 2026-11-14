@@ -92,7 +92,7 @@ def main():
                     assert saved["xuangu"]["participant_identity_ids"] == ["990001"]
                     assert saved["changfeng"]["participant_identity_ids"] == ["990002"]
                     assert "qipai" in saved["weekly"]["kinds"]
-                    assert saved["zhengmo"] == {"enabled": False, "hour": 8, "group_role": "primary", "identities": [{"identity_id": "990001", "faction": ""}]}
+                    assert saved["zhengmo"] == {"enabled": False, "hour": 8, "group_role": "primary", "auto_meeting": True, "identities": [{"identity_id": "990001", "faction": ""}]}
                     page.evaluate("document.querySelectorAll('.modal-backdrop.show').forEach(el => el.classList.remove('show'))")
                     page.locator("[data-open-storage-bag]").click()
                     page.locator("#storage-bag-transfer-open-btn").click()

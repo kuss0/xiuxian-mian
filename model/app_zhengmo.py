@@ -70,7 +70,11 @@ async def run_zhengmo_scheduler(now):
 
 def reset_zhengmo_runtime_on_startup():
     for run in _context().runs().values():
-        if run.get("phase") in zhengmo.ACTIVE_PHASES:
+        if run.get("phase") in zhengmo.MEETING_PHASES:
+            run.setdefault("meeting", {}).update(phase="held", result="程序重启，大会结果待核对，不重放报名")
+            run.update(phase=run.get("daily_phase", "done"), result=run.get("daily_result", "今日出征已确认"))
+            mark_dirty()
+        elif run.get("phase") in zhengmo.ACTIVE_PHASES:
             # The next action is a status query; never replay a march after restart.
             run.update(phase="retry", next_check=0)
             mark_dirty()

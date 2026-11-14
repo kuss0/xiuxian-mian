@@ -169,3 +169,115 @@ def test_send_guard_rechecks_after_queue_wait(env):
         env.now[0] += 61
         assert not captured()
     asyncio.run(run())
+
+
+MEETING_STATUS = STATUS.replace("第 2/14 天", "第 3/14 天") + "\n燕家堡夺宝大会 11-15 21:00：报名 魔道 1 / 正道 1；押注 魔道 40000 / 正道 100 灵石。.赴会 / .押注"
+MEETING_PANEL = "【燕家堡夺宝大会】11-15 21:00\n报名 魔道 1 / 正道 1\n.赴会 报名"
+
+
+async def open_meeting(env):
+    await war.start(env.ctx, 1)
+    await war.game_event(env.ctx, event(env, MEETING_STATUS))
+    await war.game_event(env.ctx, event(env, RESULT, reply=102))
+    assert env.sends[-1][0] == ".夺宝大会"
+
+
+def test_meeting_date_and_season_are_read_from_real_panel_wording(env):
+    status = war.parse_status(MEETING_STATUS)
+    assert status["season_day"] == 3
+    assert war.day_key(status["meeting_at"]) == "2026-11-15"
+    assert datetime.fromtimestamp(status["meeting_at"], war.TZ).hour == 21
+    assert status["fixed_faction"]
+    # A December panel may announce a January tournament in the next year.
+    now = datetime(2026, 12, 30, tzinfo=war.TZ).timestamp()
+    assert war.day_key(war.parse_status(MEETING_STATUS.replace("11-15", "01-02"), now)["meeting_at"]) == "2027-01-02"
+
+
+def test_registers_only_after_confirmed_march_and_owned_meeting_query(env):
+    async def run():
+        await open_meeting(env)
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=555))
+        assert env.sends[-1][0] == ".夺宝大会"
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        assert env.sends[-1][0] == ".赴会"
+        await war.game_event(env.ctx, event(env, "报名成功，你已报名本季燕家堡夺宝大会。", reply=104))
+        assert env.runs["1"]["phase"] == "done"
+        assert env.runs["1"]["meeting"]["phase"] == "registered"
+        assert env.runs["1"]["personal_points"] == 20
+        env.now[0] += 86400
+        await war.scheduler(env.ctx, env.now[0])
+        done = MEETING_STATUS.replace("你的宗门固定正道，直接 .出征 即可。", "你：正道 · 战功 20 · 出征 2/7 天 · 今日已出征")
+        await war.game_event(env.ctx, event(env, done, reply=105))
+        assert [c for c, _ in env.sends].count(".赴会") == 1
+        assert [c for c, _ in env.sends].count(".夺宝大会") == 1
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("response,phase", [("你已报名本季大会。", "registered"), ("大会已结束。", "closed"), ("不认识的回复", "held")])
+def test_meeting_panel_done_closed_and_unknown_do_not_register(env, response, phase):
+    async def run():
+        await open_meeting(env)
+        await war.game_event(env.ctx, event(env, response, reply=103))
+        assert env.runs["1"]["meeting"]["phase"] == phase
+        assert len(env.sends) == 3
+        assert env.runs["1"]["phase"] == "done"
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_uncertain_registration_is_not_replayed_and_late_receipt_settles(env, monkeypatch, restart):
+    async def run():
+        await open_meeting(env)
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        if restart:
+            monkeypatch.setattr(app_zhengmo, "_context", lambda: env.ctx)
+            monkeypatch.setattr(app_zhengmo, "mark_dirty", lambda: None)
+            app_zhengmo.reset_zhengmo_runtime_on_startup()
+        else:
+            env.now[0] += 61
+            await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["meeting"]["phase"] == "held"
+        assert env.runs["1"]["phase"] == "done"
+        await war.game_event(env.ctx, event(env, "你已报名本季夺宝大会。", reply=104))
+        assert env.runs["1"]["meeting"]["phase"] == "registered"
+        assert len(env.sends) == 4
+    asyncio.run(run())
+
+
+def test_lost_registration_send_result_holds_across_next_day(env):
+    async def run():
+        await open_meeting(env)
+        normal = env.ctx.send
+        async def send(command, **kwargs):
+            if command == ".赴会":
+                assert env.runs["1"]["meeting"]["registration_attempted"]
+                env.sends.append((command, kwargs))
+                return None
+            return await normal(command, **kwargs)
+        env.ctx.send = send
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        assert env.runs["1"]["meeting"]["phase"] == "held"
+        env.now[0] += 86400
+        await war.scheduler(env.ctx, env.now[0])
+        await war.game_event(env.ctx, event(env, MEETING_STATUS, reply=105))
+        await war.game_event(env.ctx, event(env, RESULT, reply=106))
+        assert [c for c, _ in env.sends].count(".赴会") == 1
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("change", ["disabled", "unaffiliated", "past"])
+def test_meeting_requires_enabled_known_faction_and_future_time(env, change):
+    async def run():
+        status = MEETING_STATUS
+        if change == "disabled":
+            env.config["auto_meeting"] = False
+        elif change == "unaffiliated":
+            status = UNAFFILIATED + "\n燕家堡夺宝大会 11-15 21:00"
+        else:
+            status = status.replace("11-15", "11-12")
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, status))
+        if change != "unaffiliated":
+            await war.game_event(env.ctx, event(env, RESULT, reply=102))
+        assert not any(c in {".赴会", ".夺宝大会"} for c, _ in env.sends)
+    asyncio.run(run())

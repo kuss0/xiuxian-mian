@@ -191,6 +191,40 @@ def test_event_exception_does_not_break_sibling_or_listener(monkeypatch):
     sibling.assert_awaited_once()
 
 
+def test_blocked_expedition_does_not_starve_daily_siblings_or_overlap(monkeypatch):
+    calls = []
+    async def scenario():
+        release = asyncio.Event()
+        async def stuck(now):
+            calls.append("stuck")
+            await release.wait()
+        async def daily(now):
+            calls.append("daily")
+        monkeypatch.setattr(app_expeditions, "_SCHEDULER_TASKS", {})
+        monkeypatch.setattr(app_expeditions, "_SCHEDULER_STARTED", {})
+        monkeypatch.setattr(app_expeditions, "run_hunt_scheduler", stuck)
+        monkeypatch.setattr(app_expeditions, "run_zhengmo_scheduler", daily)
+        for obj, name in [(app_expeditions, "run_xuangu_scheduler"), (app_expeditions, "run_weekly_scheduler"),
+                          (trial, "run_changfeng_scheduler"), (app_expeditions.app_spirit_beast, "scheduler"),
+                          (app_expeditions.paired_activities, "scheduler"), (app_expeditions.avatar_soul, "supervisor")]:
+            async def noop(now):
+                pass
+            # Distinct module/name keys, like the real adapters.
+            noop.__name__ = name
+            noop.__module__ = str(id(obj))
+            monkeypatch.setattr(obj, name, noop)
+        await app_expeditions._run_tick(100)
+        assert calls == ["stuck", "daily"]
+        await app_expeditions._run_tick(105)
+        assert calls == ["stuck", "daily", "daily"]
+        snapshot = app_expeditions.get_expedition_scheduler_snapshot()
+        assert any(row["running"] and any("stuck:" in line for line in row["awaiting"])
+                   for row in snapshot["modules"].values())
+        release.set()
+        await asyncio.gather(*app_expeditions._SCHEDULER_TASKS.values())
+    asyncio.run(scenario())
+
+
 def test_xuangu_adapter_rejects_wrong_topic(monkeypatch):
     monkeypatch.setattr(app_xuangu, "_enabled", lambda *_: True)
     monkeypatch.setattr(app_xuangu, "hunt_target", lambda _: (-100, 300))

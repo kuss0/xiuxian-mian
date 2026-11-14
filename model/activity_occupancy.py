@@ -17,7 +17,7 @@ def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=
                     return "配对活动执行中或结果待核对"
     if include_zhengmo:
         for run in get_expedition_run_state().get("zhengmo", {}).values():
-            if (run.get("phase") in {"querying", "pledging", "marching"}
+            if (run.get("phase") in {"querying", "pledging", "marching", "meeting_query", "registering"}
                     and any(m.get("identity_id") == identity_id for m in run.get("members", []))):
                 return "正魔大战查询或出征进行中"
     if include_weekly:

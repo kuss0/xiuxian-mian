@@ -7,7 +7,8 @@ import time
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Shanghai")
-ACTIVE_PHASES = {"querying", "pledging", "marching"}
+MEETING_PHASES = {"meeting_query", "registering"}
+ACTIVE_PHASES = {"querying", "pledging", "marching"} | MEETING_PHASES
 _LOCKS = {}
 _START_LOCK = asyncio.Lock()
 
@@ -37,10 +38,13 @@ def normalize_config(raw, known_ids, root_for_identity):
     enabled = raw.get("enabled", False)
     role = raw.get("group_role", "primary")
     hour = raw.get("hour", 9)
+    auto_meeting = raw.get("auto_meeting", True)
     if not isinstance(enabled, bool) or role not in {"primary", "secondary"}:
         raise ValueError("正魔大战开关或游戏群无效")
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
         raise ValueError("每日出征时间须为北京时间 0–23 时")
+    if type(auto_meeting) is not bool:
+        raise ValueError("夺宝大会自动报名须为开关")
     entries = raw.get("identities", [])
     if not isinstance(entries, list) or len(entries) > 100:
         raise ValueError("正魔大战参与身份须为列表，最多 100 个")
@@ -64,10 +68,10 @@ def normalize_config(raw, known_ids, root_for_identity):
         if faction not in {"", "正道", "魔道"}:
             raise ValueError("投效偏好须为正道、魔道或留空")
         identities.append({"identity_id": identity, "faction": faction})
-    return dict(enabled=enabled, group_role=role, hour=hour, identities=identities)
+    return dict(enabled=enabled, group_role=role, hour=hour, identities=identities, auto_meeting=auto_meeting)
 
 
-def parse_status(text):
+def parse_status(text, now=None):
     if "正魔大战尚未开战" in text or "本季已结束" in text or "赛季已结束" in text:
         return {"unavailable": True}
     season = re.search(r"【正魔大战·第(\d+)季】", text)
@@ -80,7 +84,20 @@ def parse_status(text):
     # is actionable, and its intelligence faction must match the actor's faction.
     hint = re.search(r"今日军情[（(](正道|魔道)[）)]：[^\n]*?以【(强攻|固守|奇袭)】应之", text)
     recommendation = hint[2] if hint and faction == hint[1] else ""
+    season_day = re.search(r"第\s*(\d+)/14\s*天", text)
+    meeting = re.search(r"燕家堡夺宝大会\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", text)
+    meeting_at = 0
+    if meeting:
+        current = datetime.fromtimestamp(time.time() if now is None else now, TZ)
+        try:
+            candidates = [datetime(year, *map(int, meeting.groups()), tzinfo=TZ)
+                          for year in (current.year - 1, current.year, current.year + 1)]
+            meeting_at = min(candidates, key=lambda value: abs(value.timestamp() - current.timestamp())).timestamp()
+        except ValueError:
+            pass
     return {"season": int(season[1]), "faction": faction, "recommendation": recommendation,
+            "season_day": int(season_day[1]) if season_day else 0, "fixed_faction": bool(fixed),
+            "meeting_at": meeting_at,
             "done": bool(own and "今日已出征" in text), "points": int(own[2]) if own else None,
             "days": int(own[3]) if own else 0,
             "needs_faction": not faction and ("投效" in text or "没有阵营" in text)}
@@ -107,8 +124,46 @@ async def notice(ctx, run, message):
 
 async def finish(ctx, run, phase, message):
     run.update(phase=phase, result=message, finished_at=time.time())
+    if phase == "done":
+        run.update(daily_phase=phase, daily_result=message)
     ctx.save()
     await notice(ctx, run, message)
+    if phase == "done":
+        await maybe_meeting(ctx, run)
+
+
+async def close_meeting(ctx, run, phase, message):
+    run["meeting"].update(phase=phase, result=message, updated_at=time.time())
+    run.update(phase=run.get("daily_phase", "done"), result=run.get("daily_result", run.get("result", "")))
+    ctx.save()
+    await notice(ctx, run, "夺宝大会｜" + message)
+
+
+async def maybe_meeting(ctx, run):
+    """One registration per season and root; uncertain registration is never replayed."""
+    now = time.time()
+    if (not run["config"].get("auto_meeting", True) or not run.get("faction")
+            or not now < run.get("meeting_at", 0) <= now + 4 * 86400):
+        return
+    meeting = run.setdefault("meeting", {})
+    if meeting.get("season") != run.get("season"):
+        meeting.clear()
+        meeting.update(season=run["season"], phase="idle")
+    if meeting.get("phase") in {"registered", "closed", "held"} or meeting.get("registration_attempted"):
+        return
+    if meeting.get("checked_day") == run["day"]:
+        return
+    meeting.update(checked_day=run["day"], phase="querying")
+    ctx.save()
+    await send(ctx, run, ".夺宝大会", "meeting_query")
+
+
+def registration_result(text):
+    if re.search(r"(?:你(?:已经?|本季已)|(?:本季)?已)报名|报名成功|已(?:经)?报过名|你已赴会", text):
+        return "registered"
+    if re.search(r"大会(?:已结束|已经结束|已开赛)|报名(?:已截止|已经截止)|开赛后不能报名|本季夺宝大会已", text):
+        return "closed"
+    return ""
 
 
 async def send(ctx, run, command, phase):
@@ -124,6 +179,9 @@ async def send(ctx, run, command, phase):
                 and time.time() < run["deadline"] and not run.get("stop_requested")
                 and config == run["config"] and ctx.target(run["group_role"]) == (run["chat_id"], run["topic_id"]))
     if not allowed():
+        if phase in MEETING_PHASES:
+            await close_meeting(ctx, run, "held", "发送前条件已变化，停止本次大会流程")
+            return False
         run.update(phase="retry", next_check=time.time() + 300)
         ctx.save()
         return False
@@ -138,11 +196,17 @@ async def send(ctx, run, command, phase):
         msg_id = 0
         run["last_error"] = str(error)
     if not msg_id:
+        if phase in MEETING_PHASES:
+            await close_meeting(ctx, run, "held", "发送结果未确认，保留本季记录，不重放报名")
+            return False
         # Even if transmission was uncertain, the next attempt queries the server.
         run.update(phase="retry", next_check=time.time() + 300)
         ctx.save()
         return False
     run["sent_commands"][str(msg_id)] = {"command": command, "sequence": sequence}
+    if phase == "registering":
+        run["meeting"].update(registration_msg_id=msg_id, chat_id=run["chat_id"], topic_id=run["topic_id"],
+                              registration_started_at=time.time())
     run.setdefault("opening_msg_id", msg_id)
     ctx.save()
     return True
@@ -173,7 +237,8 @@ async def start(ctx, identity_id):
             run = {"members": members, "day": day_key(), "config": config, "entry": entry,
                    "group_role": config["group_role"], "chat_id": group, "topic_id": topic,
                    "started_at": now, "phase": "querying", "expires_at": now + 90,
-                   "sent_commands": {}, "query_attempts": attempts + 1, "sequence": 0}
+                   "sent_commands": {}, "query_attempts": attempts + 1, "sequence": 0,
+                   "meeting": copy.deepcopy(previous.get("meeting", {}))}
             ctx.runs()[root] = run
             ctx.save()
             ok = await send(ctx, run, ".正魔大战", "querying")
@@ -187,6 +252,16 @@ async def game_event(ctx, event, *, event_type="message"):
     reply_id, top = reply_ids(event)
     text = (getattr(event, "raw_text", "") or "").strip()
     for root, run in list(ctx.runs().items()):
+        meeting = run.get("meeting", {})
+        if (meeting.get("registration_msg_id") == reply_id and reply_id
+                and event.chat_id == meeting.get("chat_id")
+                and (not top or top == meeting.get("topic_id"))
+                and event_time(event) >= meeting.get("registration_started_at", time.time()) - 1
+                and registration_result(text) in {"registered", "closed"}
+                and meeting.get("phase") == "held"):
+            # Late owned receipt can settle uncertainty without sending anything.
+            await close_meeting(ctx, run, registration_result(text), text)
+            return True
         if (run.get("phase") not in ACTIVE_PHASES or run["chat_id"] != event.chat_id
                 or run["day"] != day_key() or event_time(event) < run["started_at"] - 1
                 or int(getattr(event, "id", 0) or 0) <= run.get("opening_msg_id", 0)
@@ -202,6 +277,8 @@ async def game_event(ctx, event, *, event_type="message"):
                 continue
             if sent["command"] == ".正魔大战" and run["phase"] == "querying":
                 status = parse_status(text)
+                if status is not None and not status.get("unavailable"):
+                    run.update(status)
                 if status is None:
                     await finish(ctx, run, "blocked", "未识别战况回复，未出征：" + text)
                 elif status.get("unavailable"):
@@ -222,6 +299,22 @@ async def game_event(ctx, event, *, event_type="message"):
                     await send(ctx, run, ".出征 " + status["recommendation"], "marching")
                 else:
                     await finish(ctx, run, "blocked", "未找到与本人阵营一致的“以【战术】应之”提示，未猜测出征打法")
+                return True
+            if sent["command"] == ".夺宝大会" and run["phase"] == "meeting_query":
+                run["meeting"].update(panel=text, panel_msg_id=event.id, checked_at=time.time())
+                result = registration_result(text)
+                if result:
+                    await close_meeting(ctx, run, result, text)
+                elif "夺宝大会" not in text or time.time() >= run.get("meeting_at", 0):
+                    await close_meeting(ctx, run, "held", "大会状态未确认，未报名：" + text)
+                else:
+                    # Persist the one-shot reservation before a potentially uncertain send.
+                    run["meeting"].update(registration_attempted=True, phase="registering")
+                    ctx.save()
+                    await send(ctx, run, ".赴会", "registering")
+                return True
+            if sent["command"] == ".赴会" and run["phase"] == "registering":
+                await close_meeting(ctx, run, registration_result(text) or "held", text)
                 return True
             if sent["command"].startswith(".投效 ") and run["phase"] == "pledging":
                 if re.search(r"你投效了(魔道|正道)|你本季已在(魔道|正道)", text):
@@ -248,6 +341,9 @@ async def scheduler(ctx, now):
                 await finish(ctx, run, "blocked", "今日三次尝试仍未确认完成，已停止自动重试；检查游戏后可用 .正魔 执行 身份ID 重新查询")
         if run.get("phase") in ACTIVE_PHASES and (run.get("deadline", 0) <= now or run.get("day") != day_key(now)):
             async with lock(root):
+                if run.get("phase") in MEETING_PHASES:
+                    await close_meeting(ctx, run, "held", "等待大会回执超时，未重放报名；请核对大会面板")
+                    continue
                 if run.get("phase") in ACTIVE_PHASES:
                     run.update(phase="retry", next_check=now + 300)
                     ctx.save()

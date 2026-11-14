@@ -565,9 +565,10 @@ function renderExpeditionConfig(replica) {
     + '</div><button type="button" class="btn btn-secondary" data-weekly-team-add>新增周常队伍</button></div>'
     + '<div class="dungeon-section"><h4>正魔大战</h4><label class="checkbox-inline"><input type="checkbox" name="zhengmo_enabled"' + (war.enabled ? ' checked' : '') + ' />每日自动出征一次</label><p>沿用已有或宗门固定阵营，按本人今日军情推荐出征。无阵营跳过，不自动投效。未确认时先查询战况。</p>'
     + members('zhengmo', (war.identities || []).map(function(entry) { return entry.identity_id; }))
+    + '<label class="checkbox-inline"><input type="checkbox" name="zhengmo_meeting"' + (war.auto_meeting !== false ? ' checked' : '') + ' />自动报名燕家堡夺宝大会</label><p>每季第4天21:00开赛，先查大会再报名，每主魂一号。报名结果不明时停止。押注、劫营、避战和倒戈不自动执行。</p>'
     + '<div class="replica-config-grid"><label class="form-label">北京时间开始小时<input class="text-input" type="number" name="zhengmo_hour" min="0" max="23" value="' + escapeHtml(war.hour === undefined ? 9 : war.hour) + '" /></label><label class="form-label">游戏群<select class="text-input" name="zhengmo_role">'
     + ['primary', 'secondary'].map(function(role) { return '<option value="' + role + '"' + ((war.group_role || 'primary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>'; }).join('') + '</select></label></div>'
-    + Object.keys(config.zhengmo_runs || {}).map(function(root) { const run = config.zhengmo_runs[root]; return '<p>' + escapeHtml(((run.members || [])[0] || {}).username || root) + '：' + escapeHtml((run.phase || '') + '｜' + (run.result || run.last_error || '')) + '</p>'; }).join('') + '</div>'
+    + Object.keys(config.zhengmo_runs || {}).map(function(root) { const run = config.zhengmo_runs[root]; const meeting = run.meeting || {}; return '<p>' + escapeHtml(((run.members || [])[0] || {}).username || root) + '：' + escapeHtml((run.phase || '') + '｜' + (run.result || run.last_error || '') + (run.days >= 7 ? '｜本季出征已满7天，赛季宝箱资格达标' : '') + (meeting.phase ? '｜大会：' + meeting.phase + ' ' + (meeting.result || '') : '')) + '</p>'; }).join('') + '</div>'
     + '<div class="dungeon-section"><h4>长风试炼</h4><label class="checkbox-inline"><input type="checkbox" name="changfeng_enabled"' + (changfeng.enabled ? ' checked' : '') + ' />开启每日试炼</label>'
     + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
     + members('changfeng', changfeng.participant_identity_ids)
@@ -665,6 +666,7 @@ document.addEventListener('submit', async function(event) {
           use_talisman: row.querySelector('[data-weekly-team-talisman]').checked};
       })},
     zhengmo: {enabled: form.elements.zhengmo_enabled.checked, hour: Number(form.elements.zhengmo_hour.value), group_role: form.elements.zhengmo_role.value,
+      auto_meeting: form.elements.zhengmo_meeting.checked,
       identities: selectedMembers('zhengmo').map(function(id) { return {identity_id: id, faction: ''}; })},
     spirit_beast: {enabled: form.elements.spirit_beast_enabled.checked, participant_identity_ids: selectedMembers('spirit_beast')},
     warm_pairs: {enabled: form.elements.warm_pairs_enabled.checked, lead_text: form.elements.warm_pairs_lead.value,
