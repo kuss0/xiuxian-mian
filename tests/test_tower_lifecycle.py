@@ -204,6 +204,26 @@ class TowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         runner.assert_awaited_once()
         self.assertEqual(get_day_key(self.now), identity["last_tower_day"])
 
+    async def test_account_spacing_wait_preserves_attempt_and_stops_url_fallback(self):
+        identity = self.prepare_identity()
+        identity["tower_retry_count"] = 2
+        result = {
+            "ok": False,
+            "message": "洞府琉璃问心塔动态入口获取失败：洞府外部入口等待同账号请求间隔",
+            "extra": {"expected_wait": True, "retry_after_sec": 75},
+        }
+        with patch.object(tower, "run_cave_public_tower", new=AsyncMock(return_value=result)) as runner:
+            self.assertTrue(tower._launch_tower_worker(
+                self.identity_id, self.urls + [self.urls[0] + "2"], scheduled_at=self.now,
+            ))
+            await tower._TOWER_TASKS[self.identity_id]
+        runner.assert_awaited_once()
+        self.assertEqual(2, identity["tower_retry_count"])
+        self.assertEqual(self.now + 75, identity["next_tower_time"])
+        self.assertNotEqual(get_day_key(self.now), identity["last_tower_day"])
+        self.assertEqual(0, tower._TOWER_UPSTREAM_CIRCUIT_UNTIL)
+        tower.send_audit_log.assert_not_awaited()
+
     async def test_active_task_does_not_extend_its_lease_on_another_scheduler_tick(self):
         identity = self.prepare_identity()
         started, release = asyncio.Event(), asyncio.Event()

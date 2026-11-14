@@ -130,6 +130,19 @@ class CaveTowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         calls[2].assert_awaited_once()
 
+    async def test_account_spacing_wait_does_not_notify_or_challenge(self):
+        self.external = {
+            "ok": False, "status": "local_rate_limit",
+            "error": "洞府外部入口等待同账号请求间隔", "retry_after_sec": 75,
+        }
+        result, calls = await self.run_public_with_change("", "")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["extra"]["expected_wait"])
+        self.assertEqual(75, result["extra"]["retry_after_sec"])
+        calls[2].assert_not_awaited()
+        self.record.assert_not_called()
+        self.audit.assert_not_awaited()
+
     async def test_channel_send_freeze_and_maintenance_do_not_disable_public_entry(self):
         state_module.set_global_enabled(False)
         state_module.set_global_pause_source("tianzun_maintenance")

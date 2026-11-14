@@ -76,6 +76,22 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
             launch_mock.assert_not_called()
             self.assertEqual(now + 7200, state_module.state["next_tower_time"])
 
+    async def test_account_spacing_wait_does_not_queue_or_consume_run_lease(self):
+        identity_id = 8659059310
+        now = 1_700_000_000.0
+        self._prepare_identity(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["next_tower_time"] = now - 1
+            state_module.set_miniapp_state_records({"_meta": {
+                "cave_external_account_next_at": {str(state_module.get_identity_account(identity_id)): now + 75},
+            }})
+            before = copy.deepcopy(state_module.get_identity_state(identity_id))
+            with patch.object(tower, "_is_tower_window_time", return_value=True), \
+                    patch.object(tower, "_launch_tower_worker") as launch:
+                await tower.run_tower_scheduler(now)
+            launch.assert_not_called()
+            self.assertEqual(before, state_module.get_identity_state(identity_id))
+
     async def test_worker_marks_success_done_and_never_sends_text_command(self):
         identity_id = 8659059302
         now = 1_700_000_100.0

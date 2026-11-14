@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -69,3 +69,34 @@ def test_production_flow_defers_without_http_and_preserves_wait(accounts, monkey
     assert not second["ok"] and second["status"] == "local_rate_limit"
     assert runtime._miniapp_result_extra({}, second) == {"retry_after_sec": 100, "expected_wait": True}
     assert http.call_count == 1
+
+
+@pytest.mark.parametrize(("action", "key", "runner_name", "downstream_name"), [
+    ("trial", "tianji_trial", "run_cave_public_trial", "run_trial_miniapp_production_flow"),
+    ("fishing", "fishing", "run_cave_public_fishing", "run_fishing_miniapp_production_flow"),
+])
+def test_external_wait_keeps_dynamic_games_quiet(accounts, monkeypatch, action, key, runner_name, downstream_name):
+    monkeypatch.setattr(runtime, "_PUBLIC_ENTRY_LOCKS", {})
+    monkeypatch.setattr(runtime, "_public_entry_allowed", lambda: True)
+    monkeypatch.setattr(runtime, "_load_cave_public_identity_session", AsyncMock(return_value={
+        "ok": True, "init_data": "fixture", "player_id": 2001,
+        "result": {"ok": True, "data": {"raw": {"account": {"externalApps": {"groups": [{
+            "apps": [{"key": key, "action": action, "available": True}],
+        }]}}}}},
+    }))
+    external = AsyncMock(return_value={
+        "ok": False, "status": "local_rate_limit", "retry_after_sec": 75,
+        "error": "洞府外部入口等待同账号请求间隔",
+    })
+    monkeypatch.setattr(runtime, "run_cave_external_action_production_flow", external)
+    downstream, audit = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(runtime, downstream_name, downstream)
+    monkeypatch.setattr(runtime, "send_audit_log", audit)
+    result = asyncio.run(getattr(runtime, runner_name)(
+        2001, "https://t.me/fanrenxiuxian_bot?startapp=df_FIXTURE42", now=1000,
+    ))
+    assert not result["ok"]
+    assert result["extra"] == {"expected_wait": True, "retry_after_sec": 75}
+    external.assert_awaited_once()
+    downstream.assert_not_awaited()
+    audit.assert_not_awaited()

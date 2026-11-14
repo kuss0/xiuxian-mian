@@ -12,6 +12,7 @@ import math
 import time
 from datetime import datetime, timezone
 
+from ..cave_external_limits import next_request_at as cave_external_next_request_at
 from ..miniapp_state import get_miniapp_state_snapshot
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, track_background_task
@@ -27,6 +28,7 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
+from ..webapp_core import miniapp_retry_after_sec
 from .cave_treasure_runtime import (
     _public_entry_allowed,
     get_cave_public_entry_gate,
@@ -255,7 +257,7 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at, owner, schedule_
                     _TOWER_LAST_RUN_AT = time.time()
                 if not owner.is_current() or (not result.get("ok") and not can_run()):
                     return
-                if result.get("ok") or not _is_entry_health_failure(result.get("message")):
+                if result.get("ok") or (result.get("extra") or {}).get("expected_wait") or not _is_entry_health_failure(result.get("message")):
                     if result.get("ok"):
                         _TOWER_PREFERRED_ENTRY_INDEX = (int(_TOWER_PREFERRED_ENTRY_INDEX or 0) + offset) % max(1, len(urls))
                     break
@@ -272,6 +274,12 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at, owner, schedule_
                 console_log(f"🗼 闯塔 MiniApp 完成，下一次→{fmt_abs_ts(next_ts)}", scope="identity", limit=220)
             else:
                 if not can_run():
+                    return
+                extra = result.get("extra") or {}
+                wait = miniapp_retry_after_sec(result)
+                if extra.get("expected_wait") and wait > 0:
+                    state["next_tower_time"] = time.time() + wait
+                    save_state()
                     return
                 entry_missing = "公共入口" in str(result.get("message") or "")
                 next_ts = _set_failure_retry(time.time(), entry_missing=entry_missing)
@@ -331,6 +339,8 @@ async def run_tower_scheduler(now):
         return
     next_ts, should_return = _normalize_tower_schedule(float(now or time.time()))
     if should_return or float(now or time.time()) < next_ts:
+        return
+    if cave_external_next_request_at(identity_id) > float(now or time.time()):
         return
     urls = _configured_entry_urls()
     if not urls:

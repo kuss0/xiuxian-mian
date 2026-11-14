@@ -155,6 +155,13 @@ def _miniapp_result_extra(extra=None, *results):
     return merged
 
 
+def _cave_external_wait_result(result):
+    extra = _miniapp_result_extra({}, result)
+    if extra.get("expected_wait") and extra.get("retry_after_sec", 0) > 0:
+        return {"ok": False, "message": "洞府外部入口等待同账号请求间隔", "extra": extra}
+    return None
+
+
 def _cave_public_entry_urls(value):
     if isinstance(value, str):
         values = re.split(r"[\r\n,，\s]+", value)
@@ -3929,6 +3936,8 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             if not can_continue():
                 return cancelled
             if not external_result.get("ok"):
+                if wait_result := _cave_external_wait_result(external_result):
+                    return wait_result
                 message = f"洞府天机试炼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
                 return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
@@ -4587,6 +4596,8 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
             if not can_continue():
                 return cancelled
             if not external_result.get("ok"):
+                if wait_result := _cave_external_wait_result(external_result):
+                    return wait_result
                 message = f"洞府琉璃问心塔动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
                 return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
@@ -4816,6 +4827,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None, na
             if not can_continue():
                 return cancelled
             if not external_result.get("ok"):
+                if wait_result := _cave_external_wait_result(external_result):
+                    return wait_result
                 message = f"洞府钓鱼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 return await report({"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)})
             launch = extract_fishing_miniapp_launch_from_dwelling_payload(external_result.get("data") or {})

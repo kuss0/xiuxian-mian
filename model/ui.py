@@ -7474,7 +7474,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url, *, oper
                     return bool(result.get("ok")), message, extra
                 if extra.get("skipped"):
                     return bool(result.get("ok")) and not token_failure_count, message, extra
-                if result.get("ok") or not _is_cave_public_entry_health_failure(message):
+                if result.get("ok") or extra.get("expected_wait") or not _is_cave_public_entry_health_failure(message):
                     return bool(result.get("ok")), message, extra
                 if not circuit_is_current():
                     extra["entry_context_stale"] = True

@@ -105,6 +105,19 @@ def test_busy_entry_does_not_claim_a_canary(public_ui):
     h.runner.assert_not_awaited()
 
 
+def test_local_wait_without_entry_observation_never_falls_back_or_changes_health(public_ui):
+    h = public_ui
+    config = block_entry(h)
+    h.runner.return_value = {
+        "ok": False, "message": "洞府天机试炼动态入口获取失败：洞府外部入口等待同账号请求间隔",
+        "extra": {"expected_wait": True, "retry_after_sec": 75},
+    }
+    ok, _message, extra = asyncio.run(ui.ui_run_cave_public_entry(h.identity_id, "trial", ""))
+    assert not ok and extra["expected_wait"] and extra["retry_after_sec"] == 75
+    h.runner.assert_awaited_once()
+    assert state_module.get_miniapp_auto_config() == config
+
+
 def test_native_tianti_session_limit_reaches_ui_without_entry_fallback(public_ui, monkeypatch):
     h = public_ui
     monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
