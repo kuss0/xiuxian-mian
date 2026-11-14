@@ -1195,9 +1195,9 @@ def _relief_reason(panel):
 def _should_preach(panel):
     try:
         faith = int(panel["faith"])
-    except (KeyError, TypeError, ValueError):
+        faith_max = int(panel.get("faith_max", SMALL_WORLD_DEFAULT_STATUS_MAX))
+    except (KeyError, TypeError, ValueError, OverflowError):
         return False
-    faith_max = _panel_int(panel, "faith_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
     if faith < 0 or faith_max <= 0:
         return False
     return faith / faith_max <= SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER

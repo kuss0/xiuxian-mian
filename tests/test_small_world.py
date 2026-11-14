@@ -719,6 +719,15 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                         preach.assert_awaited_once_with(now, "信仰 0/100，布道维护")
                     relief.assert_not_awaited()
 
+    def test_missing_faith_line_is_not_a_zero_faith_recovery_signal(self):
+        panel = small_world._parse_small_world_panel("【豌豆的小世界】\n暂无祈愿，凡间风调雨顺。")
+        self.assertFalse(small_world._should_preach(panel))
+        for invalid in ({}, {"faith": None}, {"faith": "unknown"},
+                        {"faith": 0, "faith_max": 0}, {"faith": 0, "faith_max": None},
+                        {"faith": 0, "faith_max": "unknown"}):
+            with self.subTest(panel=invalid):
+                self.assertFalse(small_world._should_preach(invalid))
+
     async def test_wait_panel_with_minor_faith_deficit_skips_preach(self):
         send_as_id = 8659059200
         now = 9320.0
