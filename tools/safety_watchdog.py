@@ -25,6 +25,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from model.concubine_heart_text import parse_round as parse_heart_round
+
 if __package__:
     from .bot_delivery import read_bot_delivery
 else:
@@ -160,7 +166,6 @@ FISHING_SHORT_WINDOW_PREFIXES = (
 )
 FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
 FISHING_START_REPEAT_MIN_GAP_SEC = 30
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TZ_LOCAL = timezone(timedelta(hours=8))
 LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 
@@ -1281,6 +1286,66 @@ def get_marked_heart_choice_burst_exempt_ids(events: list[dict]) -> set[int]:
     return exempt_ids
 
 
+def get_receipt_verified_heart_choice_ids(events: list[dict], now: float) -> set[int]:
+    """UUID operations need launch ownership and a fresh bot prompt for each round.
+
+    Use the whole bounded log snapshot, including edits before the burst window.
+    Never infer a round from the number of sends or from a future edited prompt.
+    """
+    sessions: dict[tuple[int, int, str], list[dict]] = defaultdict(list)
+    prompts: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for item in events:
+        at = float(item.get("_epoch", 0) or 0)
+        if not 0 < at <= now:
+            continue
+        chat = int(item.get("chat_id", 0) or 0)
+        if not chat:
+            continue
+        if item.get("event_type") == "sent" and is_concubine_heart_event(item):
+            chain = str(item.get("chain_id") or "")
+            if re.fullmatch(r"[0-9a-f]{32}", chain):
+                sessions[(chat, int(item.get("sender_id", 0) or 0), chain)].append(item)
+        elif item.get("event_type") in {"message", "edit"}:
+            prompts[(chat, int(item.get("message_id", 0) or 0))].append(item)
+
+    verified: set[int] = set()
+    for (chat, sender, _chain), items in sessions.items():
+        items.sort(key=lambda item: float(item["_epoch"]))
+        launch, *answers = items
+        if (sender <= 0 or not 1 <= len(answers) <= 3
+                or command_key(str(launch.get("text") or "")) != ".共历心劫"
+                or any(item.get("source_module") != "concubine_heart"
+                       or item.get("family") != "concubine_heart"
+                       or item.get("priority") != "chain" or item.get("track") is not True
+                       or not re.fullmatch(r"[0-9a-f]{32}", str(item.get("op_id") or ""))
+                       or int(item.get("message_id", 0) or 0) <= 0 for item in items)
+                or len({item["op_id"] for item in items}) != len(items)
+                or len({item["message_id"] for item in items}) != len(items)):
+            continue
+        root = int(answers[0].get("reply_to_msg_id", 0) or 0)
+        if root <= launch["message_id"]:
+            continue
+        history = sorted(prompts.get((chat, root), []), key=lambda item: float(item["_epoch"]))
+        bot, previous_at = 0, float(launch["_epoch"])
+        for round_no, answer in enumerate(answers, 1):
+            before = [item for item in history if previous_at <= float(item["_epoch"]) <= float(answer["_epoch"])]
+            if (not before or answer.get("text") not in HEART_CHOICE_COMMANDS
+                    or int(answer.get("reply_to_msg_id", 0) or 0) != root):
+                break
+            prompt = before[-1]
+            prompt_bot = int(prompt.get("sender_id", 0) or 0)
+            if (prompt.get("sender_is_bot") is not True or prompt.get("forwarded")
+                    or not re.fullmatch(r"hantianzun[0-9]+_bot", str(prompt.get("sender_username") or ""))
+                    or prompt_bot <= 0 or (bot and bot != prompt_bot)
+                    or int(prompt.get("reply_to_msg_id", 0) or 0) != launch["message_id"]
+                    or parse_heart_round(prompt.get("text")) != round_no):
+                break
+            bot, previous_at = prompt_bot, float(answer["_epoch"])
+        else:
+            verified.update(id(item) for item in answers)
+    return verified
+
+
 def get_world_boss_status_burst_exempt_ids(events: list[dict]) -> set[int]:
     grouped: dict[tuple[int, str], list[dict]] = defaultdict(list)
     for item in events:
@@ -1301,8 +1366,9 @@ def get_world_boss_status_burst_exempt_ids(events: list[dict]) -> set[int]:
 
 def non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> list[dict]:
     start = now - float(seconds)
-    recent = [item for item in events if float(item.get("_epoch", 0) or 0) >= start]
+    recent = [item for item in events if item.get("event_type") == "sent" and float(item.get("_epoch", 0) or 0) >= start]
     marked_heart_choice_exempt_ids = get_marked_heart_choice_burst_exempt_ids(recent)
+    marked_heart_choice_exempt_ids.update(get_receipt_verified_heart_choice_ids(events, now))
     world_boss_status_exempt_ids = get_world_boss_status_burst_exempt_ids(recent)
     storage_bag_exempt_ids = get_storage_bag_retry_exempt_ids(recent)
     return [
@@ -1327,7 +1393,7 @@ def send_burst_details(events: list[dict], now: float, cfg: WatchdogConfig, reas
         return []
     sent = [item for item in events if item.get("event_type") == "sent" and float(item.get("_epoch", 0) or 0) > 0]
     recent = [item for item in sent if float(item["_epoch"]) >= now - seconds]
-    counted = sorted(non_burst_exempt_since(sent, now, seconds), key=lambda item: float(item["_epoch"]))
+    counted = sorted(non_burst_exempt_since(events, now, seconds), key=lambda item: float(item["_epoch"]))
 
     def label(value: object) -> str:
         return " ".join(str(value or "unknown").split())[:24]
@@ -1386,11 +1452,11 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
     if not sent:
         return ""
 
-    if count_non_burst_exempt_since(sent, now, 120) >= cfg.total_2m_limit:
+    if count_non_burst_exempt_since(events, now, 120) >= cfg.total_2m_limit:
         return f"send burst: {cfg.total_2m_limit}+ sends in 120s"
-    if count_non_burst_exempt_since(sent, now, 300) >= cfg.total_5m_limit:
+    if count_non_burst_exempt_since(events, now, 300) >= cfg.total_5m_limit:
         return f"send burst: {cfg.total_5m_limit}+ sends in 300s"
-    if count_non_burst_exempt_since(sent, now, 900) >= cfg.total_15m_limit:
+    if count_non_burst_exempt_since(events, now, 900) >= cfg.total_15m_limit:
         return f"send burst: {cfg.total_15m_limit}+ sends in 900s"
 
     world_boss_by_sender: dict[int, list[dict]] = defaultdict(list)
