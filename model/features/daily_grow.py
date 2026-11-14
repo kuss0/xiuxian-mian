@@ -31,12 +31,13 @@ DAILY_GROW_COMMAND = "/grow@DickGrowerBot"
 # 状态开关，只会让功能看起来是坏的。要停就改这里重新部署。
 DAILY_GROW_ENABLED = True
 
-# jfdffdddd —— 按要求排除。
-DAILY_GROW_EXCLUDED_ACCOUNT_IDS = frozenset({301299112})
+# jfdffdddd 按要求排除；wisemole 经用户确认受 TG 双向限制，停止每日试发。
+# 围栏随部署持久保留，跨天/重启也不自动探测解封；白名单不能绕过。
+DAILY_GROW_EXCLUDED_ACCOUNT_IDS = frozenset({301299112, 8574677796})
 
 # 空集 = 除排除项外的全部实体账号。收窄成具体账号可用于试发。
 # 落点已于 2026-09-02 用 xianxia9527 单号试发确认（msg=107880，闲聊分组无误），
-# 随后开放全部四个账号。
+# 随后开放其余实体账号，仍受上面的排除围栏约束。
 DAILY_GROW_ACCOUNT_ALLOWLIST = frozenset()
 
 # 摊开在白天，别让几个号在同一分钟一起冒出来。
@@ -62,7 +63,7 @@ def within_send_window(now):
 
 
 def target_account_ids():
-    """今天该发的实体账号，已排除 jfdffdddd 并按试发白名单收窄。"""
+    """今天该发的实体账号，先排除围栏账号，再按试发白名单收窄。"""
     account_ids = []
     for raw_id in (get_accounts() or {}):
         try:
@@ -91,7 +92,11 @@ def account_due_ts(account_id, now):
 
 
 async def _send_grow(account_id):
-    client_obj = get_registered_client(int(account_id))
+    account_id = int(account_id)
+    # 发送边界再次检查，直接调用也不能绕过调度层的账号围栏。
+    if account_id in DAILY_GROW_EXCLUDED_ACCOUNT_IDS:
+        return False, "账号已被每日 grow 围栏排除"
+    client_obj = get_registered_client(account_id)
     if client_obj is None:
         return False, "client 未注册"
     send_kwargs = {}

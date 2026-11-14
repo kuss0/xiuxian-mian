@@ -26,7 +26,8 @@ class DailyGrowTargetTests(unittest.TestCase):
         ):
             targets = daily_grow.target_account_ids()
         self.assertNotIn(301299112, targets)
-        self.assertEqual([7538826434, 8574677796, 8613500668, 8659059191], targets)
+        self.assertNotIn(8574677796, targets)
+        self.assertEqual([7538826434, 8613500668, 8659059191], targets)
 
     def test_allowlist_narrows_the_target_set(self):
         """白名单是试发用的收窄器。显式指定，不依赖当前部署值。"""
@@ -36,16 +37,16 @@ class DailyGrowTargetTests(unittest.TestCase):
             self.assertEqual([8613500668], daily_grow.target_account_ids())
 
     def test_allowlist_never_overrides_the_exclusion(self):
-        """就算把 jfdffdddd 写进白名单也不能发 —— 排除优先。"""
+        """就算把围栏账号写进白名单也不能发。"""
         with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS), patch.object(
-            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({301299112})
+            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({301299112, 8574677796})
         ):
             self.assertEqual([], daily_grow.target_account_ids())
 
-    def test_current_deployment_targets_all_four_real_accounts(self):
+    def test_current_deployment_keeps_three_unrestricted_accounts(self):
         with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS):
             self.assertEqual(
-                [7538826434, 8574677796, 8613500668, 8659059191],
+                [7538826434, 8613500668, 8659059191],
                 daily_grow.target_account_ids(),
             )
 
@@ -123,6 +124,33 @@ class DailyGrowSchedulerTests(unittest.IsolatedAsyncioTestCase):
         ) as send_mock:
             self.assertFalse(await daily_grow.run_daily_grow_scheduler(time.time()))
         send_mock.assert_not_awaited()
+
+    async def test_direct_send_cannot_bypass_fence_or_touch_client(self):
+        with patch.object(daily_grow, "get_registered_client") as client, patch.object(
+            daily_grow, "_run_account_rpc", new=AsyncMock()
+        ) as rpc:
+            for account_id in (301299112, 8574677796, "8574677796"):
+                ok, detail = await daily_grow._send_grow(account_id)
+                self.assertFalse(ok)
+                self.assertIn("围栏", detail)
+        client.assert_not_called()
+        rpc.assert_not_awaited()
+
+    async def test_restricted_account_is_skipped_across_days_without_send_or_bookkeeping(self):
+        now = time.mktime((2026, 11, 14, 15, 0, 0, 0, 0, -1))
+        with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS), patch.object(
+            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({8574677796})
+        ), patch.object(daily_grow, "get_daily_grow_last_sent", return_value={}), patch.object(
+            daily_grow, "account_due_ts", return_value=0
+        ), patch.object(daily_grow, "_send_grow", new=AsyncMock()) as send, patch.object(
+            daily_grow, "set_daily_grow_last_sent"
+        ) as record, patch.object(daily_grow, "save_state") as save:
+            for day in range(3):
+                daily_grow._last_send_ts = 0  # Simulate a restart without today's ledger.
+                self.assertFalse(await daily_grow.run_daily_grow_scheduler(now + day * 86400))
+        send.assert_not_awaited()
+        record.assert_not_called()
+        save.assert_not_called()
 
     async def _run_once(self, *, last_sent=None, offline=False, ok=True):
         lt = time.localtime()
