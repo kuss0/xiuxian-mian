@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,6 +25,7 @@ def env(monkeypatch):
     monkeypatch.setattr(war.time, "time", lambda: now[0])
     monkeypatch.setattr(war, "_START_LOCK", asyncio.Lock())
     monkeypatch.setattr(war, "_LOCKS", {})
+    monkeypatch.setattr(app_zhengmo, "_RECOVERED_ANCHORS", set())
     async def send(command, **kwargs):
         assert kwargs["send_guard"]()
         sends.append((command, kwargs))
@@ -56,6 +58,64 @@ def test_fixed_faction_follows_own_counter_once_and_stops(env):
         env.now[0] += 86400
         await war.scheduler(env.ctx, env.now[0])
         assert env.sends[-1][0] == ".正魔大战" and len(env.sends) == 3
+    asyncio.run(run())
+
+
+def test_reply_arriving_before_send_returns_is_not_lost(env):
+    async def run():
+        pending = []
+        normal = env.ctx.send
+        async def send(command, **kwargs):
+            message = await normal(command, **kwargs)
+            text = STATUS if command == ".正魔大战" else RESULT
+            pending.append(asyncio.create_task(war.game_event(env.ctx, event(env, text, reply=message.id))))
+            await asyncio.sleep(0)  # The listener runs before the transport returns its message ID.
+            return message
+        env.ctx.send = send
+        await war.start(env.ctx, 1)
+        while pending:
+            await asyncio.wait_for(pending.pop(0), 1)
+        assert env.runs["1"]["phase"] == "done"
+        assert env.runs["1"]["done"] is True
+        assert [c for c, _ in env.sends] == [".正魔大战", ".出征 固守"]
+    asyncio.run(run())
+
+
+def test_confirmed_result_records_snapshot_and_gain_without_claiming_live_total(env):
+    async def run():
+        await war.start(env.ctx, 1)
+        status = STATUS.replace("你的宗门固定正道，直接 .出征 即可。", "你：正道 · 战功 35 · 出征 1/7 天 · 今日未出征")
+        await war.game_event(env.ctx, event(env, status))
+        result = RESULT.replace("1/7", "2/7")
+        await war.game_event(env.ctx, event(env, result, reply=102))
+        record = env.runs["1"]
+        assert record["done"] is True
+        assert record["points"] == 35  # Confirmed status snapshot, possibly changed by other activities since then.
+        assert record["estimated_points"] == 55
+        assert record["march_receipt"]["message_id"] == 999
+        await war.game_event(env.ctx, event(env, result, reply=102))
+        assert record["estimated_points"] == 55
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_late_owned_march_closes_retry_without_another_query(env, monkeypatch, restart):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, STATUS))
+        env.now[0] += 91
+        if restart:
+            monkeypatch.setattr(app_zhengmo, "_context", lambda: env.ctx)
+            monkeypatch.setattr(app_zhengmo, "mark_dirty", lambda: None)
+            app_zhengmo.reset_zhengmo_runtime_on_startup()
+        else:
+            await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["phase"] == "retry"
+        await war.game_event(env.ctx, event(env, RESULT, reply=102))
+        assert env.runs["1"]["phase"] == "done"
+        env.now[0] += 301
+        await war.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 2
     asyncio.run(run())
 
 
@@ -138,9 +198,9 @@ def test_delayed_result_and_old_day_cannot_trigger_new_march(env):
         await war.game_event(env.ctx, event(env, STATUS))
         env.now[0] += 91
         await war.game_event(env.ctx, event(env, RESULT, reply=102))
-        assert env.runs["1"]["phase"] == "marching"
+        assert env.runs["1"]["phase"] == "done"
         await war.scheduler(env.ctx, env.now[0])
-        assert env.runs["1"]["phase"] == "retry"
+        assert env.runs["1"]["phase"] == "done"
         env.now[0] += 86400
         await war.game_event(env.ctx, event(env, STATUS, reply=101))
         assert len(env.sends) == 2
@@ -315,9 +375,153 @@ def test_startup_recovers_real_registration_from_local_log_without_resending(env
         path = tmp_path / f"{war.day_key(env.now[0])}.log"
         path.write_text("invalid JSON\n" + json.dumps({**row, "chat_id": -101}) + "\n" + json.dumps(row) + "\n")
         monkeypatch.setattr(app_zhengmo, "MESSAGES_DIR", str(tmp_path))
-        await app_zhengmo._recover_meeting_receipts(env.ctx, env.now[0])
+        await app_zhengmo._recover_receipts(env.ctx, env.now[0])
         assert env.runs["1"]["meeting"]["phase"] == "registered"
         assert len(env.sends) == 4
+    asyncio.run(run())
+
+
+def test_retry_preserves_original_march_anchor_and_unique_operation_ids(env):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, STATUS))
+        env.now[0] += 91
+        await war.scheduler(env.ctx, env.now[0])
+        env.now[0] += 301
+        await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["phase"] == "querying"
+        assert len({kw["op_id"] for _, kw in env.sends}) == len(env.sends)
+        await war.game_event(env.ctx, event(env, RESULT, reply=102))
+        assert env.runs["1"]["phase"] == "done"
+        assert len(env.sends) == 3
+    asyncio.run(run())
+
+
+def test_startup_replays_march_terminal_without_sending_again(env, monkeypatch, tmp_path):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, STATUS))
+        env.now[0] += 91
+        await war.scheduler(env.ctx, env.now[0])
+        row = {"event_type": "message", "chat_id": -100, "reply_to_msg_id": 102, "message_id": 110,
+               "topic_id": 42, "sender_id": 99, "server_event_at": env.now[0] - 50, "text": RESULT}
+        path = tmp_path / f"{war.day_key(env.now[0])}.log"
+        path.write_text(json.dumps(row) + "\n")
+        monkeypatch.setattr(app_zhengmo, "MESSAGES_DIR", str(tmp_path))
+        await app_zhengmo._recover_receipts(env.ctx, env.now[0])
+        assert env.runs["1"]["phase"] == "done"
+        assert env.runs["1"]["done"] is True
+        assert len(env.sends) == 2
+    asyncio.run(run())
+
+
+def test_adapter_members_and_context_use_same_soul_owner(monkeypatch):
+    monkeypatch.setattr(app_zhengmo, "get_avatar_owner_id", lambda identity: 1 if identity == 2 else 0)
+    monkeypatch.setattr(app_zhengmo, "_enabled", lambda identity: True)
+    monkeypatch.setattr(app_zhengmo, "get_activity_block_reason", lambda identity: "")
+    monkeypatch.setattr(app_zhengmo, "get_send_as_profile", lambda identity: {"username": f"u{identity}"})
+    members, error = app_zhengmo._members([2])
+    assert not error
+    assert members[0]["root_id"] == app_zhengmo._context().root(2) == 1
+
+
+@pytest.mark.parametrize("changes", [{"reply": 555}, {"sender": 98}, {"chat": -101}, {"topic": 43}])
+def test_late_foreign_march_receipt_cannot_close_our_retry(env, changes):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, STATUS))
+        env.now[0] += 91
+        await war.scheduler(env.ctx, env.now[0])
+        await war.game_event(env.ctx, event(env, RESULT, **{"reply": 102, **changes}))
+        assert env.runs["1"]["phase"] == "retry"
+        assert not env.runs["1"].get("march_receipt")
+    asyncio.run(run())
+
+
+def test_early_registration_receipt_uses_dispatch_start_not_send_return_time(env):
+    async def run():
+        await open_meeting(env)
+        pending = []
+        normal = env.ctx.send
+        async def send(command, **kwargs):
+            message = await normal(command, **kwargs)
+            pending.append(asyncio.create_task(war.game_event(env.ctx, event(env, LIVE_REGISTRATION, reply=message.id))))
+            await asyncio.sleep(0)
+            env.now[0] += 3
+            return message
+        env.ctx.send = send
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        await asyncio.gather(*pending)
+        assert env.runs["1"]["meeting"]["phase"] == "registered"
+    asyncio.run(run())
+
+
+def test_owned_terminal_after_disabling_closes_state_without_starting_meeting(env):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, MEETING_STATUS))
+        env.config["enabled"] = False
+        await war.game_event(env.ctx, event(env, RESULT, reply=102))
+        assert env.runs["1"]["done"] is True
+        assert len(env.sends) == 2
+    asyncio.run(run())
+
+
+def test_known_reply_is_not_delayed_by_another_accounts_inflight_send(env):
+    async def run():
+        env.config["identities"].append({"identity_id": 2, "faction": ""})
+        await war.start(env.ctx, 1)
+        await war.start(env.ctx, 2)
+        async with war.lock("1"):
+            assert await asyncio.wait_for(war.game_event(env.ctx, event(env, STATUS, reply=102)), 1)
+            assert env.runs["2"]["phase"] == "marching"
+            assert env.runs["1"]["phase"] == "querying"
+    asyncio.run(run())
+
+
+def test_retry_in_new_group_cannot_reuse_old_group_message_id(env):
+    async def run():
+        await war.start(env.ctx, 1)
+        await war.game_event(env.ctx, event(env, STATUS))
+        env.now[0] += 91
+        await war.scheduler(env.ctx, env.now[0])
+        env.ctx.target = lambda role: (-101, 43)
+        env.now[0] += 301
+        await war.scheduler(env.ctx, env.now[0])
+        await war.game_event(env.ctx, event(env, RESULT, reply=102, chat=-101, topic=43))
+        assert env.runs["1"]["phase"] == "querying"
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("offset,gain,front", [(0, 6, 12), (2, 20, 40)])
+def test_actual_owned_panels_and_receipts_replay_to_consistent_daily_state(env, offset, gain, front):
+    samples = json.loads((Path(__file__).parent / "fixtures/zhengmo_live_20261114.json").read_text())
+    pair = samples[offset:offset + 2]
+    async def run():
+        env.now[0] = pair[0]["source"]["server_event_at"] - 1
+        env.ctx.target = lambda role: (pair[0]["source"]["chat_id"], 0)
+        env.ctx.bot_ids = lambda: [s["source"]["sender_id"] for s in pair]
+        async def send(command, **kwargs):
+            source = pair[len(env.sends)]["source"]
+            env.sends.append((command, kwargs))
+            return SimpleNamespace(id=source["reply_to_msg_id"])
+        env.ctx.send = send
+        await war.start(env.ctx, 1)
+        for sample in pair:
+            source = sample["source"]
+            assert sample["module"] and sample["family"] and sample["event_type"]
+            env.now[0] = source["server_event_at"]
+            receipt = event(env, sample["text"], reply=source["reply_to_msg_id"],
+                            sender=source["sender_id"], chat=source["chat_id"], topic=0, mid=source["message_id"])
+            await war.game_event(env.ctx, receipt, event_type=sample["event_type"])
+        record = env.runs["1"]
+        assert record["phase"] == "done" and record["done"] is True
+        assert record["personal_points"] == gain and record["front_points"] == front
+        assert record["points"] == 35 and record["estimated_points"] == 35 + gain
+        assert record["days"] == 2
+        assert [c for c, _ in env.sends] == [".正魔大战", ".出征 强攻"]
+    # Registration is verified separately, without sending another game query here.
+    env.config["auto_meeting"] = False
     asyncio.run(run())
 
 

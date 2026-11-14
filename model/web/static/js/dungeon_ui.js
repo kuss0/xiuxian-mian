@@ -568,7 +568,16 @@ function renderExpeditionConfig(replica) {
     + '<label class="checkbox-inline"><input type="checkbox" name="zhengmo_meeting"' + (war.auto_meeting !== false ? ' checked' : '') + ' />自动报名燕家堡夺宝大会</label><p>每季第4天21:00开赛，先查大会再报名，每主魂一号。报名结果不明时停止。押注、劫营、避战和倒戈不自动执行。</p>'
     + '<div class="replica-config-grid"><label class="form-label">北京时间开始小时<input class="text-input" type="number" name="zhengmo_hour" min="0" max="23" value="' + escapeHtml(war.hour === undefined ? 9 : war.hour) + '" /></label><label class="form-label">游戏群<select class="text-input" name="zhengmo_role">'
     + ['primary', 'secondary'].map(function(role) { return '<option value="' + role + '"' + ((war.group_role || 'primary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>'; }).join('') + '</select></label></div>'
-    + Object.keys(config.zhengmo_runs || {}).map(function(root) { const run = config.zhengmo_runs[root]; const meeting = run.meeting || {}; return '<p>' + escapeHtml(((run.members || [])[0] || {}).username || root) + '：' + escapeHtml((run.phase || '') + '｜' + (run.result || run.last_error || '') + (run.days >= 7 ? '｜本季出征已满7天，赛季宝箱资格达标' : '') + (meeting.phase ? '｜大会：' + meeting.phase + ' ' + (meeting.result || '') : '')) + '</p>'; }).join('') + '</div>'
+    + Object.keys(config.zhengmo_runs || {}).map(function(root) {
+      const run = config.zhengmo_runs[root];
+      const meeting = run.meeting || {};
+      const points = run.points === null || run.points === undefined ? '' : '｜上次查询战功 ' + run.points;
+      const gain = run.personal_points === undefined ? '' : '｜本次出征 +' + run.personal_points;
+      return '<p>' + escapeHtml(((run.members || [])[0] || {}).username || root) + '：'
+        + escapeHtml('今日出征：' + (run.daily_phase || run.phase || '未执行') + points + gain + '｜' + (run.result || run.last_error || '')
+          + (run.days >= 7 ? '｜本季出征已满7天，赛季宝箱资格达标' : '')
+          + (meeting.phase ? '｜大会：' + meeting.phase + ' ' + (meeting.result || '') : '')) + '</p>';
+    }).join('') + '</div>'
     + '<div class="dungeon-section"><h4>长风试炼</h4><label class="checkbox-inline"><input type="checkbox" name="changfeng_enabled"' + (changfeng.enabled ? ' checked' : '') + ' />开启每日试炼</label>'
     + '<p>使用洞府公共入口；默认每日一场。日志群可发送「.长风试炼 执行 @身份 麦田」「.长风试炼 核对 @身份 麦田」或「.长风试炼 状态」。未确认时停止并保留记录，核对只读取游戏状态。</p>'
     + members('changfeng', changfeng.participant_identity_ids)

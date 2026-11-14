@@ -339,7 +339,7 @@ def ui_set_expedition_config(payload):
                         names[alias] = identity
             config["weekly"] = normalized
         if "zhengmo" in payload:
-            config["zhengmo"] = zhengmo.normalize_config(payload["zhengmo"], set(get_identity_ids()), lambda i: i)
+            config["zhengmo"] = zhengmo.normalize_config(payload["zhengmo"], set(get_identity_ids()), lambda i: get_avatar_owner_id(i) or i)
             if config["zhengmo"]["enabled"] and not hunt_target(config["zhengmo"]["group_role"])[0]:
                 raise ValueError("请先配置正魔大战使用的游戏群")
         for kind in ("warm_pairs", "global_duel"):

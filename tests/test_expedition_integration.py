@@ -306,3 +306,15 @@ def test_expedition_ui_route_requires_auth_and_accepts_valid_configuration(monke
 
     asyncio.run(scenario())
     assert writes[0] == "unauthorized" and writes[1][0] is True
+
+
+def test_war_ui_rejects_duplicate_soul_before_saving(monkeypatch):
+    monkeypatch.setattr(app_expeditions, "get_identity_ids", lambda: [1, 2])
+    monkeypatch.setattr(app_expeditions, "get_avatar_owner_id", lambda identity: 1 if identity == 2 else 0)
+    save = AsyncMock()
+    monkeypatch.setattr(app_expeditions, "save_state", save)
+    ok, message = app_expeditions.ui_set_expedition_config({"zhengmo": {
+        "identities": [{"identity_id": 1}, {"identity_id": 2}],
+    }})
+    assert not ok and "同一主魂" in message
+    save.assert_not_called()

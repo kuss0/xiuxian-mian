@@ -125,7 +125,7 @@ async def notice(ctx, run, message):
 async def finish(ctx, run, phase, message):
     run.update(phase=phase, result=message, finished_at=time.time())
     if phase == "done":
-        run.update(daily_phase=phase, daily_result=message)
+        run.update(done=True, daily_phase=phase, daily_result=message)
     ctx.save()
     await notice(ctx, run, message)
     if phase == "done":
@@ -143,7 +143,9 @@ async def close_meeting(ctx, run, phase, message):
 async def maybe_meeting(ctx, run):
     """One registration per season and root; uncertain registration is never replayed."""
     now = time.time()
-    if (not run["config"].get("auto_meeting", True) or not run.get("faction")
+    if (not ctx.enabled() or ctx.config() != run["config"]
+            or not run["config"].get("enabled")
+            or not run["config"].get("auto_meeting", True) or not run.get("faction")
             or not now < run.get("meeting_at", 0) <= now + 4 * 86400):
         return
     meeting = run.setdefault("meeting", {})
@@ -169,6 +171,9 @@ def registration_result(text):
 
 async def send(ctx, run, command, phase):
     run.update(phase=phase, sequence=run.get("sequence", 0) + 1, deadline=time.time() + 60, expires_at=time.time() + 90)
+    if phase == "registering":
+        run["meeting"].update(chat_id=run["chat_id"], topic_id=run["topic_id"],
+                              registration_started_at=time.time())
     sequence = run["sequence"]
     ctx.save()
     member = run["members"][0]
@@ -213,8 +218,7 @@ async def send(ctx, run, command, phase):
         return False
     run["sent_commands"][str(msg_id)] = {"command": command, "sequence": sequence}
     if phase == "registering":
-        run["meeting"].update(registration_msg_id=msg_id, chat_id=run["chat_id"], topic_id=run["topic_id"],
-                              registration_started_at=time.time())
+        run["meeting"].update(registration_msg_id=msg_id)
     run.setdefault("opening_msg_id", msg_id)
     ctx.save()
     return True
@@ -233,7 +237,7 @@ async def start(ctx, identity_id):
         root = str(member["root_id"])
         async with lock(root):
             previous = ctx.runs().get(root, {})
-            if previous.get("day") == day_key() and previous.get("phase") == "done":
+            if previous.get("day") == day_key() and (previous.get("phase") == "done" or previous.get("daily_phase") == "done"):
                 return False, "该主魂今日已出征"
             if previous.get("phase") in ACTIVE_PHASES and previous.get("expires_at", 0) > time.time():
                 return False, "该主魂正在查询或出征"
@@ -241,16 +245,48 @@ async def start(ctx, identity_id):
             if not group:
                 return False, "请配置正魔大战使用的游戏群"
             now = time.time()
-            attempts = previous.get("query_attempts", 0) if previous.get("day") == day_key() else 0
+            same_day = previous.get("day") == day_key()
+            same_scope = same_day and (previous.get("chat_id"), previous.get("topic_id")) == (group, topic)
+            attempts = previous.get("query_attempts", 0) if same_day else 0
             run = {"members": members, "day": day_key(), "config": config, "entry": entry,
                    "group_role": config["group_role"], "chat_id": group, "topic_id": topic,
-                   "started_at": now, "phase": "querying", "expires_at": now + 90,
-                   "sent_commands": {}, "query_attempts": attempts + 1, "sequence": 0,
+                   "started_at": previous.get("started_at", now) if same_scope else now,
+                   "phase": "querying", "expires_at": now + 90,
+                   "sent_commands": copy.deepcopy(previous.get("sent_commands", {})) if same_scope else {},
+                   "query_attempts": attempts + 1, "sequence": previous.get("sequence", 0) if same_day else 0,
                    "meeting": copy.deepcopy(previous.get("meeting", {}))}
+            if same_scope and previous.get("opening_msg_id"):
+                run["opening_msg_id"] = previous["opening_msg_id"]
+            if same_scope:
+                for key in ("season", "faction", "meeting_at", "points", "status_done", "points_observed_at"):
+                    if key in previous:
+                        run[key] = copy.deepcopy(previous[key])
             ctx.runs()[root] = run
             ctx.save()
             ok = await send(ctx, run, ".正魔大战", "querying")
             return ok, "已查询正魔大战，收到本人的今日军情后按推荐出征" if ok else "查询未成功发送，稍后重新查询"
+
+
+async def record_march(ctx, run, event, reply_id, text, result):
+    """Owned terminal evidence can settle a timeout; replay never adds a delta twice."""
+    if run.get("march_receipt", {}).get("command_id") == reply_id:
+        return
+    was_done = run.get("daily_phase") == "done" or run.get("phase") == "done"
+    if result.get("personal_points") is not None and run.get("points") is not None and not run.get("status_done", run.get("done", False)):
+        # A later raid/defence or dungeon can change the real total independently.
+        run["estimated_points"] = run["points"] + result["personal_points"]
+    run.update(result)
+    run.update(done=True, daily_phase="done", daily_result=text,
+               march_receipt={"command_id": reply_id, "message_id": event.id,
+                              "event_at": event_time(event), "text": text})
+    meeting_active = run.get("phase") in MEETING_PHASES
+    if not meeting_active:
+        run.update(phase="done", result=text, finished_at=time.time())
+    ctx.save()
+    if not was_done:
+        await notice(ctx, run, text)
+    if not meeting_active:
+        await maybe_meeting(ctx, run)
 
 
 async def game_event(ctx, event, *, event_type="message"):
@@ -258,86 +294,104 @@ async def game_event(ctx, event, *, event_type="message"):
             or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None)):
         return False
     reply_id, top = reply_ids(event)
+    if not reply_id:
+        return False
     text = (getattr(event, "raw_text", "") or "").strip()
-    for root, run in list(ctx.runs().items()):
-        meeting = run.get("meeting", {})
-        if (meeting.get("registration_msg_id") == reply_id and reply_id
-                and event.chat_id == meeting.get("chat_id")
-                and (not top or top == meeting.get("topic_id"))
-                and event_time(event) >= meeting.get("registration_started_at", time.time()) - 1
-                and registration_result(text) in {"registered", "closed"}
-                and meeting.get("phase") == "held"):
-            # Late owned receipt can settle uncertainty without sending anything.
-            await close_meeting(ctx, run, registration_result(text), text)
-            return True
-        if (run.get("phase") not in ACTIVE_PHASES or run["chat_id"] != event.chat_id
-                or run["day"] != day_key() or event_time(event) < run["started_at"] - 1
-                or int(getattr(event, "id", 0) or 0) <= run.get("opening_msg_id", 0)
-                or not topic_matches(run, reply_id, top)):
-            continue
-        # Never infer personal state from someone else's query or a broadcast.
-        if str(reply_id) not in run["sent_commands"]:
-            continue
+    candidates = [(root, run) for root, run in list(ctx.runs().items())
+                  if event.chat_id in {run.get("chat_id"), run.get("meeting", {}).get("chat_id")}]
+    owned = [(root, run) for root, run in candidates if str(reply_id) in run["sent_commands"]
+             or reply_id == run.get("meeting", {}).get("registration_msg_id")]
+    # Known anchors never wait on another identity. For an early unknown ID,
+    # wait independently on in-flight sends, then require an exact owned anchor.
+    candidates = owned or [(root, run) for root, run in candidates if lock(root).locked()]
+    async def consume(root, run):
         async with lock(root):
-            sent = run["sent_commands"].get(str(reply_id))
-            if (not sent or sent["sequence"] != run["sequence"] or time.time() >= run["deadline"]
-                    or not ctx.enabled() or ctx.config() != run["config"]):
-                continue
-            if sent["command"] == ".正魔大战" and run["phase"] == "querying":
-                status = parse_status(text)
-                if status is not None and not status.get("unavailable"):
-                    run.update(status)
-                if status is None:
-                    await finish(ctx, run, "blocked", "未识别战况回复，未出征：" + text)
-                elif status.get("unavailable"):
-                    await finish(ctx, run, "unavailable", text)
-                elif status["done"]:
-                    run.update(status)
-                    await finish(ctx, run, "done", f"今日已出征，本季 {status['days']}/7 天，个人战功 {status['points']}")
-                elif status["needs_faction"]:
-                    faction = run["entry"].get("faction")
-                    if faction and not run.get("pledge_attempted"):
-                        run["pledge_attempted"] = True
-                        await send(ctx, run, ".投效 " + faction, "pledging")
-                    else:
-                        await finish(ctx, run, "skipped", "无阵营，按配置跳过今日出征；不会自动投效")
-                elif status["recommendation"]:
-                    run.update(status)
-                    await notice(ctx, run, f"{status['faction']}今日军情推荐【{status['recommendation']}】，准备出征")
-                    await send(ctx, run, ".出征 " + status["recommendation"], "marching")
-                else:
-                    await finish(ctx, run, "blocked", "未找到与本人阵营一致的“以【战术】应之”提示，未猜测出征打法")
-                return True
-            if sent["command"] == ".夺宝大会" and run["phase"] == "meeting_query":
-                run["meeting"].update(panel=text, panel_msg_id=event.id, checked_at=time.time())
-                result = registration_result(text)
-                if result:
-                    await close_meeting(ctx, run, result, text)
-                elif "夺宝大会" not in text or time.time() >= run.get("meeting_at", 0):
-                    await close_meeting(ctx, run, "held", "大会状态未确认，未报名：" + text)
-                else:
-                    # Persist the one-shot reservation before a potentially uncertain send.
-                    run["meeting"].update(registration_attempted=True, phase="registering")
-                    ctx.save()
-                    await send(ctx, run, ".赴会", "registering")
-                return True
-            if sent["command"] == ".赴会" and run["phase"] == "registering":
-                await close_meeting(ctx, run, registration_result(text) or "held", text)
-                return True
-            if sent["command"].startswith(".投效 ") and run["phase"] == "pledging":
-                if re.search(r"你投效了(魔道|正道)|你本季已在(魔道|正道)", text):
-                    await send(ctx, run, ".正魔大战", "querying")
-                else:
-                    await finish(ctx, run, "blocked", "投效未获确认：" + text)
-                return True
-            if sent["command"].startswith(".出征 ") and run["phase"] == "marching":
-                result = parse_result(text)
-                if result:
-                    run.update(result)
-                    await finish(ctx, run, "done", text)
-                else:
-                    await finish(ctx, run, "blocked", "出征未获确认：" + text)
-                return True
+            if ctx.runs().get(root) is not run:
+                return False
+            return await _run_event(ctx, run, event, reply_id, top, text)
+    return any(await asyncio.gather(*(consume(root, run) for root, run in candidates)))
+
+
+async def _run_event(ctx, run, event, reply_id, top, text):
+    meeting = run.get("meeting", {})
+    if (meeting.get("registration_msg_id") == reply_id and reply_id
+            and event.chat_id == meeting.get("chat_id")
+            and (not top or top == meeting.get("topic_id"))
+            and event_time(event) >= meeting.get("registration_started_at", time.time()) - 1
+            and registration_result(text) in {"registered", "closed"}
+            and meeting.get("phase") == "held"):
+        # Late owned receipt can settle uncertainty without sending anything.
+        await close_meeting(ctx, run, registration_result(text), text)
+        return True
+    sent = run["sent_commands"].get(str(reply_id))
+    if (not sent or run["chat_id"] != event.chat_id or run["day"] != day_key()
+            or day_key(event_time(event)) != run["day"]
+            or event_time(event) < run["started_at"] - 1
+            or int(getattr(event, "id", 0) or 0) <= reply_id
+            or not topic_matches(run, reply_id, top)):
+        return False
+    # Terminal receipts close only the march they reply to, even after a
+    # restart, timeout, config change or a newer status query. Stale status
+    # panels must never start a new action.
+    if sent["command"].startswith(".出征 "):
+        result = parse_result(text)
+        if result:
+            await record_march(ctx, run, event, reply_id, text, result)
+            return True
+    if (run.get("phase") not in ACTIVE_PHASES or sent["sequence"] != run["sequence"]
+            or time.time() >= run["deadline"] or not ctx.enabled() or ctx.config() != run["config"]):
+        return False
+    if sent["command"] == ".正魔大战" and run["phase"] == "querying":
+        status = parse_status(text)
+        if status is not None and not status.get("unavailable"):
+            run.update(status)
+            run.update(status_done=status["done"], points_observed_at=event_time(event))
+        if status is None:
+            await finish(ctx, run, "blocked", "未识别战况回复，未出征：" + text)
+        elif status.get("unavailable"):
+            await finish(ctx, run, "unavailable", text)
+        elif status["done"]:
+            run.update(status)
+            await finish(ctx, run, "done", f"今日已出征，本季 {status['days']}/7 天，个人战功 {status['points']}")
+        elif status["needs_faction"]:
+            faction = run["entry"].get("faction")
+            if faction and not run.get("pledge_attempted"):
+                run["pledge_attempted"] = True
+                await send(ctx, run, ".投效 " + faction, "pledging")
+            else:
+                await finish(ctx, run, "skipped", "无阵营，按配置跳过今日出征；不会自动投效")
+        elif status["recommendation"]:
+            run.update(status)
+            await notice(ctx, run, f"{status['faction']}今日军情推荐【{status['recommendation']}】，准备出征")
+            await send(ctx, run, ".出征 " + status["recommendation"], "marching")
+        else:
+            await finish(ctx, run, "blocked", "未找到与本人阵营一致的“以【战术】应之”提示，未猜测出征打法")
+        return True
+    if sent["command"] == ".夺宝大会" and run["phase"] == "meeting_query":
+        run["meeting"].update(panel=text, panel_msg_id=event.id, checked_at=time.time())
+        result = registration_result(text)
+        if result:
+            await close_meeting(ctx, run, result, text)
+        elif "夺宝大会" not in text or time.time() >= run.get("meeting_at", 0):
+            await close_meeting(ctx, run, "held", "大会状态未确认，未报名：" + text)
+        else:
+            # Persist the one-shot reservation before a potentially uncertain send.
+            run["meeting"].update(registration_attempted=True, phase="registering")
+            ctx.save()
+            await send(ctx, run, ".赴会", "registering")
+        return True
+    if sent["command"] == ".赴会" and run["phase"] == "registering":
+        await close_meeting(ctx, run, registration_result(text) or "held", text)
+        return True
+    if sent["command"].startswith(".投效 ") and run["phase"] == "pledging":
+        if re.search(r"你投效了(魔道|正道)|你本季已在(魔道|正道)", text):
+            await send(ctx, run, ".正魔大战", "querying")
+        else:
+            await finish(ctx, run, "blocked", "投效未获确认：" + text)
+        return True
+    if sent["command"].startswith(".出征 ") and run["phase"] == "marching":
+        await finish(ctx, run, "blocked", "出征未获确认：" + text)
+        return True
     return False
 
 
