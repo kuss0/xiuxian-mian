@@ -93,6 +93,16 @@ def test_accounting_boundaries(snapshot, accounting, reason):
     assert observer.yinluo_daily_health(state.get, now)["reason"] == reason
 
 
+def test_previous_days_unanswered_sacrifice_is_visible_as_stale(snapshot):
+    now, state = snapshot
+    state["yinluo_accounting"]["operations"] = [{
+        "phase": "sent", "command": ".每日献祭", "source_module": "阴罗宗",
+        "beneficiary": {}, "budget": {"costs": {}, "exclusive": []},
+        "msg_id": 100, "chat_id": -10065001, "sent_at": now - 2 * 86400,
+    }]
+    assert observer.yinluo_daily_health(state.get, now)["reason"] == "stale_income_pending"
+
+
 @pytest.mark.parametrize(("minutes", "reason"), [(0, "due"), (10, "due"), (11, "due"), (12, "soothe_starves_daily")])
 def test_midnight_grace_does_not_use_old_due_timestamp(snapshot, minutes, reason):
     _, state = snapshot

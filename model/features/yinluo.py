@@ -24,6 +24,7 @@ from ..resource_accounting import compare_points
 from ..verified_event import VerifiedGameEvent
 from ..yinluo_resource_book import yinluo_resource_balance
 from ..yinluo_resource_replay import owned_yinluo_log_events, read_yinluo_log_batch
+from ..yinluo_recovery_policy import stale_daily_income
 from ..message_keys import get_message_record
 from ..persisted_state import PersistedState
 from ..runtime import classify_game_send_block, send_game_command
@@ -215,6 +216,7 @@ def _default_yinluo_observation():
         "auto_soothe_pending": {},
         "legacy_pending_invalid": False,
         "resource_recovery_min_sha": 0,
+        "income_recovery_probe_day": "",
         "auto_config": _default_yinluo_auto_config(),
         "recent": [],
     }
@@ -306,6 +308,7 @@ def normalize_yinluo_observation(value=_MISSING_OBSERVATION):
         except (TypeError, ValueError):
             observed[key] = 0
     observed["last_daily_sacrifice_day"] = str(observed.get("last_daily_sacrifice_day") or "").strip()
+    observed["income_recovery_probe_day"] = str(observed.get("income_recovery_probe_day") or "").strip()
     for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_soothe_count", "last_soothe_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain", "resource_recovery_min_sha"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
@@ -1405,7 +1408,7 @@ def recover_yinluo_resources(identity_id, now, *, entries=None):
     value, _reason = accounting.read_accounting(identity_id)
     if value is None:
         return False
-    active = [item for item in value["operations"] if item["phase"] in accounting.LIVE_PHASES]
+    active = accounting.blocking_operations(value)
     for operation in active:
         accounting.adopt_pending_receipt(identity_id, operation["op_id"])
     if entries is None:
@@ -2053,7 +2056,7 @@ async def run_yinluo_scheduler(now):
     resource_state, _resource_error = accounting.read_accounting(identity_id)
     if (resource_state is not None and now >= float(observed.get("auto_next_time", 0) or 0)
             and (resource_state["hold"] == "legacy_pending"
-                 or any(operation["phase"] in accounting.LIVE_PHASES for operation in resource_state["operations"]))):
+                 or accounting.blocking_operations(resource_state))):
         recover_yinluo_resources(identity_id, now)
         observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     # Local read cleanup remains possible while a financial hold prevents work.
@@ -2073,7 +2076,24 @@ async def run_yinluo_scheduler(now):
                 or now >= float(observed.get("auto_next_time", 0) or 0)):
             _set_yinluo_auto_wait(observed, now, action, now + YINLUO_AUTO_BLOCK_BACKOFF_SEC, error)
         return
-    if any(operation["phase"] in accounting.LIVE_PHASES for operation in resource_state["operations"]):
+    blockers = accounting.blocking_operations(resource_state)
+    if blockers:
+        # Silence from a previous day's cost-free income must not lock the
+        # entire sect forever. Request at most one native balance per game day;
+        # retain the original operation, outcome and all resource ledgers.
+        if (all(stale_daily_income(operation, now) for operation in blockers)
+                and observed.get("income_recovery_probe_day") != get_day_key(now)
+                and not any(operation["command"] == CMD_YINLUO_BANNER
+                            and get_day_key(operation["started_at"]) == get_day_key(now)
+                            for operation in resource_state["operations"])):
+            plan = build_yinluo_manual_plan("banner", now=now)
+            if plan.get("allowed"):
+                observed["income_recovery_probe_day"] = get_day_key(now)
+                state["yinluo_observation"] = observed
+                if not save_state():
+                    return
+                await _execute_yinluo_plan(plan, now, send_as_id=identity_id, automatic=True)
+                return
         if now < float(observed.get("auto_next_time", 0) or 0):
             return
         _set_yinluo_auto_wait(observed, now, "resource_pending", now + YINLUO_AUTO_CALIBRATE_RETRY_SEC,

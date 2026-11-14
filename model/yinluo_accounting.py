@@ -13,6 +13,7 @@ from uuid import uuid4
 from . import cultivation_accounting as cultivation
 from . import persistence, resource_accounting as scalar
 from . import yinluo_archive as archive
+from .yinluo_recovery_policy import blocking_operations
 from .message_keys import find_message_key, message_key_parts
 from .profile_observation import timestamp
 from .state import (
@@ -867,9 +868,9 @@ def admission_reason(identity_id, command, *, exclude=""):
         return reason or "invalid_command"
     if parsed.action != "banner" and (value["hold"] or value["book"]["gap"]):
         return value["hold"] or value["book"]["gap"]["reason"]
-    if any(item["phase"] in LIVE_PHASES and item["op_id"] != exclude and (
+    if any(item["op_id"] != exclude and (
         parsed.action != "banner" or parse_yinluo_resource_command(item["command"]).action == "banner"
-    ) for item in value["operations"]):
+    ) for item in blocking_operations(value)):
         return "yinluo_command_in_flight"
     if parsed.action != "banner" and _open_native_commands(value):
         return "yinluo_native_outcome_unknown"

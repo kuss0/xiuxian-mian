@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from model.audit_summary_health import read_summary_health
+from model.yinluo_recovery_policy import blocking_operations, stale_daily_income
 
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 OPTIONAL_INACTIVE_SERVICES = {
@@ -1755,7 +1756,14 @@ def yinluo_daily_health(value_for, now: float, *, scheduling_blocked: bool = Fal
         "prepared", "sent", "unknown", "complete", "unsent", "read_expired",
     } for op in operations):
         return result
-    if (any(op["phase"] in {"prepared", "sent", "unknown"} for op in operations)
+    try:
+        blockers = blocking_operations(accounting)
+    except (AttributeError, TypeError, KeyError, ValueError):
+        return result
+    if any(stale_daily_income(op, now) for op in blockers):
+        result["reason"] = "stale_income_pending"
+        return result
+    if (blockers
             or any(observed.get(key) for key in ("auto_collect_pending", "auto_refine_pending", "auto_soothe_pending"))
             or observed.get("last_result") == "pending"
             or action in {"pending", "resource_pending"}):
@@ -1853,7 +1861,7 @@ def build_module_summary(
                 add_module_detail(details, "每日献祭", daily["reason"])
                 add_module_detail(details, "自动动作", daily["action"])
                 add_module_detail(details, "等待原因", daily["error"])
-                warn = daily["reason"] == "soothe_starves_daily"
+                warn = daily["reason"] in {"soothe_starves_daily", "stale_income_pending"}
                 active = daily["reason"] in {"pending", "resource_hold", "scheduling_blocked", "evidence_missing"}
 
             for field in spec.get("json_fields", ()):
