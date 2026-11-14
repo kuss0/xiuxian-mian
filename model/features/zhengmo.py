@@ -160,7 +160,7 @@ async def maybe_meeting(ctx, run):
 
 
 def registration_result(text):
-    if re.search(r"(?:你(?:已经?|本季已)|(?:本季)?已)报名|报名成功|已(?:经)?报过名|你已赴会", text):
+    if re.search(r"你报名了燕家堡夺宝大会|(?:你(?:已经?|本季已)|(?:本季)?已)报名|报名成功|已(?:经)?报过名|你已赴会", text):
         return "registered"
     if re.search(r"大会(?:已结束|已经结束|已开赛)|报名(?:已截止|已经截止)|开赛后不能报名|本季夺宝大会已", text):
         return "closed"

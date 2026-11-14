@@ -1,10 +1,13 @@
 """Bind upstream daily war logic to local identities, occupancy and send queue."""
+import json
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from .activity_occupancy import get_activity_block_reason
 from .app_hunt import hunt_target
-from .config import get_registered_client
+from .config import MESSAGES_DIR, TZ_LOCAL, get_registered_client
 from .features import zhengmo
 from .persistence import mark_dirty, save_state
 from .runtime import get_last_game_send_block, send_game_command, send_audit_log
@@ -12,6 +15,8 @@ from .state import (
     get_expedition_config, get_expedition_run_state, get_game_bot_ids, get_global_enabled,
     get_identity_account, get_identity_enabled, get_identity_ids, get_send_as_profile,
 )
+
+_RECOVERY_PENDING = True
 
 
 def _enabled(identity):
@@ -74,10 +79,51 @@ async def handle_zhengmo_game_event(event, **kwargs):
 
 
 async def run_zhengmo_scheduler(now):
-    await zhengmo.scheduler(_context(), now)
+    global _RECOVERY_PENDING
+    ctx = _context()
+    if _RECOVERY_PENDING:
+        await _recover_meeting_receipts(ctx, now)
+        _RECOVERY_PENDING = False
+    await zhengmo.scheduler(ctx, now)
+
+
+async def _recover_meeting_receipts(ctx, now):
+    """Replay only held registration receipts from existing local logs; never query or resend."""
+    pending = [run.get("meeting", {}) for run in ctx.runs().values()
+               if run.get("meeting", {}).get("phase") == "held"
+               and run["meeting"].get("registration_msg_id") and run["meeting"].get("registration_started_at")]
+    if not pending:
+        return
+    local = datetime.fromtimestamp(now, TZ_LOCAL)
+    first = datetime.fromtimestamp(min(m["registration_started_at"] for m in pending), TZ_LOCAL)
+    days = min(7, max(0, (local.date() - first.date()).days))
+    anchors = {(m["chat_id"], m["registration_msg_id"]) for m in pending}
+    for offset in range(days, -1, -1):
+        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
+        if not path.is_file():
+            continue
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                if not any(str(mid) in line for _, mid in anchors):
+                    continue
+                try:
+                    row = json.loads(line)
+                    if (row.get("chat_id"), row.get("reply_to_msg_id")) not in anchors:
+                        continue
+                    event = SimpleNamespace(raw_text=str(row.get("text") or ""), id=row.get("message_id", 0),
+                        chat_id=row.get("chat_id"), sender_id=row.get("sender_id"),
+                        reply_to_msg_id=row.get("reply_to_msg_id"),
+                        reply_to=SimpleNamespace(reply_to_top_id=row.get("topic_id", 0)),
+                        date=datetime.fromtimestamp(float(row.get("server_event_at") or 0), TZ_LOCAL),
+                        forwarded=row.get("forwarded", False))
+                except (ValueError, TypeError):
+                    continue
+                await zhengmo.game_event(ctx, event, event_type=row.get("event_type", "message"))
 
 
 def reset_zhengmo_runtime_on_startup():
+    global _RECOVERY_PENDING
+    _RECOVERY_PENDING = True
     for run in _context().runs().values():
         if run.get("phase") in zhengmo.MEETING_PHASES:
             run.setdefault("meeting", {}).update(phase="held", result="程序重启，大会结果待核对，不重放报名")

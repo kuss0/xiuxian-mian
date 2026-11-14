@@ -1,6 +1,7 @@
 """Daily war ownership, recommendation, quota and uncertain-send recovery."""
 import asyncio
 import copy
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -193,6 +194,7 @@ def test_adapter_classifies_exact_telegram_denial_but_not_unknown_network_error(
 
 MEETING_STATUS = STATUS.replace("第 2/14 天", "第 3/14 天") + "\n燕家堡夺宝大会 11-15 21:00：报名 魔道 1 / 正道 1；押注 魔道 40000 / 正道 100 灵石。.赴会 / .押注"
 MEETING_PANEL = "【燕家堡夺宝大会】11-15 21:00\n报名 魔道 1 / 正道 1\n.赴会 报名"
+LIVE_REGISTRATION = "你报名了燕家堡夺宝大会（魔道已有 2 人报名）。开赛时每方按本季战功取前 5 名出战。"
 
 
 async def open_meeting(env):
@@ -208,6 +210,7 @@ def test_meeting_date_and_season_are_read_from_real_panel_wording(env):
     assert war.day_key(status["meeting_at"]) == "2026-11-15"
     assert datetime.fromtimestamp(status["meeting_at"], war.TZ).hour == 21
     assert status["fixed_faction"]
+    assert war.registration_result(LIVE_REGISTRATION) == "registered"
     # A December panel may announce a January tournament in the next year.
     now = datetime(2026, 12, 30, tzinfo=war.TZ).timestamp()
     assert war.day_key(war.parse_status(MEETING_STATUS.replace("11-15", "01-02"), now)["meeting_at"]) == "2027-01-02"
@@ -297,6 +300,24 @@ def test_late_previous_day_registration_cannot_complete_todays_march(env):
         await war.game_event(env.ctx, event(env, "你已报名本季夺宝大会。", reply=104))
         assert env.runs["1"]["meeting"]["phase"] == "registered"
         assert env.runs["1"]["phase"] == "querying"
+    asyncio.run(run())
+
+
+def test_startup_recovers_real_registration_from_local_log_without_resending(env, monkeypatch, tmp_path):
+    async def run():
+        await open_meeting(env)
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        env.now[0] += 61
+        await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["meeting"]["phase"] == "held"
+        row = {"event_type": "message", "chat_id": -100, "reply_to_msg_id": 104, "message_id": 110,
+               "topic_id": 42, "sender_id": 99, "server_event_at": env.now[0] - 50, "text": LIVE_REGISTRATION}
+        path = tmp_path / f"{war.day_key(env.now[0])}.log"
+        path.write_text("invalid JSON\n" + json.dumps({**row, "chat_id": -101}) + "\n" + json.dumps(row) + "\n")
+        monkeypatch.setattr(app_zhengmo, "MESSAGES_DIR", str(tmp_path))
+        await app_zhengmo._recover_meeting_receipts(env.ctx, env.now[0])
+        assert env.runs["1"]["meeting"]["phase"] == "registered"
+        assert len(env.sends) == 4
     asyncio.run(run())
 
 
