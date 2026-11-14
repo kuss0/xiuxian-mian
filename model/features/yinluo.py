@@ -26,6 +26,7 @@ from ..yinluo_resource_book import yinluo_resource_balance
 from ..yinluo_resource_replay import owned_yinluo_log_events, read_yinluo_log_batch
 from ..yinluo_recovery_policy import stale_daily_income
 from ..message_keys import get_message_record
+from ..profile_observation import timestamp
 from ..persisted_state import PersistedState
 from ..runtime import classify_game_send_block, send_game_command
 from ..state import (
@@ -2038,6 +2039,18 @@ def _capacity_message(capacity):
     return f"阴罗账本容量待核对：{status}" + (f"，缺少{needed}的原生覆盖。" if needed else "。")
 
 
+async def _request_native_cultivation_balance(identity_id, now):
+    identity = get_identity_state(identity_id)
+    last_requested = timestamp(identity.get("identity_info_last_requested_at"))
+    if (identity.get("xiuwei_accounting", {}) != {}
+            or get_identity_account(identity_id) != identity_id
+            or (last_requested > 0 and get_day_key(last_requested) >= get_day_key(now))):
+        return
+    from ..control import refresh_identity_info
+    await refresh_identity_info(identity_id, source="yinluo_balance", include_auxiliary=False)
+    return True
+
+
 async def run_yinluo_scheduler(now):
     now = float(now if now is not None else time.time())
     identity_id = get_current_identity_id()
@@ -2107,6 +2120,12 @@ async def run_yinluo_scheduler(now):
         observed["resource_recovery_min_sha"] = 0
         recovery_required = 0
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
+    if (observed.get("auto_last_action") in {"soothe", "convert"}
+            and str(observed.get("auto_last_error") or "").startswith("修为账本待校准")):
+        if cultivation_balance(identity_id)["status"] == "ready":
+            auto_next_time = 0
+        elif await _request_native_cultivation_balance(identity_id, now):
+            return
     if auto_next_time > 0 and now < auto_next_time:
         # A low, known sha pool is a higher-priority recovery action than an
         # old wait derived from blood-forest or demon-summon cooldowns.
@@ -2208,6 +2227,11 @@ async def run_yinluo_scheduler(now):
             float(plan.get("retry_after", 0) or 0) or now + YINLUO_AUTO_BLOCK_BACKOFF_SEC,
             plan.get("reason") or "阴罗宗自动调度未满足条件",
         )
+        # An empty cultivation journal needs a native profile snapshot, not a
+        # guessed API balance. Reuse the owned refresh and its receipt recovery;
+        # at most one automatic request per game day, only on real accounts.
+        if action in {"soothe", "convert"}:
+            await _request_native_cultivation_balance(identity_id, now)
         return
 
     await _execute_yinluo_plan(plan, now, send_as_id=get_current_identity_id(), automatic=True)

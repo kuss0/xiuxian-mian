@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import time
 
 from telethon import functions
 
@@ -23,6 +24,7 @@ from ..config import (
 )
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..state import get_game_bot_ids
+from ..cave_external_limits import reserve_request as reserve_external_request
 from ..webapp_core import (
     _response_retry_after_sec,
     MiniAppAdapter,
@@ -2499,6 +2501,14 @@ async def run_cave_external_action_production_flow(
             init_data=init_data,
             adapter=adapter,
         )
+        require_miniapp_operation(operation_check)
+        # Injected protocol transports do not consume the production endpoint.
+        if transport is None:
+            wait = reserve_external_request(identity_id, time.time())
+            if wait > 0:
+                return {"ok": False, "status": "local_rate_limit",
+                        "error": "洞府外部入口等待同账号请求间隔", "retry_after_sec": wait,
+                        "expected_wait": True, "events": []}
         def run(operation):
             return execute_miniapp_http_request(
                 request,

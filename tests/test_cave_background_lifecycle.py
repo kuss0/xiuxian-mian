@@ -19,6 +19,25 @@ BACKGROUND_ACTIONS = (
 )
 
 
+@pytest.mark.parametrize("fault", ["", "prior_day", "rebound", "unknown", "pending"])
+def test_fate_wait_deadline_survives_empty_worker_retry_map(background, fault):
+    h = background
+    record = {"challenge_date": ui.get_day_key(h.now[0]), "status": "waiting_deep_retreat",
+              "owner_account_id": h.identity_id, "pending": {}, "next_check_at": h.now[0] + 1800}
+    if fault == "prior_day":
+        record["challenge_date"] = ui.get_day_key(h.now[0] - 86400)
+    elif fault == "rebound":
+        record["owner_account_id"] += 1
+    elif fault == "unknown":
+        record["status"] = "settle_unknown"
+    elif fault == "pending":
+        record["pending"] = {"action": "settle"}
+    state_module.set_miniapp_state_records({f"{h.identity_id}:fate_cards": {"state": record}})
+    assert ui._cave_public_background_action_due("fate_cards", h.identity_id, h.now[0]) is bool(fault)
+    record["next_check_at"] = h.now[0]
+    assert ui._cave_public_background_action_due("fate_cards", h.identity_id, h.now[0])
+
+
 @pytest.fixture
 def background(monkeypatch):
     saved = copy.deepcopy(state_module._meta_state)

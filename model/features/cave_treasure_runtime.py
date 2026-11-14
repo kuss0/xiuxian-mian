@@ -139,6 +139,8 @@ def _miniapp_result_extra(extra=None, *results):
         if not isinstance(result, dict):
             pending.extend(result)
             continue
+        if result.get("status") == "local_rate_limit":
+            merged["expected_wait"] = True
         if (
             result.get("shared_rate_limit") is True
             or str(result.get("error") or "").strip().lower() == "external_action_rate_limited"
@@ -1778,7 +1780,7 @@ def _fate_cards_pending_belongs_to_prior_day(previous, pending, current, account
 def _record_fate_cards_state(
     identity_id, fate_state, *, now, status, reward=None, meditation=None, deep_retreat=None,
     base_record=None, pending=None, receipts=None, owner_account_id=None, unconfirmed_prerequisite=None,
-    prior_day_unknown=None,
+    prior_day_unknown=None, next_check_at=0,
 ):
     fate_state = dict(fate_state or {})
     quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
@@ -1835,6 +1837,7 @@ def _record_fate_cards_state(
         "meditation": dict(meditation or {}),
         "deep_retreat": dict(deep_retreat or {}),
         "gains": cumulative_gains,
+        "next_check_at": float(next_check_at),
     }
     if base_record is not None:
         payload.update({
@@ -4075,6 +4078,7 @@ class _CaveFateCardsOperation:
             receipts=self.receipts, owner_account_id=self.owner.account_id,
             unconfirmed_prerequisite=self.unconfirmed_prerequisite,
             prior_day_unknown=self.prior_day_unknown,
+            next_check_at=kwargs.get("next_check_at", 0),
         )
         self.record = deepcopy(get_miniapp_state_records().get(self.record_key) or {})
         return result
@@ -4323,13 +4327,14 @@ async def _run_cave_public_fate_cards_owned(
             deep_summary = dict(operation.deep_summary)
             if deep:
                 deep_summary.update({key: deep.get(key) for key in ("active", "remaining_seconds", "end_ms")})
-            record = operation.record_state(
-                identity_id, operation.fate_state, now=now, status=status, deep_retreat=deep_summary,
-            )
             # Other activities can complete the quest before deep retreat ends.
             retry = _fate_cards_retry_after_sec(operation.fate_state)
             if deep:
                 retry = min(retry, _cave_public_deep_retry_after(deep, now=now))
+            record = operation.record_state(
+                identity_id, operation.fate_state, now=now, status=status, deep_retreat=deep_summary,
+                next_check_at=now + retry,
+            )
             console_log(message, scope="identity", send_as_id=identity_id, limit=240)
             return {"ok": True, "message": message, "extra": {
                 "retry_after_sec": retry, "record_key": record.get("record_key", ""),

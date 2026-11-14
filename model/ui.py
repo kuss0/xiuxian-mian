@@ -43,6 +43,7 @@ from .storage_bag_api_payload import (
 from .message_keys import message_key_parts
 from .config_values import coerce_bool as _coerce_ui_bool
 from .profile_observation import apply_profile_observation, timestamp as profile_timestamp
+from .cave_external_limits import next_request_at as cave_external_next_request_at
 
 try:
     import segno
@@ -8432,8 +8433,12 @@ async def _run_cave_public_entry_batch(
             if not owns_batch():
                 return
             shared_pause = isinstance(extra, dict) and extra.get("shared_rate_limit")
-            if not ok and (_is_cave_public_batch_pause(message) or shared_pause):
-                pause_reason = "共享入口限流" if shared_pause else "全局暂停"
+            local_wait = (
+                isinstance(extra, dict) and extra.get("expected_wait") is True
+                and miniapp_retry_after_sec(extra) > 0
+            )
+            if not ok and (_is_cave_public_batch_pause(message) or shared_pause or local_wait):
+                pause_reason = "共享入口限流" if shared_pause else "同账号入口间隔" if local_wait else "全局暂停"
                 retry_result = f"{pause_reason}，已完成 {completed}/{total}，等待恢复：{display} {action}"
                 _set_cave_public_batch_state(
                     running=False,
@@ -8456,9 +8461,12 @@ async def _run_cave_public_entry_batch(
                     steps=steps,
                     failed_steps=failed_steps,
                     outcomes=outcomes,
-                    retry_at=0,
+                    retry_at=time.time() + miniapp_retry_after_sec(extra) if local_wait else 0,
                     retry_reason=next(iter(trial_recovery_hold_reasons), ""),
                 ):
+                    return
+                if local_wait and not shared_pause:
+                    console_log(retry_result, scope="global")
                     return
                 await send_audit_log(
                     f"⏸️ 洞府公共入口批次遇到{pause_reason}，已完成 {completed}/{total}；"
@@ -9045,6 +9053,8 @@ def _cave_public_background_action_due(action, identity_id, now):
                     return False
             return True
         if action == "fate_cards":
+            if cave_external_next_request_at(identity_id) > now:
+                return False
             daily_done_key = ("fate_cards", get_day_key(now), int(identity_id))
             if daily_done_key in _cave_public_background_daily_done:
                 return False
@@ -9053,6 +9063,11 @@ def _cave_public_background_action_due(action, identity_id, now):
             challenge_date = str(record_state.get("challenge_date") or "")
             status = str(record_state.get("status") or "").strip().lower()
             if challenge_date == get_day_key(now) and status in {"settled", "expired"}:
+                return False
+            if (challenge_date == get_day_key(now) and status.startswith("waiting_")
+                    and record_state.get("owner_account_id") == get_identity_account(identity_id)
+                    and not record_state.get("pending")
+                    and profile_timestamp(record_state.get("next_check_at")) > now):
                 return False
             return True
         if action == "fishing":

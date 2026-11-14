@@ -210,3 +210,52 @@ def test_scheduler_never_automatically_calibrates_spending_silence(runtime, monk
     with state_module.use_identity(IDENTITY):
         asyncio.run(yinluo.run_yinluo_scheduler(NOW))
     sender.assert_not_awaited()
+
+
+def test_empty_cultivation_calibrates_once_per_day_even_during_old_backoff(runtime, monkeypatch):
+    from model import control
+    runtime["xiuwei_accounting"] = {}
+    runtime["yinluo_observation"].update(
+        auto_last_action="soothe", auto_last_error="修为账本待校准，不发送安抚幡灵。",
+        auto_next_time=NOW + 3600,
+    )
+    monkeypatch.setattr(yinluo, "get_identity_account", lambda _identity: IDENTITY)
+
+    async def refresh(identity_id, **options):
+        assert identity_id == IDENTITY and options["include_auxiliary"] is False
+        runtime["identity_info_last_requested_at"] = NOW
+        return True, "sent"
+
+    reader = AsyncMock(side_effect=refresh)
+    monkeypatch.setattr(control, "refresh_identity_info", reader)
+    with state_module.use_identity(IDENTITY):
+        asyncio.run(yinluo.run_yinluo_scheduler(NOW))
+        asyncio.run(yinluo.run_yinluo_scheduler(NOW + 1))
+    assert reader.await_count == 1
+    assert persistence.save_state()
+    assert persistence.load_state()
+    asyncio.run(yinluo._request_native_cultivation_balance(IDENTITY, NOW + 2))
+    assert reader.await_count == 1
+
+
+def test_cultivation_calibration_never_queries_channel_identities(runtime, monkeypatch):
+    from model import control
+    runtime["xiuwei_accounting"] = {}
+    monkeypatch.setattr(yinluo, "get_identity_account", lambda _identity: IDENTITY + 1)
+    reader = AsyncMock()
+    monkeypatch.setattr(control, "refresh_identity_info", reader)
+    asyncio.run(yinluo._request_native_cultivation_balance(IDENTITY, NOW))
+    reader.assert_not_awaited()
+
+
+def test_verified_cultivation_resumes_soothe_without_old_error_backoff(runtime, monkeypatch):
+    observed = runtime["yinluo_observation"]
+    observed.update(auto_last_action="soothe", auto_last_error="修为账本待校准，不发送安抚幡灵。",
+                    auto_next_time=NOW + 3600, last_observed_at=NOW, exhausted_slot_numbers=[1])
+    observed["auto_config"] = {key: key == "soothe" for key in yinluo.YINLUO_AUTO_ACTION_KEYS}
+    planned = AsyncMock()
+    monkeypatch.setattr(yinluo, "_execute_yinluo_plan", planned)
+    with state_module.use_identity(IDENTITY):
+        asyncio.run(yinluo.run_yinluo_scheduler(NOW))
+    assert planned.await_count == 1
+    assert planned.await_args.args[0]["command"] == ".安抚幡灵 1"

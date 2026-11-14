@@ -349,6 +349,7 @@ def test_fate_progress_recheck_does_not_wait_for_long_deep_retreat(env, monkeypa
     assert not result["extra"].get("terminal_skip")
     row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
     assert row["status"] == "waiting_deep_retreat"
+    assert row["next_check_at"] == NOW + expected
     assert row["snapshot"]["quest"]["progress"] == 24
     env.action.assert_not_awaited()
     deep_action.assert_not_awaited()

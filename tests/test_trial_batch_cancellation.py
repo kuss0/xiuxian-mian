@@ -58,6 +58,38 @@ def assert_prefix(config, *, cursor=1, succeeded=1, failed=0):
     assert config[PREFIX + "outcomes"]["trial"]["gains"] == {"trace": 7}
 
 
+def test_local_entry_spacing_keeps_step_retryable_without_repeating_rewards(batch, monkeypatch):
+    now = 1_791_228_600.0
+    monkeypatch.setattr(ui.time, "time", lambda: now)
+    batch.action.side_effect = [
+        (True, "complete", deepcopy(GAIN)),
+        (False, "洞府天机试炼动态入口获取失败", {"expected_wait": True, "retry_after_sec": 75}),
+    ]
+    asyncio.run(run_batch())
+    config = state_module.get_miniapp_auto_config()
+    assert_prefix(config)
+    assert config[PREFIX + "retry_at"] == now + 75
+    assert not config[PREFIX + "retry_reason"]
+    assert not config[PREFIX + "failed_steps"]
+    assert not config.get("cave_public_shared_retry_at")
+    assert batch.action.await_count == 2
+    batch.notify.assert_not_awaited()
+    resume = ui._trial_daily_batch_resume_state(CONTEXT)
+    assert resume["cursor"] == 1
+    batch.action.side_effect = None
+    batch.action.return_value = (True, "complete", deepcopy(GAIN))
+    asyncio.run(run_batch(
+        resume_cursor=resume["cursor"], initial_completed=resume["completed"],
+        initial_succeeded=resume["succeeded"], initial_failed=resume["failed"],
+        initial_failed_steps=resume["failed_steps"], initial_outcomes=resume["outcomes"],
+        steps_override=resume["steps"],
+    ))
+    config = state_module.get_miniapp_auto_config()
+    assert config[PREFIX + "status"] == "completed"
+    assert config[PREFIX + "outcomes"]["trial"]["gains"] == {"trace": 21}
+    assert [call.args[0] for call in batch.action.await_args_list] == [1001, 1002, 1002, 1003]
+
+
 @pytest.mark.parametrize("cancel", [
     asyncio.CancelledError(),
     MiniAppFlowCancelled({"ok": True, "extra": GAIN}),
