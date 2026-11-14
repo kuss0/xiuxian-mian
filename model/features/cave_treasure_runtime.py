@@ -33,11 +33,11 @@ from ..timing import fmt_abs_ts, get_day_key
 from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppRequestBudget, miniapp_retry_after_sec, require_miniapp_operation
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tianxing, tree_runtime, yinluo, yuanying
 from .small_world import (
-    SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
     _apply_small_world_panel_snapshot,
     _calc_refine_amount,
     _parse_wait_from_text,
     _retire_prayer_check,
+    _should_preach,
     _update_snapshot_field,
 )
 from .cave_treasure_miniapp import (
@@ -2819,9 +2819,9 @@ def _plan_cave_public_small_world_action(overview, *, now=None):
         return {"action": "collect", "harvest_due": True, "reason": "MiniApp 8 小时收割到期"}
 
     if state.get("small_world_preach_enabled") and int(small_world.get("edict_remaining_seconds", 0) or 0) <= 0:
-        faith = int(small_world.get("faith", 0) or 0)
-        faith_cap = int(small_world.get("faith_cap", 100) or 100)
-        if faith > 0 and faith_cap > 0 and faith / faith_cap <= SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER:
+        faith = small_world.get("faith")
+        faith_cap = small_world.get("faith_cap", 100)
+        if _should_preach({"faith": faith, "faith_max": faith_cap}):
             return {
                 "action": "miracle_sermon",
                 "harvest_due": harvest_due,

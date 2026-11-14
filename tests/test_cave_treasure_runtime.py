@@ -3123,6 +3123,21 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("manifest", manifest["action"])
         self.assertEqual("miracle_sermon", sermon["action"])
 
+    def test_cave_public_small_world_recovers_zero_faith_without_guessing_unknown_values(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_preach_enabled"] = True
+            for faith, remaining, expected in (
+                (0, 0, "miracle_sermon"), (0, 9841, None),
+                (None, 0, None), ("unknown", 0, None), (-1, 0, None),
+            ):
+                with self.subTest(faith=faith, remaining=remaining):
+                    plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                        "small_world": {"available": True, "has_world": True,
+                                        "faith": faith, "faith_cap": 100,
+                                        "edict_remaining_seconds": remaining},
+                    })
+                    self.assertEqual(expected, plan.get("action"))
+
     def test_cave_public_small_world_refine_keeps_1150_incense(self):
         with state_module.use_identity(1001):
             state_module.state["small_world_refine_enabled"] = True

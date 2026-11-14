@@ -691,6 +691,34 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_awaited_once_with(now, "信仰 5/100，布道维护")
             relief_mock.assert_not_awaited()
 
+    async def test_zero_faith_panel_recovers_with_preach_after_server_cooldown(self):
+        now = 1794645478.0
+        panel = small_world._parse_small_world_panel(
+            "【豌豆的小世界】\n👥 人口: 100 人\n🏙️ 承载上限: 320000 人\n"
+            "🙏 信仰: 0 / 100\n⚖️ 稳定: 50 / 100\n"
+            "☁️ 待收香火: 0.41\n🏺 香火库存: 238190\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时59分钟59秒)"
+        )
+        for identity, cooldown in ((8659059210, 0), (8659059211, now + 3600)):
+            with self.subTest(cooldown=cooldown):
+                state_module.ensure_identity_registered(identity)
+                with state_module.use_identity(identity):
+                    state_module.state["small_world_enabled"] = True
+                    state_module.state["small_world_preach_enabled"] = True
+                    state_module.state["small_world_god_cooldown_until"] = cooldown
+                    with patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach, \
+                            patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief, \
+                            patch.object(small_world, "save_state"):
+                        self.assertTrue(await small_world._handle_panel_decision(now, panel))
+                    if cooldown:
+                        preach.assert_not_awaited()
+                        self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+                        self.assertGreaterEqual(state_module.state["next_small_world_time"], cooldown)
+                    else:
+                        preach.assert_awaited_once_with(now, "信仰 0/100，布道维护")
+                    relief.assert_not_awaited()
+
     async def test_wait_panel_with_minor_faith_deficit_skips_preach(self):
         send_as_id = 8659059200
         now = 9320.0
