@@ -3510,6 +3510,14 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 state["small_world_god_cooldown_until"] = max(
                     float(state.get("small_world_god_cooldown_until") or 0), now + CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC,
                 )
+            elif update_snapshot and operation.matches("small_world_god_cooldown_until"):
+                remaining = int(small_world.get("edict_remaining_seconds", 0) or 0)
+                if remaining > 0:
+                    # Harvest-only reads also inform the text maintenance path.
+                    state["small_world_god_cooldown_until"] = max(
+                        float(state.get("small_world_god_cooldown_until") or 0),
+                        now + remaining + CD_BUFFER_SEC,
+                    )
             if not update_schedule:
                 save_state()
                 response = {

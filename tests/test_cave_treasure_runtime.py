@@ -3638,6 +3638,48 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(now + cave_treasure_runtime.CAVE_SMALL_WORLD_CYCLE_SEC, state_module.state["next_small_world_time"])
 
+    async def test_harvest_only_panel_preserves_confirmed_god_cooldown_for_text_maintenance(self):
+        now = 1_700_000_001.0
+        for current, remaining, previous, expected in (
+            (True, 9841, 0, now + 9841 + cave_treasure_runtime.CD_BUFFER_SEC),
+            (True, 9841, now + 20000, now + 20000),
+            (True, 0, now + 20000, now + 20000),
+            (False, 9841, 0, 0),
+        ):
+            with self.subTest(current=current, remaining=remaining, previous=previous):
+                state_module.set_miniapp_state_records({})
+                with state_module.use_identity(1001):
+                    state_module.state["small_world_enabled"] = True
+                    state_module.state["small_world_harvest_enabled"] = True
+                    state_module.state["small_world_last_public_request_at"] = 0
+                    state_module.state["small_world_next_public_harvest_at"] = now - 1
+                    state_module.state["next_small_world_time"] = now + 600
+                    state_module.state["small_world_god_cooldown_until"] = previous
+                flow_result = {
+                    "ok": True, "status": "noop", "data": {
+                        "snapshot_current": current,
+                        "plan": {"harvest_due": True, "harvest_checked": True},
+                        "overview": {"small_world": {
+                            "available": True, "has_world": True,
+                            "faith": 17, "stability": 47,
+                            "population": 120130, "population_cap": 320000,
+                            "edict_remaining_seconds": remaining,
+                        }},
+                    },
+                }
+                with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                        patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
+                        patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)), \
+                        patch.object(cave_treasure_runtime, "save_state"), \
+                        patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                    await cave_treasure_runtime.run_cave_public_small_world_sync(
+                        1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                        now=now, harvest_only=True,
+                    )
+                with state_module.use_identity(1001):
+                    self.assertEqual(expected, state_module.state["small_world_god_cooldown_until"])
+                    self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+
     async def test_cave_public_small_world_skips_http_before_identity_due_time(self):
         now = 1_700_000_001.0
         with state_module.use_identity(1001):
