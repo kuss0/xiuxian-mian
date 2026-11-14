@@ -18,6 +18,7 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
+from .message_log_recovery import read_message_log_tail as _read_recent_message_log_tail, find_message_log_replies, recover_sent_command_from_message_log, recover_sent_command_from_reply_log
 from .audit_messages import bounded_html, fold_audit_body, folded_summary_details, routine_copy, short_html_text
 from .audit_delivery import bot_delivery_outcome, emit_delivery_receipt
 from .audit_summary import SUMMARY_TITLES, format_grouped_summary, routine_bucket_key
@@ -218,7 +219,6 @@ from .config import (
 )
 from .persistence import mark_dirty
 from .log_retention import cleanup_message_logs
-from .message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log, recover_sent_command_from_reply_log
 from .timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .action_guard import (
     before_send as action_guard_before_send,
@@ -2247,21 +2247,6 @@ def _recent_sent_message_log_paths(*, days=2):
         day = local_now - timedelta(days=offset)
         paths.append(os.path.join(MESSAGES_DIR, f"{day.strftime('%Y-%m-%d')}.log"))
     return paths
-
-
-def _read_recent_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
-    try:
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            start = max(0, size - int(max_bytes or 0))
-            handle.seek(start)
-            if start > 0:
-                handle.readline()
-            data = handle.read().decode("utf-8", errors="ignore")
-    except OSError:
-        return []
-    return data.splitlines()[-max(1, int(max_lines or 1)):]
 
 
 def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=None):

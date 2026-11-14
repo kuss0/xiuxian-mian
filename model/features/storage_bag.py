@@ -8,8 +8,8 @@ import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+from ..message_log_recovery import read_message_log_tail as _read_storage_message_log_tail, parse_message_log_ts as _parse_storage_message_log_ts, find_message_log_replies
 from ..config import MESSAGES_DIR, TZ_LOCAL
-from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
 from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, is_game_send_definitely_unsent, send_audit_log, send_game_command
@@ -1402,18 +1402,6 @@ def _normalize_storage_transfer_task_item(raw_item):
     return item, ""
 
 
-def _parse_storage_message_log_ts(value):
-    text = str(value or "").strip()
-    if not text:
-        return 0.0
-    if text.endswith(" UTC+8"):
-        text = text[:-6].strip()
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-
-
 def _recent_storage_message_log_paths(now, days=2):
     try:
         base = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
@@ -1423,21 +1411,6 @@ def _recent_storage_message_log_paths(now, days=2):
         os.path.join(MESSAGES_DIR, f"{(base - timedelta(days=offset)).strftime('%Y-%m-%d')}.log")
         for offset in range(max(1, int(days or 1)))
     ]
-
-
-def _read_storage_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
-    try:
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            start = max(0, size - int(max_bytes or 0))
-            handle.seek(start)
-            if start > 0:
-                handle.readline()
-            data = handle.read().decode("utf-8", errors="ignore")
-    except OSError:
-        return []
-    return data.splitlines()[-max(1, int(max_lines or 1)):]
 
 
 def _is_storage_gift_anchor_topic(payload):

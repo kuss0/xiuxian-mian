@@ -1,11 +1,10 @@
 """Xuangu adapters; existing replica reducers keep sole ownership of their rooms."""
 import asyncio
-import json
 import re
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
+from .message_log_recovery import iter_message_log_rows
 from .app_hunt import hunt_target
 from .activity_occupancy import get_activity_block_reason
 from .app_message_log import (
@@ -296,23 +295,17 @@ def _backfill_week_rewards():
     chat, topic = hunt_target("secondary")
     members = [{"identity_id": i, "username": str(get_send_as_profile(i).get("username") or "").lstrip("@")}
                for i in get_expedition_config().get("xuangu", {}).get("participant_identity_ids", [])]
-    for offset in range(local.weekday(), -1, -1):
-        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
-        if not path.is_file():
+    for row in iter_message_log_rows(now - local.weekday() * 86400, now, messages_dir=MESSAGES_DIR,
+                                     line_predicate=lambda line: "玄骨遗府·" in line and "修为+" in line):
+        text = str(row.get("text") or "")
+        try:
+            at = float(row.get("server_event_at") or 0)
+            week_key(at)
+        except (ValueError, TypeError, OverflowError, OSError):
             continue
-        with path.open() as stream:
-            for line in stream:
-                if "玄骨遗府·" not in line or "修为+" not in line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                text = str(row.get("text") or "")
-                at = float(row.get("server_event_at") or 0)
-                outcome = xuangu.parse_xuangu_outcome(text)
-                if (outcome and outcome != "残图异动" and row.get("sender_id") in get_game_bot_ids()
-                        and row.get("chat_id") == chat and row.get("topic_id", 0) == topic
-                        and not row.get("forwarded") and week_key(at) == week_key(now)):
-                    _record_daily_outcome({"my_members": members}, SimpleNamespace(raw_text=text, id=row.get("message_id")), outcome, at)
+        outcome = xuangu.parse_xuangu_outcome(text)
+        if (outcome and outcome != "残图异动" and row.get("sender_id") in get_game_bot_ids()
+                and row.get("chat_id") == chat and row.get("topic_id", 0) == topic
+                and not row.get("forwarded") and week_key(at) == week_key(now)):
+            _record_daily_outcome({"my_members": members}, SimpleNamespace(raw_text=text, id=row.get("message_id")), outcome, at)
     mark_dirty()

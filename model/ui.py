@@ -20,6 +20,14 @@ from functools import partial
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
+from . import storage_bag_api_runtime
+from .storage_bag_api_runtime import (
+    _format_storage_bag_api_refresh_message,
+    storage_bag_api_store_session as _storage_bag_api_store_session,
+    storage_bag_api_store_failure as _storage_bag_api_store_failure,
+    storage_bag_api_cultivator_candidates as _storage_bag_api_cultivator_candidates,
+    storage_bag_api_resolve_identity_id as _storage_bag_api_resolve_identity_id,
+)
 from .storage_bag_api_payload import (
     DEFAULT_STORAGE_BAG_ITEM_NAME_MAP as _STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP,
     parse_json_maybe as _tianjige_parse_json_maybe,
@@ -1853,185 +1861,14 @@ async def ui_fetch_quiz_ai_models(payload):
 
 
 def _storage_bag_api_identity_lookup():
-    lookup = {}
-    for identity_id in get_identity_ids():
-        identity_id = int(identity_id)
-        profile = get_send_as_profile(identity_id)
-        candidates = [
-            str(identity_id),
-            profile.get("username"),
-            profile.get("label"),
-            profile.get("daohao"),
-            get_identity_ui_display_name(identity_id),
-        ]
-        candidates.extend(profile.get("username_aliases") or [])
-        for candidate in candidates:
-            key = str(candidate or "").strip().lstrip("@").casefold()
-            if key:
-                lookup[key] = identity_id
-    return lookup
-
-
-def _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup):
-    try:
-        identity_id = int(identity_id or 0)
-    except (TypeError, ValueError):
-        identity_id = 0
-    local_ids = {int(item or 0) for item in get_identity_ids()}
-    if identity_id in local_ids:
-        return identity_id
-    owner_key = str(owner_text or "").strip().lstrip("@").casefold()
-    if owner_key:
-        matched_id = int((lookup or {}).get(owner_key) or 0)
-        if matched_id:
-            return matched_id
-    return identity_id
-
-
-def _storage_bag_api_cultivator_candidates(identity_id):
-    profile = get_send_as_profile(identity_id)
-    raw_candidates = [
-        (profile.get("username"), False),
-        *((alias, False) for alias in (profile.get("username_aliases") or [])),
-        (profile.get("label"), True),
-        (profile.get("daohao"), True),
-        (get_identity_display_name(identity_id), True),
-        (get_identity_ui_display_name(identity_id), True),
-    ]
-    candidates = []
-    seen = set()
-    for raw_value, normalize_suffix in raw_candidates:
-        candidate = _storage_bag_api_candidate_from_value(raw_value, normalize_suffix=normalize_suffix)
-        if not candidate:
-            continue
-        key = candidate.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(candidate)
-    return candidates
+    return storage_bag_api_runtime.storage_bag_api_identity_lookup(get_identity_ids())
 
 
 def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_owner_text=""):
-    payload = payload if isinstance(payload, dict) else {}
-    if isinstance(payload.get("data"), dict):
-        payload = payload.get("data") or {}
-    lookup = _storage_bag_api_identity_lookup()
-    item_name_map = get_storage_bag_api_config().get("item_name_map") or {}
-    records = dict(get_storage_bag_records())
-    updated = 0
-    changed = 0
-    skipped = 0
-    updated_identity_ids = set()
-    now = time.time()
-
-    def update_record(identity_id, owner_text, items, *, source="storage_bag_api"):
-        nonlocal updated, changed
-        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-        if identity_id == 0 and int(fallback_identity_id or 0):
-            identity_id = int(fallback_identity_id or 0)
-        if not owner_text:
-            owner_text = fallback_owner_text
-        if identity_id == 0 or str(identity_id) not in records and identity_id not in get_identity_ids():
-            return
-        if not items:
-            return
-        profile = get_send_as_profile(identity_id)
-        previous = records.get(str(identity_id))
-        previous_items = previous.get("items") if isinstance(previous, dict) else {}
-        if dict(previous_items or {}) != dict(items):
-            changed += 1
-        records[str(identity_id)] = {
-            "owner": owner_text or profile.get("username") or profile.get("label") or profile.get("daohao") or str(identity_id),
-            "owner_username": profile.get("username") or "",
-            "label": profile.get("label") or profile.get("username") or profile.get("daohao") or str(identity_id),
-            "sections": {"API": dict(items)},
-            "items": dict(items),
-            "empty": False,
-            "updated_at": float(now),
-            "updated_at_text": fmt_abs_ts(now),
-            "source": source,
-        }
-        updated += 1
-        updated_identity_ids.add(int(identity_id))
-
-    if isinstance(payload.get("current"), list):
-        grouped = {}
-        for row in payload.get("current") or []:
-            if not isinstance(row, dict):
-                continue
-            identity_id, owner_text = _storage_bag_api_extract_owner_fields(row)
-            identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-            key = identity_id or owner_text or "unknown"
-            grouped.setdefault(key, {"identity_id": identity_id, "owner_text": owner_text, "items": {}})
-            _storage_bag_api_add_item(grouped[key]["items"], row.get("name") or row.get("item_name"), row.get("amount") or row.get("quantity") or row.get("count"))
-        for row in grouped.values():
-            update_record(row["identity_id"], row["owner_text"], row["items"], source="storage_bag_api_current")
-        skipped += max(0, len(payload.get("current") or []) - updated)
-
-    for snapshot in payload.get("snapshots") or []:
-        if not isinstance(snapshot, dict):
-            continue
-        identity_id, owner_text = _storage_bag_api_extract_owner_fields(snapshot)
-        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-        items, seen_inventory = _storage_bag_api_extract_items(
-            snapshot.get("items") or snapshot.get("inventory") or snapshot.get("storage") or snapshot.get("bag") or snapshot,
-            item_name_map,
-        )
-        if not seen_inventory or not items:
-            skipped += 1
-            continue
-        update_record(identity_id, owner_text, items, source="storage_bag_api_snapshot")
-
-    for character in payload.get("characters") or []:
-        if not isinstance(character, dict):
-            continue
-        identity_id, owner_text = _storage_bag_api_extract_owner_fields(character)
-        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-        inventory = character.get("inventory") or character.get("storage_bag") or character.get("bag") or {}
-        items, seen_inventory = _storage_bag_api_extract_items(inventory, item_name_map)
-        if not seen_inventory or not items:
-            skipped += 1
-            continue
-        update_record(identity_id, owner_text, items, source="storage_bag_api_character")
-
-    if payload.get("inventory") or payload.get("storage_bag") or payload.get("bag"):
-        identity_id, owner_text = _storage_bag_api_extract_owner_fields(payload)
-        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-        inventory = payload.get("inventory") or payload.get("storage_bag") or payload.get("bag") or {}
-        items, seen_inventory = _storage_bag_api_extract_items(inventory, item_name_map)
-        if seen_inventory and items:
-            update_record(identity_id, owner_text, items, source="storage_bag_api_cultivator")
-        else:
-            skipped += 1
-
-    for key in ("storage_bag_records", "records"):
-        value = payload.get(key)
-        if not isinstance(value, dict):
-            continue
-        for owner_key, record in value.items():
-            if not isinstance(record, dict):
-                continue
-            identity_id, owner_text = _storage_bag_api_extract_owner_fields(record)
-            identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-            if identity_id == 0:
-                identity_id = lookup.get(str(owner_key or "").strip().lstrip("@").casefold(), 0)
-            items, seen_inventory = _storage_bag_api_extract_items(record.get("items") or record.get("inventory") or record, item_name_map)
-            if not seen_inventory or not items:
-                skipped += 1
-                continue
-            update_record(identity_id, owner_text or str(owner_key or ""), items, source="storage_bag_api_records")
-
-    if updated > 0:
-        set_storage_bag_records(records)
-        save_state()
-    return {
-        "updated_count": updated,
-        "changed_count": changed,
-        "skipped_count": skipped,
-        "updated_identity_ids": sorted(updated_identity_ids),
-        "records": records,
-    }
+    return storage_bag_api_runtime.storage_bag_api_apply_payload(
+        payload, fallback_identity_id=fallback_identity_id, fallback_owner_text=fallback_owner_text,
+        write_empty=False, identity_ids=get_identity_ids(),
+    )
 
 
 def _tianjige_string(value):
@@ -2813,35 +2650,6 @@ def _storage_bag_api_store_verified_result(result, now):
     save_state()
 
 
-def _storage_bag_api_store_failure(exc, now):
-    current = get_storage_bag_api_config()
-    keepalive_enabled = bool(current.get("keepalive_enabled"))
-    if isinstance(exc, StorageBagApiError) and exc.status_code == 401:
-        keepalive_enabled = False
-    set_storage_bag_api_config({
-        **current,
-        "cookie": getattr(exc, "cookie", "") or current.get("cookie") or "",
-        "api_token": getattr(exc, "api_token", "") or current.get("api_token") or "",
-        "keepalive_enabled": keepalive_enabled,
-        "last_keepalive_at": float(now),
-        "last_keepalive_ok": False,
-        "last_keepalive_error": str(exc),
-        "next_keepalive_at": float(now) + _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC,
-    })
-    save_state()
-
-
-def _storage_bag_api_store_session(cookie="", api_token=""):
-    current = get_storage_bag_api_config()
-    set_storage_bag_api_config({
-        **current,
-        "cookie": str(cookie or current.get("cookie") or "").strip(),
-        "api_token": str(api_token or current.get("api_token") or "").strip(),
-    })
-    save_state()
-    return get_storage_bag_api_config()
-
-
 async def ui_verify_storage_bag_api(payload=None):
     if _is_storage_bag_api_busy():
         return False, "储物袋 API 正在进行中", get_storage_bag_api_snapshot()
@@ -2882,16 +2690,6 @@ async def ui_verify_storage_bag_api(payload=None):
         _storage_bag_api_state["running"] = False
         _storage_bag_api_set_running_kind("")
     return ok, message, get_storage_bag_api_snapshot()
-
-
-def _format_storage_bag_api_refresh_message(total_updated, total_changed):
-    total_updated = int(total_updated or 0)
-    total_changed = int(total_changed or 0)
-    if total_updated <= 0:
-        return "API 已返回，但未匹配到可刷新身份"
-    if total_changed > 0:
-        return f"已刷新 {total_updated} 个身份的储物袋（内容变化 {total_changed} 个）"
-    return f"已刷新 {total_updated} 个身份的储物袋（内容未变化）"
 
 
 def _format_storage_bag_api_refresh_audit(ok, message, *, updated_count=0, changed_count=0, skipped_count=0):

@@ -3,6 +3,7 @@ import asyncio
 import copy
 import itertools
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -419,6 +420,28 @@ def test_startup_replays_saved_terminal_locally_once(env, monkeypatch, tmp_path)
         assert record["phase"] == "done" and not record["requires_reconciliation"]
         await app_weekly_adventures._recover_terminal_receipts(env.now[0])
         assert all(q["used"] == 1 for q in env.records["quotas"]["qipai"].values())
+    asyncio.run(run())
+
+
+def test_startup_log_scan_does_not_block_owner_event_loop(env, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    owner_thread = threading.get_ident()
+    def read(*args, **kwargs):
+        assert threading.get_ident() != owner_thread
+        entered.set()
+        assert release.wait(2)
+        return iter(())
+    async def run():
+        await open_run(env, "qipai")
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+        monkeypatch.setattr(app_weekly_adventures, "iter_message_log_rows", read)
+        task = asyncio.create_task(app_weekly_adventures._recover_terminal_receipts(env.now[0]))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 1), 2)
+            assert not task.done()  # Owner loop is available while the file worker waits.
+        finally:
+            release.set()
+        await task
     asyncio.run(run())
 
 

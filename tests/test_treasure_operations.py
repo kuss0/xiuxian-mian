@@ -618,7 +618,7 @@ def test_checkpoint_timeout_after_save_started_drains_exact_acknowledgement(nati
             assert expired.wait(2) and draining.wait(2)
         return True
 
-    monkeypatch.setattr(operations, "Future", TimeoutOnce)
+    monkeypatch.setattr("model.features.miniapp_common.Future", TimeoutOnce)
     h.ops_save.side_effect = save
     response = asyncio.run(call(h, "public"))
     assert response["ok"], response

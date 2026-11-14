@@ -1,7 +1,6 @@
 """Owned treasure checkpoints and local accounting, never gameplay replay."""
 
 import asyncio
-from concurrent.futures import Future, TimeoutError
 from copy import deepcopy
 import hashlib
 import threading
@@ -15,7 +14,7 @@ from ..state import TREASURE_OPERATION_MAX_BYTES, get_identity_account, get_iden
 from ..timing import get_day_key
 from ..webapp_core import MiniAppRequestAborted, require_miniapp_operation, sanitize_webapp_secret_text
 from . import treasure_results as results
-from .miniapp_common import MiniAppIdentityOwner
+from .miniapp_common import MiniAppIdentityOwner, submit_owned_checkpoint
 from .treasure_receipts import treasure_integer, treasure_quota_exhausted
 from .treasure_runs import (
     TREASURE_MAX_CELLS, treasure_reveal_progress_error, treasure_run_continuity_error,
@@ -419,31 +418,7 @@ class CheckpointWriter:
                 and results._same(self.current, self.owner.identity.get(STATE_KEY, {})))
 
     def __call__(self, checkpoint):
-        if self.closed:
-            return False
-        checkpoint = deepcopy(checkpoint)
-        if threading.get_ident() == self.thread_id:
-            return self._accept(checkpoint)
-        future = Future()
-
-        def apply():
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                future.set_result(self._accept(checkpoint) if not self.closed else False)
-            except Exception:
-                future.set_result(False)
-
-        try:
-            self.loop.call_soon_threadsafe(apply)
-            return future.result(timeout=CHECKPOINT_TIMEOUT_SEC) is True
-        except TimeoutError:
-            if future.cancel():
-                return False
-            # A save already running on the owner loop must finish before dispatch.
-            return future.result() is True
-        except RuntimeError:
-            return False
+        return submit_owned_checkpoint(self, checkpoint, timeout=CHECKPOINT_TIMEOUT_SEC)
 
     def _transition_allowed(self, value):
         before = self.last_checkpoint

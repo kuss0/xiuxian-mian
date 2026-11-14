@@ -1,11 +1,10 @@
 """Bind upstream daily war logic to local identities, occupancy and send queue."""
 import asyncio
-import json
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from types import SimpleNamespace
 
+from .message_log_recovery import iter_message_log_rows
 from .activity_occupancy import get_activity_block_reason
 from .app_hunt import hunt_target
 from .config import MESSAGES_DIR, TZ_LOCAL, get_registered_client
@@ -127,25 +126,18 @@ async def _recover_receipts(ctx, now, *, startup=True):
 
 def _read_receipts(local, days, anchors):
     rows = {}
-    for offset in range(days, -1, -1):
-        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
-        if not path.is_file():
+    for row in iter_message_log_rows(local.timestamp() - days * 86400, local.timestamp(), messages_dir=MESSAGES_DIR,
+                                     line_predicate=lambda line: any(str(mid) in line for _, mid in anchors)):
+        try:
+            if (row.get("chat_id"), row.get("reply_to_msg_id")) not in anchors:
+                continue
+            text = str(row.get("text") or "")
+            if not (zhengmo.parse_result(text) or zhengmo.registration_result(text)):
+                continue
+            datetime.fromtimestamp(float(row.get("server_event_at") or 0), TZ_LOCAL)
+        except (ValueError, TypeError, OverflowError, OSError):
             continue
-        with path.open(encoding="utf-8") as stream:
-            for line in stream:
-                if not any(str(mid) in line for _, mid in anchors):
-                    continue
-                try:
-                    row = json.loads(line)
-                    if (row.get("chat_id"), row.get("reply_to_msg_id")) not in anchors:
-                        continue
-                    text = str(row.get("text") or "")
-                    if not (zhengmo.parse_result(text) or zhengmo.registration_result(text)):
-                        continue
-                    datetime.fromtimestamp(float(row.get("server_event_at") or 0), TZ_LOCAL)
-                except (ValueError, TypeError):
-                    continue
-                rows[(row.get("chat_id"), row.get("message_id"))] = row
+        rows[(row.get("chat_id"), row.get("message_id"))] = row
     return list(rows.values())
 
 

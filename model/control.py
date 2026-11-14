@@ -11,6 +11,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .message_log_recovery import parse_message_log_ts as _parse_message_log_ts, iter_message_log_rows, sender_matches_identity
 from . import identity_refresh as _refresh
 from .config_values import coerce_bool as _coerce_control_bool
 from .profile_observation import (
@@ -18,7 +19,6 @@ from .profile_observation import (
     telegram_profile_evidence, valid_evidence,
 )
 from .message_keys import find_message_key, message_key_parts, pop_message_record
-from .message_log_recovery import sender_matches_identity
 from .verified_event import telegram_event_timestamp
 from .module_manifest import get_module_manifest, is_module_archived
 from .config import (
@@ -4095,37 +4095,8 @@ _TAIYI_YINDAO_LOG_CALIBRATION_LOOKBACK_SEC = 6 * 3600
 RE_TAIYI_YINDAO_SUCCESS_LOG = re.compile(r"你引动【([金木水火土])之道】")
 
 
-def _parse_message_log_ts(raw_ts):
-    ts_text = str(raw_ts or "").strip()
-    if not ts_text:
-        return 0.0
-    ts_text = ts_text.replace(" UTC+8", "")
-    try:
-        return datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
-    except ValueError:
-        return 0.0
-
-
 def _iter_message_log_entries_between(start_ts, end_ts):
-    try:
-        start_day = datetime.fromtimestamp(float(start_ts), TZ_LOCAL).date()
-        end_day = datetime.fromtimestamp(float(end_ts), TZ_LOCAL).date()
-    except (TypeError, ValueError, OSError):
-        return
-    day = start_day
-    while day <= end_day:
-        log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
-        if log_path.exists():
-            try:
-                with log_path.open("r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        try:
-                            yield json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-            except OSError:
-                pass
-        day += timedelta(days=1)
+    return iter_message_log_rows(start_ts, end_ts, messages_dir=MESSAGES_DIR)
 
 
 def _is_taiyi_yindao_command_text(text):

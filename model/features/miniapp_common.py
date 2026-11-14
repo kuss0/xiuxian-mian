@@ -16,6 +16,8 @@ import atexit
 import logging
 import threading
 import time
+from concurrent.futures import Future, TimeoutError
+from copy import deepcopy
 from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -27,6 +29,36 @@ from requests.exceptions import RequestException
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id, get_identity_account, get_identity_state, has_identity
 from ..webapp_core import MiniAppRequestAborted, require_miniapp_operation, safe_miniapp_event_detail, sanitize_webapp_secret_text
+
+
+def submit_owned_checkpoint(writer, checkpoint, *, timeout):
+    """Persist on the owner's loop before permitting the worker to dispatch.
+
+    A queued callback can be cancelled on timeout. A save already running must
+    drain: returning early would strand a durable intent without its receipt.
+    """
+    if writer.closed:
+        return False
+    checkpoint = deepcopy(checkpoint)
+    if threading.get_ident() == writer.thread_id:
+        return writer._accept(checkpoint)
+    future = Future()
+
+    def apply():
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(writer._accept(checkpoint) if not writer.closed else False)
+        except Exception:
+            future.set_result(False)
+
+    try:
+        writer.loop.call_soon_threadsafe(apply)
+        return future.result(timeout=timeout) is True
+    except TimeoutError:
+        return False if future.cancel() else future.result() is True
+    except RuntimeError:
+        return False
 
 
 def resolve_identity_id(value=None):

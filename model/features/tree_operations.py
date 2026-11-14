@@ -1,7 +1,6 @@
 """Owned tree checkpoints and local-only publication recovery."""
 
 import asyncio
-from concurrent.futures import Future, TimeoutError
 from copy import deepcopy
 import hashlib
 import json
@@ -14,7 +13,7 @@ from ..miniapp_state import sanitize_miniapp_state
 from ..persistence import _bounded_miniapp_operation, mark_dirty, save_state
 from ..state import TREE_OPERATION_MAX_BYTES, get_miniapp_state_records, set_miniapp_state_records
 from ..webapp_core import require_miniapp_operation, sanitize_webapp_secret_text
-from .miniapp_common import MiniAppIdentityOwner
+from .miniapp_common import MiniAppIdentityOwner, submit_owned_checkpoint
 from .tree_receipts import tree_integer
 
 
@@ -234,30 +233,7 @@ class CheckpointWriter:
         return self.owner.is_current() and _same(self.current, self.owner.identity.get(STATE_KEY, {}))
 
     def __call__(self, checkpoint):
-        if self.closed:
-            return False
-        checkpoint = deepcopy(checkpoint)
-        if threading.get_ident() == self.thread_id:
-            return self._accept(checkpoint)
-        future = Future()
-
-        def apply():
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                future.set_result(self._accept(checkpoint) if not self.closed else False)
-            except Exception:
-                future.set_result(False)
-
-        try:
-            self.loop.call_soon_threadsafe(apply)
-            return future.result(timeout=CHECKPOINT_TIMEOUT_SEC) is True
-        except TimeoutError:
-            if future.cancel():
-                return False
-            return future.result() is True
-        except RuntimeError:
-            return False
+        return submit_owned_checkpoint(self, checkpoint, timeout=CHECKPOINT_TIMEOUT_SEC)
 
     def _transition(self, value):
         before = self.last_checkpoint

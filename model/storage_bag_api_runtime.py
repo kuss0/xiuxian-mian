@@ -27,9 +27,9 @@ from .storage_bag_api_client import REFRESH_PATH, StorageBagApiError, build_cult
 from .timing import fmt_abs_ts
 
 
-def storage_bag_api_identity_lookup():
+def storage_bag_api_identity_lookup(identity_ids=None):
     lookup = {}
-    for identity_id in get_identity_ids():
+    for identity_id in get_identity_ids() if identity_ids is None else identity_ids:
         identity_id = int(identity_id)
         profile = get_send_as_profile(identity_id)
         candidates = [
@@ -47,12 +47,13 @@ def storage_bag_api_identity_lookup():
     return lookup
 
 
-def storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup):
+def storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup, *, identity_ids=None):
     try:
         identity_id = int(identity_id or 0)
     except (TypeError, ValueError):
         identity_id = 0
-    local_ids = {int(item or 0) for item in get_identity_ids()}
+    local_ids = identity_ids if isinstance(identity_ids, set) else {
+        int(item or 0) for item in (get_identity_ids() if identity_ids is None else identity_ids)}
     if identity_id in local_ids:
         return identity_id
     owner_key = str(owner_text or "").strip().lstrip("@").casefold()
@@ -87,11 +88,13 @@ def storage_bag_api_cultivator_candidates(identity_id):
     return candidates
 
 
-def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_owner_text="", write_empty=False):
+def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_owner_text="", write_empty=False, identity_ids=None):
     payload = payload if isinstance(payload, dict) else {}
     if isinstance(payload.get("data"), dict):
         payload = payload.get("data") or {}
-    lookup = storage_bag_api_identity_lookup()
+    identity_ids = list(get_identity_ids() if identity_ids is None else identity_ids)
+    local_ids = {int(item or 0) for item in identity_ids}
+    lookup = storage_bag_api_identity_lookup(identity_ids)
     item_name_map = get_storage_bag_api_config().get("item_name_map") or {}
     records = dict(get_storage_bag_records())
     updated = 0
@@ -100,14 +103,16 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
     updated_identity_ids = set()
     now = time.time()
 
+    def resolve(identity_id, owner_text):
+        return storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup, identity_ids=local_ids)
+
     def update_record(identity_id, owner_text, items, *, source="storage_bag_api", seen_inventory=True):
         nonlocal updated, changed, skipped
-        identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        identity_id = resolve(identity_id, owner_text)
         if identity_id == 0 and int(fallback_identity_id or 0):
             identity_id = int(fallback_identity_id or 0)
         if not owner_text:
             owner_text = fallback_owner_text
-        local_ids = {int(item or 0) for item in get_identity_ids()}
         if identity_id == 0 or str(identity_id) not in records and identity_id not in local_ids:
             skipped += 1
             return
@@ -139,7 +144,7 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
             if not isinstance(row, dict):
                 continue
             identity_id, owner_text = storage_bag_api_extract_owner_fields(row)
-            identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+            identity_id = resolve(identity_id, owner_text)
             key = identity_id or owner_text or "unknown"
             grouped.setdefault(key, {"identity_id": identity_id, "owner_text": owner_text, "items": {}})
             storage_bag_api_add_item(grouped[key]["items"], row.get("name") or row.get("item_name"), row.get("amount") or row.get("quantity") or row.get("count"))
@@ -150,7 +155,7 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
         if not isinstance(snapshot, dict):
             continue
         identity_id, owner_text = storage_bag_api_extract_owner_fields(snapshot)
-        identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        identity_id = resolve(identity_id, owner_text)
         items, seen_inventory = storage_bag_api_extract_items(
             snapshot.get("items") or snapshot.get("inventory") or snapshot.get("storage") or snapshot.get("bag") or snapshot,
             item_name_map,
@@ -161,7 +166,7 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
         if not isinstance(character, dict):
             continue
         identity_id, owner_text = storage_bag_api_extract_owner_fields(character)
-        identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        identity_id = resolve(identity_id, owner_text)
         inventory = None
         for inventory_key in ("inventory", "storage_bag", "bag"):
             if inventory_key in character:
@@ -175,7 +180,7 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
 
     if payload.get("inventory") is not None or payload.get("storage_bag") is not None or payload.get("bag") is not None:
         identity_id, owner_text = storage_bag_api_extract_owner_fields(payload)
-        identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        identity_id = resolve(identity_id, owner_text)
         inventory = payload.get("inventory") or payload.get("storage_bag") or payload.get("bag") or {}
         items, seen_inventory = storage_bag_api_extract_items(inventory, item_name_map)
         update_record(identity_id, owner_text, items, source="storage_bag_api_cultivator", seen_inventory=seen_inventory)
@@ -188,7 +193,7 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
             if not isinstance(record, dict):
                 continue
             identity_id, owner_text = storage_bag_api_extract_owner_fields(record)
-            identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+            identity_id = resolve(identity_id, owner_text)
             if identity_id == 0:
                 identity_id = lookup.get(str(owner_key or "").strip().lstrip("@").casefold(), 0)
             items, seen_inventory = storage_bag_api_extract_items(record.get("items") or record.get("inventory") or record, item_name_map)

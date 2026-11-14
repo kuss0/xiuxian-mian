@@ -496,7 +496,7 @@ def test_timed_out_running_checkpoint_drains_its_acknowledgement(h, monkeypatch)
             assert draining.wait(2)
         return True
 
-    monkeypatch.setattr(operations, "Future", TimeoutOnce)
+    monkeypatch.setattr("model.features.miniapp_common.Future", TimeoutOnce)
     monkeypatch.setattr(operations, "save_state", save)
 
     async def scenario():

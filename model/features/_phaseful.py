@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+from ..message_log_recovery import sender_matches_identity as _sender_matches_identity, find_message_log_replies, find_recent_message_log_command
 from ..config import CD_BUFFER_SEC, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER
-from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..message_keys import find_message_key, pop_message_record
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_identity_state, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
@@ -99,23 +99,6 @@ def _summary_replay_intent(send_as_id, msg_id, command):
         "op_id": f"{chain_id}:{str(command or '').strip()}",
         "chain_id": chain_id,
     }
-
-
-def _sender_matches_identity(sender_id, identity_id):
-    try:
-        sender_id = int(sender_id or 0)
-        identity_id = int(identity_id or 0)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if sender_id == 0 or identity_id == 0:
-        return False
-    if sender_id in {identity_id, -identity_id}:
-        return True
-    if sender_id < 0:
-        raw_sender = str(abs(sender_id))
-        raw_identity = str(abs(identity_id))
-        return raw_sender == f"100{raw_identity}"
-    return False
 
 
 def _recover_phaseful_sent_from_message_log(command, attempt_started_at, now=None):

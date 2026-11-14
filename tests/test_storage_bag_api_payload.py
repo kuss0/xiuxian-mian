@@ -67,3 +67,28 @@ def test_ui_and_runtime_share_pure_parsers_but_keep_write_boundaries():
     assert runtime._flatten_api_row is ui._tianjige_flatten_api_row is payload.flatten_api_row
     assert runtime.DEFAULT_STORAGE_BAG_ITEM_NAME_MAP is ui._STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP
     assert runtime.storage_bag_api_apply_payload is not ui._storage_bag_api_apply_payload
+
+
+def test_shared_writer_preserves_identity_order_and_ui_empty_inventory_boundary(monkeypatch):
+    from model import state, storage_bag_api_runtime as runtime, ui
+    before = deepcopy(state._meta_state)
+    try:
+        for identity in (2002, 1001):
+            state.ensure_identity_registered(identity)
+            state.set_send_as_profile(identity, username="shared_alias")
+        # Existing duplicate-alias precedence follows configured identity order.
+        monkeypatch.setattr(ui, "get_identity_ids", lambda: [2002, 1001])
+        monkeypatch.setattr(runtime, "save_state", lambda: True)
+        state.set_storage_bag_records({"1001": {"items": {"灵石": 7}}})
+        result = ui._storage_bag_api_apply_payload({"snapshots": [{"username": "shared_alias", "items": {"灵石": 8}}]})
+        assert result["updated_identity_ids"] == [1001]
+        assert state.get_storage_bag_records()["1001"]["items"] == {"灵石": 8}
+        # UI refresh never clears a bag from an empty response. Explicit empty
+        # inventory remains a separate runtime option used by trusted readers.
+        ui._storage_bag_api_apply_payload({"snapshots": [{"identity_id": 1001, "items": []}]})
+        assert state.get_storage_bag_records()["1001"]["items"] == {"灵石": 8}
+        runtime.storage_bag_api_apply_payload({"snapshots": [{"identity_id": 1001, "items": []}]}, write_empty=True)
+        assert state.get_storage_bag_records()["1001"]["items"] == {}
+    finally:
+        state._meta_state.clear()
+        state._meta_state.update(before)

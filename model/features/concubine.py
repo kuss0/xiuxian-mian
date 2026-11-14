@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+from ..message_log_recovery import parse_message_log_ts as _parse_message_log_ts, iter_message_log_rows, find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ..config import (
     CD_BUFFER_SEC,
     CMD_CONCUBINE_DAILY_GREET,
@@ -52,7 +53,6 @@ from ..config import (
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
 from ..message_keys import find_message_key, message_key_parts
-from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ..runtime import _fire_and_forget, classify_game_send_block, clear_pending_by_reply, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_id, get_game_group_ids, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_miniapp_auto_config, get_pending_command, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
@@ -325,8 +325,6 @@ def _clear_pending_msg_ids():
     _clear_heart_choice_guard()
 
 
-
-
 def _is_heart_anchor_lost_text(text):
     return heart_contract.is_anchor_lost(text)
 
@@ -338,8 +336,6 @@ def _clear_heart_choice_guard():
     state["concubine_heart_choice_retry_count"] = 0
     state["concubine_last_recovered_reply_key"] = ""
     state["concubine_last_recovered_reply_at"] = 0
-
-
 
 
 def _schedule_after(now, min_sec, max_sec):
@@ -786,8 +782,6 @@ def _has_voyage_runtime_state(now):
     )
 
 
-
-
 def _schedule_voyage_wait(now):
     return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
     if return_at > now:
@@ -1166,38 +1160,8 @@ def _sender_matches_current_identity(sender_id):
     return False
 
 
-def _parse_message_log_ts(raw_ts):
-    ts_text = str(raw_ts or "").strip()
-    if not ts_text:
-        return 0.0
-    ts_text = ts_text.replace(" UTC+8", "")
-    try:
-        return datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
-    except ValueError:
-        return 0.0
-
-
 def _iter_message_log_entries_between(start_ts, end_ts):
-    try:
-        start_day = datetime.fromtimestamp(float(start_ts), TZ_LOCAL).date()
-        end_day = datetime.fromtimestamp(float(end_ts), TZ_LOCAL).date()
-    except (TypeError, ValueError, OSError):
-        return
-
-    day = start_day
-    while day <= end_day:
-        log_file = os.path.join(MESSAGES_DIR, f"{day.isoformat()}.log")
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
-                    for line in handle:
-                        try:
-                            yield json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-            except OSError:
-                pass
-        day += timedelta(days=1)
+    return iter_message_log_rows(start_ts, end_ts, messages_dir=MESSAGES_DIR)
 
 
 def _concubine_family_for_command(command):
@@ -1671,8 +1635,6 @@ async def _recover_sent_command_after_empty_send(now, phase, command, state_key,
         return True
     save_state()
     return True
-
-
 
 
 async def _recover_concubine_pending_from_message_log(now, phase):

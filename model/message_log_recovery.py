@@ -6,7 +6,7 @@ from pathlib import Path
 from .config import MESSAGES_DIR, TZ_LOCAL
 
 
-def _read_log_tail_lines(path, *, max_bytes=512 * 1024):
+def read_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024, errors="ignore"):
     try:
         with Path(path).open("rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -15,10 +15,15 @@ def _read_log_tail_lines(path, *, max_bytes=512 * 1024):
             handle.seek(start)
             if start > 0:
                 handle.readline()
-            data = handle.read().decode("utf-8", errors="replace")
+            data = handle.read().decode("utf-8", errors=errors)
     except OSError:
         return []
-    return data.splitlines()
+    lines = data.splitlines()
+    return lines if max_lines is None else lines[-max(1, int(max_lines or 1)):]
+
+
+def _read_log_tail_lines(path, *, max_bytes=512 * 1024):
+    return read_message_log_tail(path, max_lines=None, max_bytes=max_bytes, errors="replace")
 
 
 def normalize_command_text(text):
@@ -41,7 +46,12 @@ def parse_message_log_ts(raw_ts):
     return 0.0
 
 
-def iter_message_log_entries_between(start_ts, end_ts, *, messages_dir=None):
+def iter_message_log_rows(start_ts, end_ts, *, messages_dir=None, line_predicate=None):
+    """Read valid object rows from the inclusive local log days, in file order.
+
+    Raw rows retain edits and server timestamps; callers own business-time and
+    receipt filters. A cheap line predicate avoids decoding unrelated traffic.
+    """
     try:
         start_ts = max(0.0, float(start_ts or 0))
         end_ts = max(start_ts, float(end_ts or start_ts or 0))
@@ -58,18 +68,29 @@ def iter_message_log_entries_between(start_ts, end_ts, *, messages_dir=None):
             try:
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                     for line in handle:
-                        if not line.strip():
+                        if not line.strip() or line_predicate is not None and not line_predicate(line):
                             continue
                         try:
                             entry = json.loads(line)
                         except (TypeError, ValueError, json.JSONDecodeError):
                             continue
-                        entry_ts = parse_message_log_ts(entry.get("ts"))
-                        if start_ts <= entry_ts <= end_ts:
-                            yield entry, entry_ts
+                        if isinstance(entry, dict):
+                            yield entry
             except OSError:
                 pass
         day += timedelta(days=1)
+
+
+def iter_message_log_entries_between(start_ts, end_ts, *, messages_dir=None):
+    try:
+        start_ts = max(0.0, float(start_ts or 0))
+        end_ts = max(start_ts, float(end_ts or start_ts or 0))
+    except (TypeError, ValueError, OverflowError):
+        return
+    for entry in iter_message_log_rows(start_ts, end_ts, messages_dir=messages_dir):
+        entry_ts = parse_message_log_ts(entry.get("ts"))
+        if start_ts <= entry_ts <= end_ts:
+            yield entry, entry_ts
 
 
 def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=None, messages_dir=None):

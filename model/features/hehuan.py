@@ -7,8 +7,8 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from ..message_log_recovery import read_message_log_tail as _read_message_log_tail, parse_message_log_ts as _parse_message_log_ts, find_message_log_replies
 from ..config import CMD_HEHUAN_DUAL, GAME_TOPIC_ID, MESSAGES_DIR, TZ_LOCAL
-from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
@@ -473,39 +473,12 @@ def set_hehuan_retry_max_interval_min(value, now=None):
     return observed["auto_retry_max_interval_min"]
 
 
-def _parse_message_log_ts(value):
-    text = str(value or "").strip()
-    if not text:
-        return 0.0
-    if text.endswith(" UTC+8"):
-        text = text[:-6].strip()
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-
-
 def _recent_message_log_paths(now, days=2):
     base = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
     return [
         os.path.join(MESSAGES_DIR, f"{(base - timedelta(days=offset)).strftime('%Y-%m-%d')}.log")
         for offset in range(max(1, int(days or 1)))
     ]
-
-
-def _read_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
-    try:
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            start = max(0, size - int(max_bytes or 0))
-            handle.seek(start)
-            if start > 0:
-                handle.readline()
-            data = handle.read().decode("utf-8", errors="ignore")
-    except OSError:
-        return []
-    return data.splitlines()[-max(1, int(max_lines or 1)):]
 
 
 def _normalize_at_name(value):

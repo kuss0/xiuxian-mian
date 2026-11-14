@@ -8,6 +8,7 @@ DEFAULT_STORAGE_BAG_ITEM_NAME_MAP = {
     "item_fishing_bait_spirit_rice": "灵米饵",
     "item_fishing_bait_demon_blood": "妖血饵",
 }
+_INVENTORY_CONTAINER_KEYS = ("items", "current", "materials", "inventory", "storage", "bag", "snapshots")
 
 
 def parse_json_maybe(value):
@@ -104,7 +105,7 @@ def storage_bag_api_extract_items(raw_inventory, item_name_map=None):
         return items, seen_inventory
 
     seen_inventory = True
-    for key in ("items", "current", "materials", "inventory", "storage", "bag", "snapshots"):
+    for key in _INVENTORY_CONTAINER_KEYS:
         value = raw_inventory.get(key)
         if isinstance(value, list):
             for item in value:
@@ -137,7 +138,9 @@ def storage_bag_api_extract_items(raw_inventory, item_name_map=None):
                 for item_name, amount in value.items():
                     storage_bag_api_add_item(items, storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
 
-    if not items:
+    # An explicitly empty inventory is authoritative. Never fall back to the
+    # surrounding owner metadata and treat numeric identity IDs as item counts.
+    if not items and not any(isinstance(raw_inventory.get(key), (list, dict)) for key in _INVENTORY_CONTAINER_KEYS):
         for item_name, amount in raw_inventory.items():
             if item_name in {"owner", "owner_username", "source", "event_time", "raw_message_id", "chat_id", "msg_id", "updated_at"}:
                 continue

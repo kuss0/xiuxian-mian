@@ -1,7 +1,6 @@
 """Owned trial checkpoints and local recovery, without transport credentials."""
 
 import asyncio
-from concurrent.futures import Future, TimeoutError
 from copy import deepcopy
 import json
 import re
@@ -13,7 +12,7 @@ from ..persistence import _bounded_miniapp_operation, mark_dirty, save_state
 from ..state import TRIAL_OPERATION_ARCHIVE_MAX_BYTES, TRIAL_OPERATION_MAX_BYTES
 from ..timing import get_day_key
 from ..webapp_core import sanitize_webapp_secret_text
-from .miniapp_common import MiniAppIdentityOwner
+from .miniapp_common import MiniAppIdentityOwner, submit_owned_checkpoint
 from .trial_miniapp import _trial_round_key
 from .trial_receipts import normalize_trial_player_id, parse_trial_finish_receipt
 
@@ -317,32 +316,7 @@ class CheckpointWriter:
         return self.owner.is_current() and _same(self.current, self.owner.identity.get(STATE_KEY, {}))
 
     def __call__(self, checkpoint):
-        if self.closed:
-            return False
-        checkpoint = deepcopy(checkpoint)
-        if threading.get_ident() == self.thread_id:
-            return self._accept(checkpoint)
-        future = Future()
-
-        def apply():
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                future.set_result(self._accept(checkpoint) if not self.closed else False)
-            except Exception:
-                future.set_result(False)
-
-        try:
-            self.loop.call_soon_threadsafe(apply)
-            return future.result(timeout=CHECKPOINT_TIMEOUT_SEC) is True
-        except TimeoutError:
-            if future.cancel():
-                return False
-            # A synchronous save already running on the owner loop must drain.
-            # Returning early would lose its acknowledgement and strand an unsent intent.
-            return future.result() is True
-        except RuntimeError:
-            return False
+        return submit_owned_checkpoint(self, checkpoint, timeout=CHECKPOINT_TIMEOUT_SEC)
 
     def _transition_allowed(self, checkpoint, added):
         previous = self.last_checkpoint

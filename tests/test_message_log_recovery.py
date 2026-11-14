@@ -14,6 +14,9 @@ from model.message_log_recovery import (
     find_recent_message_log_command,
     find_message_log_replies_tail,
     parse_message_log_ts,
+    iter_message_log_rows,
+    iter_message_log_entries_between,
+    read_message_log_tail,
     recover_sent_command_from_message_log,
 )
 
@@ -26,6 +29,32 @@ def _write_log(base_dir, day, entries):
 
 
 class MessageLogRecoveryTests(unittest.TestCase):
+    def test_day_reader_keeps_server_time_and_edits_and_skips_broken_rows(self):
+        now = parse_message_log_ts("2026-11-14 10:00:00 UTC+8")
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [
+                {"ts": "2026-11-14 09:00:00 UTC+8", "message_id": 1, "text": "receipt", "server_event_at": now},
+                {"ts": "2026-11-14 10:00:00 UTC+8", "message_id": 1, "text": "receipt edited", "server_event_at": now - 3600},
+                [], None, 123,
+            ]
+            _write_log(tmp, "2026-11-14", rows)
+            with (Path(tmp) / "2026-11-14.log").open("a") as handle:
+                handle.write("{broken\n")
+            read = list(iter_message_log_rows(now - 1, now + 1, messages_dir=tmp,
+                                             line_predicate=lambda line: "receipt" in line))
+            self.assertEqual(rows[:2], read)
+            exact = list(iter_message_log_entries_between(now - 1, now + 1, messages_dir=tmp))
+            self.assertEqual([(rows[1], now)], exact)
+
+    def test_shared_tail_keeps_bounds_and_discards_partial_utf8_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "messages.log"
+            path.write_text("丢弃的半行\n保留一\n保留二\n", encoding="utf-8")
+            tail_bytes = len("半行\n保留一\n保留二\n".encode())
+            self.assertEqual(["保留一", "保留二"], read_message_log_tail(path, max_bytes=tail_bytes))
+            self.assertEqual(["保留二"], read_message_log_tail(path, max_lines=1))
+            self.assertEqual([], read_message_log_tail(path.with_name("missing.log")))
+
     def test_structured_lookups_filter_cross_chat_id_collisions(self):
         now = parse_message_log_ts("2026-07-15 10:55:11 UTC+8")
         game_group_id = -1001680975844

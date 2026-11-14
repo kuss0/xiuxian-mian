@@ -1,10 +1,10 @@
 """Bind weekly adventures to the production ownership and shared send queue."""
+import asyncio
 import time
-import json
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from types import SimpleNamespace
 
+from .message_log_recovery import iter_message_log_rows
 from .activity_occupancy import get_activity_block_reason
 from .app_hunt import hunt_target
 from .config import MESSAGES_DIR, TZ_LOCAL, get_registered_client
@@ -138,29 +138,24 @@ async def _recover_terminal_receipts(now):
     if not active:
         return
     earliest = min(float(r["started_at"]) for r in active)
-    local = datetime.fromtimestamp(now, TZ_LOCAL)
-    days = min(7, max(0, (local.date() - datetime.fromtimestamp(earliest, TZ_LOCAL).date()).days))
-    for offset in range(days, -1, -1):
-        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
-        if not path.is_file():
+    rows = await asyncio.to_thread(lambda: list(iter_message_log_rows(
+        max(earliest, now - 7 * 86400), now, messages_dir=MESSAGES_DIR,
+        line_predicate=lambda line: any(marker in line for marker in
+            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了", "这里已经有一场密议了")))))
+    for row in rows:
+        try:
+            at = float(row.get("server_event_at") or 0)
+            date = datetime.fromtimestamp(at, TZ_LOCAL)
+        except (ValueError, TypeError, OverflowError, OSError):
             continue
-        with path.open() as stream:
-            for line in stream:
-                if not any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了", "这里已经有一场密议了")):
-                    continue
-                try:
-                    row = json.loads(line)
-                    at = float(row.get("server_event_at") or 0)
-                except (ValueError, TypeError):
-                    continue
-                if at < earliest - 1:
-                    continue
-                event = SimpleNamespace(raw_text=str(row.get("text") or ""), date=datetime.fromtimestamp(at, TZ_LOCAL),
-                    chat_id=row.get("chat_id"), sender_id=row.get("sender_id"), id=row.get("message_id", 0),
-                    topic_id=row.get("topic_id", 0), reply_to_msg_id=row.get("reply_to_msg_id", 0),
-                    reply_to=SimpleNamespace(reply_to_top_id=row.get("topic_id", 0)), forwarded=row.get("forwarded", False))
-                for name in {r.get("team", "") for r in active}:
-                    await weekly.game_event(_context(name) if name else ctx, event)
+        if at < earliest - 1:
+            continue
+        event = SimpleNamespace(raw_text=str(row.get("text") or ""), date=date,
+            chat_id=row.get("chat_id"), sender_id=row.get("sender_id"), id=row.get("message_id", 0),
+            topic_id=row.get("topic_id", 0), reply_to_msg_id=row.get("reply_to_msg_id", 0),
+            reply_to=SimpleNamespace(reply_to_top_id=row.get("topic_id", 0)), forwarded=row.get("forwarded", False))
+        for name in {r.get("team", "") for r in active}:
+            await weekly.game_event(_context(name) if name else ctx, event)
 
 
 def _backfill_weekly_receipts():
@@ -181,49 +176,43 @@ def _backfill_weekly_receipts():
             name = str(scope.get("member_names", {}).get(str(identity)) or get_send_as_profile(identity).get("username") or "").lower().lstrip("@")
             if name:
                 members[name] = identity
-    for offset in range(local.weekday(), -1, -1):
-        path = Path(MESSAGES_DIR) / f"{(local - timedelta(days=offset)).strftime('%Y-%m-%d')}.log"
-        if not path.is_file():
+    for row in iter_message_log_rows(now - local.weekday() * 86400, now, messages_dir=MESSAGES_DIR,
+                                     line_predicate=lambda line: any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥"))):
+        try:
+            at = float(row.get("server_event_at") or 0)
+            weekly.week_key(at)
+        except (ValueError, TypeError, OverflowError, OSError):
             continue
-        with path.open() as stream:
-            for line in stream:
-                if not any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥")):
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                at = float(row.get("server_event_at") or 0)
-                receipt = f"{row.get('chat_id')}:{row.get('message_id')}"
-                if (row.get("sender_id") not in get_game_bot_ids() or row.get("forwarded")
-                        or (row.get("chat_id"), row.get("topic_id", 0)) not in names_by_target
-                        or weekly.week_key(at) != weekly.week_key(now)):
-                    continue
-                text = str(row.get("text") or "")
-                kind = next((kind for kind in weekly.KINDS if weekly.terminal(kind, text)), "")
-                if not kind:
-                    continue
-                quotas = records.setdefault("quotas", {}).setdefault(kind, {})
-                members = names_by_target[(row.get("chat_id"), row.get("topic_id", 0))]
-                counted = set(receipt_members.get(receipt, previous_members if receipt in seen else []))
-                found = False
-                for reward in text.splitlines():
-                    match = weekly._NAMES.match(reward)
-                    identity = members.get(match[1].lower()) if match else None
-                    if identity is None or identity in counted or not ("修为+" in reward or "本周有奖次数已满" in reward):
-                        continue
-                    key = str(identity)
-                    previous = quotas.get(key, {})
-                    used = previous.get("used", 0) if previous.get("week") == weekly.week_key(at) else 0
-                    quotas[key] = {"week": weekly.week_key(at), "used": 2 if "本周有奖次数已满" in reward else min(2, used + 1),
-                                   "source_msg_id": row["message_id"], "at": at}
-                    found = True
-                    counted.add(identity)
-                if found:
-                    if receipt not in seen:
-                        evidence.append(receipt)
-                    seen.add(receipt)
-                    receipt_members[receipt] = sorted(counted)
+        receipt = f"{row.get('chat_id')}:{row.get('message_id')}"
+        if (row.get("sender_id") not in get_game_bot_ids() or row.get("forwarded")
+                or (row.get("chat_id"), row.get("topic_id", 0)) not in names_by_target
+                or weekly.week_key(at) != weekly.week_key(now)):
+            continue
+        text = str(row.get("text") or "")
+        kind = next((kind for kind in weekly.KINDS if weekly.terminal(kind, text)), "")
+        if not kind:
+            continue
+        quotas = records.setdefault("quotas", {}).setdefault(kind, {})
+        members = names_by_target[(row.get("chat_id"), row.get("topic_id", 0))]
+        counted = set(receipt_members.get(receipt, previous_members if receipt in seen else []))
+        found = False
+        for reward in text.splitlines():
+            match = weekly._NAMES.match(reward)
+            identity = members.get(match[1].lower()) if match else None
+            if identity is None or identity in counted or not ("修为+" in reward or "本周有奖次数已满" in reward):
+                continue
+            key = str(identity)
+            previous = quotas.get(key, {})
+            used = previous.get("used", 0) if previous.get("week") == weekly.week_key(at) else 0
+            quotas[key] = {"week": weekly.week_key(at), "used": 2 if "本周有奖次数已满" in reward else min(2, used + 1),
+                           "source_msg_id": row["message_id"], "at": at}
+            found = True
+            counted.add(identity)
+        if found:
+            if receipt not in seen:
+                evidence.append(receipt)
+            seen.add(receipt)
+            receipt_members[receipt] = sorted(counted)
     records["receipt_keys"] = evidence[-200:]
     records["receipt_members"] = {key: ids for key, ids in receipt_members.items() if key in records["receipt_keys"]}
     records["initialized_participants"] = list(identities)
