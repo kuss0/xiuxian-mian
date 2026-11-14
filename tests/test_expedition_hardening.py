@@ -63,6 +63,48 @@ def make_context(now=None):
     return ctx, roster
 
 
+def test_expired_never_entered_assembly_cancels_once_and_requires_own_receipt():
+    ctx, roster = make_context()
+    roster.update(phase="held", auto_daily=True, requires_reconciliation=True, expires_at=time.time() - 10)
+    async def run():
+        await xuangu.run_xuangu_auto_scheduler(ctx, time.time())
+        ctx.messages.game_command.assert_awaited_once()
+        assert ctx.messages.game_command.call_args.args[0] == ".解散玄骨"
+        assert roster["requires_reconciliation"]
+        await xuangu.run_xuangu_auto_scheduler(ctx, time.time() + 600)
+        ctx.messages.game_command.assert_awaited_once()
+        # Real 11-13 no-team wording: foreign or anonymous replies cannot release.
+        event = SimpleNamespace(raw_text="你当前没有玄骨队伍。", id=701, chat_id=roster["game_chat_id"],
+                                reply_to_msg_id=699, reply_to=None)
+        assert not await xuangu.handle_xuangu_game_event(ctx, event)
+        assert roster["requires_reconciliation"]
+        event.reply_to_msg_id = 700
+        assert await xuangu.handle_xuangu_game_event(ctx, event)
+        assert roster["phase"] == "settled" and not roster["requires_reconciliation"]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("changes", [{"entered": True}, {"enter_requested_at": 1}, {"current_round": 1},
+    {"command_attempts": {"1:.进入玄骨": {"status": "unknown"}}}, {"auto_daily": False},
+    {"is_captain": False}, {"expires_at": time.time() + 9999}])
+def test_uncertain_or_entered_room_is_not_automatically_cancelled(changes):
+    ctx, roster = make_context()
+    roster.update(phase="held", auto_daily=True, requires_reconciliation=True, expires_at=time.time() - 10)
+    roster.update(changes)
+    asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, time.time()))
+    ctx.messages.game_command.assert_not_called()
+    assert roster["requires_reconciliation"]
+
+
+def test_expired_assembly_does_not_cancel_in_changed_group():
+    ctx, roster = make_context()
+    ctx.target = lambda: (-999, 0)
+    roster.update(phase="held", auto_daily=True, requires_reconciliation=True, expires_at=time.time() - 10)
+    asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, time.time()))
+    ctx.messages.game_command.assert_not_called()
+    assert roster["requires_reconciliation"]
+
+
 @pytest.mark.parametrize("sample", ROUNDS, ids=lambda sample: sample["source"])
 def test_real_xuangu_panels_provide_canonical_actions(sample):
     assert all(sample[key] for key in ("source", "module", "family", "event_type", "text"))

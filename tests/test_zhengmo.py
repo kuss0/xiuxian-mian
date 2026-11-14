@@ -265,6 +265,21 @@ def test_lost_registration_send_result_holds_across_next_day(env):
     asyncio.run(run())
 
 
+def test_late_previous_day_registration_cannot_complete_todays_march(env):
+    async def run():
+        await open_meeting(env)
+        await war.game_event(env.ctx, event(env, MEETING_PANEL, reply=103))
+        env.now[0] += 61
+        await war.scheduler(env.ctx, env.now[0])
+        env.now[0] += 86400
+        await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["phase"] == "querying"
+        await war.game_event(env.ctx, event(env, "你已报名本季夺宝大会。", reply=104))
+        assert env.runs["1"]["meeting"]["phase"] == "registered"
+        assert env.runs["1"]["phase"] == "querying"
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("change", ["disabled", "unaffiliated", "past"])
 def test_meeting_requires_enabled_known_faction_and_future_time(env, change):
     async def run():

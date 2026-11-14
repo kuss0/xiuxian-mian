@@ -126,6 +126,7 @@ def _context():
         ),
         sleep=asyncio.sleep, spawn=_spawn,
         finish_choice=get_expedition_config().get("xuangu", {}).get("finish_choice", "收拢遗宝"),
+        target=lambda: hunt_target("secondary"),
     )
 
 

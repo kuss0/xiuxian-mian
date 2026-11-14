@@ -134,7 +134,8 @@ async def finish(ctx, run, phase, message):
 
 async def close_meeting(ctx, run, phase, message):
     run["meeting"].update(phase=phase, result=message, updated_at=time.time())
-    run.update(phase=run.get("daily_phase", "done"), result=run.get("daily_result", run.get("result", "")))
+    if run.get("phase") in MEETING_PHASES:
+        run.update(phase=run.get("daily_phase", "done"), result=run.get("daily_result", run.get("result", "")))
     ctx.save()
     await notice(ctx, run, "夺宝大会｜" + message)
 

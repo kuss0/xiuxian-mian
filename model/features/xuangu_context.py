@@ -48,3 +48,4 @@ class XuanguContext:
     sleep: Callable[[float], Awaitable[Any]]
     spawn: Callable[[Awaitable[Any]], Any]
     finish_choice: str = "收拢遗宝"
+    target: Callable[[], tuple[int, int]] | None = None

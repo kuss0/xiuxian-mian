@@ -300,6 +300,8 @@ async def _send_xuangu_command(ctx, command, *, track=False, send_as_id=None):
 
     def allowed():
         return (ctx.flows.load().get(roster.get("flow_id")) is roster
+                and (not getattr(ctx, "target", None) or not roster.get("game_chat_id")
+                     or ctx.target() == (roster["game_chat_id"], int(roster.get("game_topic_id") or 0)))
                 and (not roster.get("disbanded") or is_disband) and roster.get("phase") == phase
                 and roster.get("current_round") == round_no
                 and (not deadline or time.time() < deadline)
@@ -512,6 +514,20 @@ async def handle_xuangu_game_event(ctx: XuanguContext, event):
     """游戏副群里的玄骨播报处理。返回是否已处理。"""
     raw_text = str(getattr(event, "raw_text", "") or getattr(event, "message", "") or "").strip()
     now = time.time()
+    if raw_text == "你当前没有玄骨队伍。":
+        roster = _match_roster_for_outcome(ctx, "无队伍", now, event=event)
+        reply_id = int(getattr(event, "reply_to_msg_id", 0) or
+                       getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0)
+        if roster is not None and reply_id and any(
+                key.endswith(":" + ctx.commands.disband) and attempt.get("msg_id") == reply_id
+                for key, attempt in roster.get("command_attempts", {}).items()):
+            roster.update(phase="settled", requires_reconciliation=False, finished=True,
+                          outcome="无队伍", terminal_msg_id=int(getattr(event, "id", 0) or 0),
+                          updated_at=now, expires_at=now + 300)
+            _upsert_xuangu_roster(ctx, roster)
+            await ctx.messages.audit("🪦 玄骨原队长确认无队伍，已解除待核对占用", tag="MiniApp")
+            return True
+        return False
     assemble = parse_xuangu_assemble(raw_text)
     if assemble:
         await _on_xuangu_assemble(ctx, event, assemble, now)
@@ -1150,6 +1166,20 @@ async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
     now = float(now or time.time())
     for roster in list(ctx.flows.load().values()):
         phase = roster.get("phase")
+        # A lost join must not reserve five identities forever. Cancel only a
+        # known captain's never-entered, expired assembly; retain ownership until
+        # the captain's own cancellation/no-team reply confirms it is over.
+        if (phase in {"held", "interrupted"} and roster.get("requires_reconciliation")
+                and roster.get("auto_daily") and roster.get("is_captain") and roster.get("room_id")
+                and not roster.get("entered") and not roster.get("enter_requested_at")
+                and not roster.get("current_round")
+                and not any(":.进入玄骨" in key for key in roster.get("command_attempts", {}))
+                and 0 < float(roster.get("expires_at") or 0) <= now
+                and not any(key.endswith(":" + ctx.commands.disband) for key in roster.get("command_attempts", {}))
+                and len([r for r in ctx.flows.load().values() if r.get("requires_reconciliation")
+                         and r.get("leader_identity_id") == roster.get("leader_identity_id")]) == 1):
+            await _xuangu_disband(ctx, roster, now, "集结未进入且已过期，核对取消原房间；不重开、不重放加入")
+            continue
         cutoff = 0
         if phase == "joining":
             cutoff = float(roster.get("room_seen_at") or 0) + _XUANGU_JOIN_WINDOW_SEC
