@@ -171,6 +171,26 @@ def test_send_guard_rechecks_after_queue_wait(env):
     asyncio.run(run())
 
 
+def test_telegram_send_rejection_stops_todays_query_retries(env):
+    async def run():
+        env.ctx.send = AsyncMock(return_value=None)
+        env.ctx.send_rejection = lambda *_: "Telegram 拒绝群发言"
+        await war.scheduler(env.ctx, env.now[0])
+        assert env.runs["1"]["phase"] == "blocked"
+        env.now[0] += 600
+        await war.scheduler(env.ctx, env.now[0])
+        env.ctx.send.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_adapter_classifies_exact_telegram_denial_but_not_unknown_network_error(monkeypatch):
+    block = {"code": "send_exception", "detail": "You're banned from sending messages in supergroups/channels (caused by SendMessageRequest)"}
+    monkeypatch.setattr(app_zhengmo, "get_last_game_send_block", lambda *a, **k: block)
+    assert app_zhengmo._send_rejection(1, ".正魔大战")
+    block["detail"] = "Connection lost"
+    assert not app_zhengmo._send_rejection(1, ".正魔大战")
+
+
 MEETING_STATUS = STATUS.replace("第 2/14 天", "第 3/14 天") + "\n燕家堡夺宝大会 11-15 21:00：报名 魔道 1 / 正道 1；押注 魔道 40000 / 正道 100 灵石。.赴会 / .押注"
 MEETING_PANEL = "【燕家堡夺宝大会】11-15 21:00\n报名 魔道 1 / 正道 1\n.赴会 报名"
 

@@ -197,6 +197,13 @@ async def send(ctx, run, command, phase):
         msg_id = 0
         run["last_error"] = str(error)
     if not msg_id:
+        rejected = getattr(ctx, "send_rejection", lambda *_: "")(member["identity_id"], command)
+        if rejected:
+            if phase in MEETING_PHASES:
+                await close_meeting(ctx, run, "held", rejected)
+            else:
+                await finish(ctx, run, "blocked", rejected)
+            return False
         if phase in MEETING_PHASES:
             await close_meeting(ctx, run, "held", "发送结果未确认，保留本季记录，不重放报名")
             return False

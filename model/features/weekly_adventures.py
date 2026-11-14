@@ -337,7 +337,8 @@ async def send(ctx, run, identity_id, command, stage, deadline):
             return False  # Never replay an unknown mutation.
 
     def allowed():
-        dismiss = command == ".散议" and run["kind"] == "qipai" and run.get("roster_mismatch") and not run.get("bound")
+        dismiss = (command == ".散议" and run["kind"] == "qipai"
+                   and (run.get("roster_mismatch") or run.get("cancel_unstarted")) and not run.get("bound"))
         return (ctx.enabled(run["kind"]) and ctx.records()["runs"].get(run.get("key", run["kind"])) is run
                 and (run.get("phase") in {"opening", "joining", "running"} or dismiss and run.get("phase") == "dissolving")
                 and (dismiss or not run.get("collision")) and not run.get("terminal_pending")
@@ -422,7 +423,7 @@ async def dispatch(ctx, run, actions=None, *, stage=None, deadline=None):
 async def dismiss_council(ctx, run):
     if run.get("bound") or run.get("phase") == "dissolving":
         return
-    run.update(phase="dissolving", deadline=time.time() + 60, last_error="七派名单不符，等待游戏确认散议")
+    run.update(phase="dissolving", deadline=time.time() + 60, last_error="七派集结未完成，等待游戏确认散议")
     await dispatch(ctx, run, [(run["members"][0]["identity_id"], ".散议")], stage=0, deadline=run["deadline"])
 
 
@@ -432,6 +433,14 @@ async def scheduler(ctx, now):
         for kind, run in records.setdefault("runs", {}).items():
             if not getattr(ctx, "accept_run", lambda r: True)(run):
                 continue
+            if (run.get("kind") == "qipai" and run.get("phase") in {"held", "interrupted"}
+                    and not run.get("bound") and int(run.get("observed_stage") or 0) == 0
+                    and now > float(run.get("deadline") or now) + 45
+                    and any(a.get("command") == ".开密议" and a.get("status") == "sent" and a.get("msg_id")
+                            for a in run.get("attempts", {}).values())
+                    and not any(a.get("command") in {".开议", ".散议"} for a in run.get("attempts", {}).values())):
+                run["cancel_unstarted"] = True
+                await dismiss_council(ctx, run)
             await dispatch(ctx, run)
             if run.get("phase") in {"opening", "joining", "running", "dissolving"} and now > run["deadline"] + 45:
                 await hold(ctx, run, "未收到下一阶段或结算回执，不重新开局")
@@ -498,8 +507,12 @@ async def game_event(ctx, event):
                 ctx.save()
                 return True
             if kind == "qipai" and owned and owned["command"] == ".散议" and text.strip() == "这一场密议散了。" and not run.get("bound"):
+                retry_at = time.time() + 300
+                if run.get("cancel_unstarted"):
+                    local = datetime.fromtimestamp(time.time(), timezone(timedelta(hours=8)))
+                    retry_at = (local + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0).timestamp()
                 run.update(phase="cancelled", requires_reconciliation=False, last_error=None, result=text,
-                           completed_at=ctx.event_time(event), next_at=time.time() + 300)
+                           completed_at=ctx.event_time(event), next_at=retry_at)
                 run.pop("pending_actions", None)
                 ctx.save()
                 return True

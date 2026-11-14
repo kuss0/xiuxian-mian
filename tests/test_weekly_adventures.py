@@ -327,6 +327,40 @@ def test_qipai_roster_intruder_dismisses_and_waits_for_own_receipt(env):
     asyncio.run(run())
 
 
+def test_failed_unstarted_council_cancels_once_and_does_not_reopen_same_day(env):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        await weekly.game_event(env.ctx, event(env, "【七派密议】@member1 召集密议，发 .入议", reply=101))
+        record = env.records["runs"]["qipai"]
+        await weekly.hold(env.ctx, record, "成员发送受限")
+        env.now[0] = record["deadline"] + 46
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert env.sends[-1][0] == ".散议" and record["requires_reconciliation"]
+        mid = 100 + len(env.sends)
+        await weekly.game_event(env.ctx, event(env, "这一场密议散了。", reply=mid))
+        assert record["phase"] == "cancelled" and not record["requires_reconciliation"]
+        count = len(env.sends)
+        env.now[0] += 3600
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == count
+        assert not env.records.get("quotas", {}).get("qipai")
+    asyncio.run(run())
+
+
+def test_unconfirmed_opening_council_is_not_cancelled(env):
+    async def run():
+        record = await open_run(env, "qipai")
+        await weekly.hold(env.ctx, record, "开议结果待核对")
+        record["bound"] = False
+        env.now[0] = record["deadline"] + 46
+        count = len(env.sends)
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == count and record["requires_reconciliation"]
+    asyncio.run(run())
+
+
 def test_real_foreign_council_full_replay_never_votes_or_claims_rewards(env):
     rows = json.loads((Path(__file__).parent / "fixtures/qipai_live_20261113.json").read_text())
     async def run():

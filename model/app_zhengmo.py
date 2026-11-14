@@ -7,7 +7,7 @@ from .app_hunt import hunt_target
 from .config import get_registered_client
 from .features import zhengmo
 from .persistence import mark_dirty, save_state
-from .runtime import send_game_command, send_audit_log
+from .runtime import get_last_game_send_block, send_game_command, send_audit_log
 from .state import (
     get_expedition_config, get_expedition_run_state, get_game_bot_ids, get_global_enabled,
     get_identity_account, get_identity_enabled, get_identity_ids, get_send_as_profile,
@@ -38,6 +38,14 @@ def _save():
         raise RuntimeError("正魔大战状态未能持久化，停止发送")
 
 
+def _send_rejection(identity, command):
+    block = get_last_game_send_block(identity, command, max_age_sec=60)
+    detail = str(block.get("detail") or block.get("reason") or "")
+    if block.get("code") == "send_exception" and detail.startswith("You're banned from sending messages in supergroups/channels"):
+        return "Telegram 拒绝该账号在群组发言，今日停止自动尝试；需解除账号或群发言限制后再执行"
+    return ""
+
+
 async def _send(command, *, send_as_id, target_group_role, send_guard, deadline, op_id, chain_id, **_ignored):
     target = hunt_target(target_group_role)
     return await send_game_command(
@@ -56,6 +64,7 @@ def _context():
         runs=lambda: get_expedition_run_state().setdefault("zhengmo", {}),
         enabled=get_global_enabled, members=_members, member_enabled=_enabled,
         root=lambda i: i, target=hunt_target, save=_save, send=_send, bot_ids=get_game_bot_ids,
+        send_rejection=_send_rejection,
         notice=lambda text: send_audit_log(text, scope="global", limit=1800),
     )
 
