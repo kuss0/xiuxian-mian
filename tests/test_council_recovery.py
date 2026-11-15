@@ -60,6 +60,7 @@ def test_manual_council_incomplete_foreign_or_conflicting_chain_never_releases(l
 @pytest.mark.parametrize("failure", [None, "save", "changed", "replaced"])
 def test_startup_reconciliation_is_durable_idempotent_and_never_sends(live, monkeypatch, failure):
     run = live["run"]
+    run["foreign_busy"] = True  # The original held run had observed a later, unrelated room.
     records = {"runs": {"qipai": run}, "quotas": {"qipai": {"301299112": {"used": 1}}}}
     before = copy.deepcopy(records)
     save = Mock(side_effect=RuntimeError("disk unavailable") if failure == "save" else None)
@@ -99,9 +100,12 @@ def test_startup_reconciliation_is_durable_idempotent_and_never_sends(live, monk
             assert run["completion_evidence"]["terminal_message_id"] == 13191160
             assert records["quotas"] == before["quotas"]
             assert records["reconciliations"][0]["original_run"] == before["runs"]["qipai"]
+            saved = save.call_count
+            assert saved > 0
             await app._recover_terminal_receipts(run["started_at"] + 86401)
-            save.assert_called_once()
+            assert save.call_count == saved
             assert len(records["reconciliations"]) == 1
+            assert run["next_at"] >= run["started_at"] + 86400 + 300
         send.assert_not_called()
 
     asyncio.run(recover())

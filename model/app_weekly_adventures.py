@@ -155,7 +155,7 @@ async def _recover_terminal_receipts(now):
             archived = {"run_id": run["id"], "original_run": snapshot, "completion_evidence": proof}
             records["reconciliations"] = (list(previous_archive or []) + [archived])[-50:]
             run.update(phase="reconciled", requires_reconciliation=False, last_error=None,
-                       completion_evidence=proof, completed_at=proof["terminal_at"], next_at=now + 300,
+                       completion_evidence=proof, completed_at=proof["terminal_at"], next_at=now + 300, cooldown_until=now + 300,
                        result="已按本人开议和完整终局消息链核对结束；原定名单不符，未补记奖励")
             run.pop("pending_actions", None)
             try:

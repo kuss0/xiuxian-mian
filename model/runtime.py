@@ -382,8 +382,10 @@ SEND_GAP_WHITELIST_PREFIXES = (
     ".赠送",
 )
 SEND_GAP_WHITELIST_MODULES = {"储物袋"}
+EXPEDITION_SEND_MODULES = {"组队周常", "玄骨遗府", "出海猎妖"}
 MODULE_SEND_GAP_MIN_SEC = {
     "储物袋": 5.0,
+    **dict.fromkeys(EXPEDITION_SEND_MODULES, 6.0),
 }
 IDENTITY_SEND_GAP_MIN_SEC = 10.0
 SEND_QUEUE_TIMEOUT_MARGIN_SEC = 5.0
@@ -1405,6 +1407,11 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
     min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
     module_gap = _module_send_gap_min_sec(intent)
     module_name = str(_compact_send_intent(intent).get("source_module") or "").strip()
+    if module_name in EXPEDITION_SEND_MODULES and not bypass_gap:
+        # Timed party actions still share the channel; spread different actors
+        # by 6-8 seconds instead of inheriting the urgent 1-3 second burst.
+        min_gap = max(min_gap, module_gap)
+        max_gap = max(max_gap, module_gap + 2)
     identity_id = int(send_as_id or 0)
     identity_gap = float(IDENTITY_SEND_GAP_MIN_SEC or 0.0) if identity_id > 0 else 0.0
     slot_anchor = None
