@@ -499,7 +499,7 @@ def build_cave_treasure_launch_args(url, *, start_param="", bot_username=CAVE_TR
     return request, build_request_webview_args(adapter, request) if request.allowed else {}
 
 
-async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
+async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None, return_webview_url=False):
     require_miniapp_operation(operation_check)
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
@@ -551,7 +551,7 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
-    return init_data
+    return str(result.url) if return_webview_url else init_data
 
 
 def _flow_transport(transport, identity_id=0, *, operation_check=None):

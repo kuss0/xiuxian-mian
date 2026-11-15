@@ -10064,7 +10064,17 @@ def _ui_actor_id(session):
 # handler 收 (payload, session) 返回 (ok, message) 或 (ok, message, extra)；
 # 声明 needs_send_as_id 的路由由分发器统一做缺参校验。差异较大的路由不进这张表，
 # 仍留在下面的 elif 链里 —— 硬塞进来只会把差异藏进参数。
+async def _ui_qingxi_trial_browser(payload, session):
+    from .features.qingxi_trial_browser import action
+    if payload.get("action") == "start" and _cave_public_shared_hold(time.time()):
+        return False, "洞府公共入口共享限流，等待服务端冷却", {}
+    return await action(payload)
+
+
 _UI_JSON_ACTION_ROUTES = {
+    "/api/qingxi-trial-browser": {
+        "handler": _ui_qingxi_trial_browser,
+    },
     "/api/additional-activity-action": {
         "handler": lambda payload, session: ui_additional_activity_action(payload),
     },
