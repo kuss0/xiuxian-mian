@@ -28,12 +28,17 @@ def snapshot():
 def summarize_network(network):
     """Only genuine server results can establish completion or resource consumption."""
     receipts = network.get('receipts') or []
-    rewarded = any(row.get('trial', {}).get('run', {}).get('rewarded') is True for row in receipts)
+    rewarded = any((row.get('trial', {}).get('run') or {}).get('rewarded') is True for row in receipts)
     terminal = next((row['trial'] for row in reversed(receipts)
                      if row.get('ok') is True and isinstance(row.get('trial', {}).get('result'), dict)
                      and row['trial']['result'].get('grade')), None)
     started = any(row.get('action') in {'start', 'checkpoint', 'end'} for row in network.get('requests') or [])
-    return {'started': started, 'rewarded': rewarded, 'terminal': terminal}
+    successful = [row.get('trial', {}) for row in receipts if row.get('ok') is True]
+    # A pre-start status with activeRun=null cannot confirm an ambiguous start ended.
+    accepted = any((row.get('run') or {}).get('id') for row in successful)
+    latest_status = (successful[-1].get('status') or {}) if successful else {}
+    closed = bool(started and accepted and 'activeRun' in latest_status and latest_status['activeRun'] is None)
+    return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed}
 
 
 async def action(payload):
@@ -124,7 +129,7 @@ async def _run(owner, arena, practice_only, job_id):
                        arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
                        '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
                        '--log', str(log_file), '--go', '--runs', '1', '--tier', 'best', '--retries', '1',
-                       '--max-run-seconds', '900', '--wait-login', '60']
+                       '--max-run-seconds', '1500', '--wait-login', '60']
             if practice_only:
                 command.append('--practice-only')
             _STATUS.update(phase='running', evidence_dir=str(directory))
@@ -133,7 +138,9 @@ async def _run(owner, arena, practice_only, job_id):
             with (directory / 'runner.log').open('w') as output:
                 process = await asyncio.create_subprocess_exec(*command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
                 waiter = asyncio.create_task(process.wait())
-                deadline = time.monotonic() + 1200
+                # Keep the runner's normal 25-minute fight budget plus scene-loading time.
+                # CPU rendering can make a valid one-game run much slower than the simulator.
+                deadline = time.monotonic() + 2100
                 while process.returncode is None:
                     if not allowed() or time.monotonic() >= deadline:
                         await stop_process()
@@ -150,12 +157,13 @@ async def _run(owner, arena, practice_only, job_id):
             results = [json.loads(line) for line in log_file.read_text().splitlines()] if log_file.is_file() else []
             _STATUS.update(phase='done' if facts['terminal'] else 'stopped', returncode=process.returncode,
                            finished_at=time.time(), kind=(results[-1].get('kind') if results else 'not_started'),
-                           rewarded=facts['rewarded'], server_result=(facts['terminal'] or {}).get('result'))
+                           rewarded=facts['rewarded'], server_closed=facts['closed'],
+                           server_result=(facts['terminal'] or {}).get('result'))
             if facts['rewarded']:
                 day = trial._day(time.time())
                 record['daily_used'] = (int(record.get('daily_used') or 0) if record.get('day') == day else 0) + 1
                 record['day'] = day
-            record['phase'] = previous_phase if facts['terminal'] or (network_loaded and not facts['started']) else 'held'
+            record['phase'] = previous_phase if facts['terminal'] or facts['closed'] or (network_loaded and not facts['started']) else 'held'
             if record['phase'] == 'held':
                 record['last_error'] = '浏览器试跑已发开局但结果待核对'
     except asyncio.CancelledError:

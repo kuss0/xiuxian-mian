@@ -74,6 +74,28 @@ def test_no_game_request_releases_ownership(harness):
     assert '--practice-only' in harness.commands[0]
 
 
+def test_aborted_run_closed_by_server_releases_without_claiming_victory(harness):
+    harness.network.update(requests=[{'action': 'start'}, {'action': 'end'}], receipts=[
+        {'ok': True, 'trial': {'run': {'id': 'browser-run', 'rewarded': True}}},
+        {'ok': True, 'trial': {'status': {'activeRun': None, 'remaining': 2}}},
+    ])
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    assert harness.record['phase'] == 'done'
+    assert harness.record['daily_used'] == 2
+    assert browser.snapshot()['phase'] == 'stopped'
+    assert browser.snapshot()['server_closed'] is True
+    assert browser.snapshot()['server_result'] is None
+
+
+def test_prestart_idle_status_does_not_release_ambiguous_start(harness):
+    harness.network.update(requests=[{'action': 'status'}, {'action': 'start'}], receipts=[
+        {'ok': True, 'trial': {'status': {'activeRun': None}}},
+    ])
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    assert harness.record['phase'] == 'held'
+    assert browser.snapshot()['server_closed'] is False
+
+
 def test_unknown_started_result_is_held(harness):
     harness.network['requests'] = [{'action': 'start'}]
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
@@ -117,4 +139,4 @@ def test_snapshot_does_not_return_login_url(harness):
 
 def test_unverified_client_victory_is_not_server_completion():
     assert browser.summarize_network({'requests': [{'action': 'start'}], 'receipts': []}) == {
-        'started': True, 'rewarded': False, 'terminal': None}
+        'started': True, 'rewarded': False, 'terminal': None, 'closed': False}
