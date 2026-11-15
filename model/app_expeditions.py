@@ -183,6 +183,9 @@ def _normalize_weekly(raw, previous):
     if not isinstance(raw, dict) or type(raw.get("enabled", False)) is not bool:
         raise ValueError("组队周常配置格式错误")
     kinds = raw.get("kinds", list(KINDS))
+    daily_limit = raw.get("qipai_daily_limit", previous.get("qipai_daily_limit", 1))
+    if type(daily_limit) is not int or not 1 <= daily_limit <= 3:
+        raise ValueError("七派每日自动局数须为1–3局")
     if not isinstance(kinds, list) or any(kind not in KINDS for kind in kinds):
         raise ValueError("组队周常玩法无效")
     role = raw.get("group_role", previous.get("group_role", "secondary"))
@@ -213,6 +216,7 @@ def _normalize_weekly(raw, previous):
     if type(raw.get("use_talisman", True)) is not bool:
         raise ValueError("真凰符选项须为开关")
     return {"enabled": raw.get("enabled", False), "kinds": list(dict.fromkeys(kinds)),
+            "qipai_daily_limit": daily_limit,
             "group_role": role, "member_names": aliases, "route": route,
             "use_talisman": raw.get("use_talisman", True), "participant_identity_ids": participants}
 

@@ -435,6 +435,7 @@ function renderWeeklyTeamRow(team, replica) {
   const options = replica.identity_options || [];
   return '<fieldset data-weekly-team><label class="form-label">队名<input class="text-input" data-weekly-team-name value="' + escapeHtml(team.name || '') + '" /></label>'
     + '<label class="checkbox-inline"><input type="checkbox" data-weekly-team-enabled' + (team.enabled ? ' checked' : '') + '>启用此队</label>'
+    + '<label class="form-label">七派每日自动局数<input class="text-input" type="number" data-weekly-team-qipai-limit min="1" max="3" value="' + escapeHtml(team.qipai_daily_limit || 1) + '" /></label>'
     + '<label class="form-label">游戏群<select class="text-input" data-weekly-team-role>' + ['primary', 'secondary'].map(function(role) {
       return '<option value="' + role + '"' + ((team.group_role || 'secondary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
     }).join('') + '</select></label><div class="replica-config-grid">' + options.map(function(identity) {
@@ -547,7 +548,8 @@ function renderExpeditionConfig(replica) {
     + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
       return '<option' + ((xuangu.finish_choice || '收拢遗宝') === choice ? ' selected' : '') + '>' + choice + '</option>';
     }).join('') + '</select></label></div>'
-    + '<div class="dungeon-section"><h4>组队活动</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />自动补满有奖场次</label><p>天澜、越京、阴冥每周两次；七派密议每天三局。天澜、阴冥要求元婴，越京要求筑基。按境界选人，遇到未知结果保留原局。</p>'
+    + '<div class="dungeon-section"><h4>组队活动</h4><label class="checkbox-inline"><input type="checkbox" name="weekly_enabled"' + (weeklyConfig.enabled ? ' checked' : '') + ' />按设定次数自动执行</label><p>天澜、越京、阴冥每周两次；七派默认每天一次，游戏每天前三局有奖。天澜、阴冥要求元婴，越京要求筑基。按境界选人，遇到未知结果保留原局。</p>'
+    + '<label class="form-label">七派每日自动局数<input class="text-input" type="number" name="qipai_daily_limit" min="1" max="3" value="' + escapeHtml(weeklyConfig.qipai_daily_limit || 1) + '" /></label>'
     + members('weekly', weeklyConfig.participant_identity_ids)
     + '<label class="form-label">游戏群<select class="text-input" name="weekly_role">' + ['primary', 'secondary'].map(function(role) {
       return '<option value="' + role + '"' + ((weeklyConfig.group_role || 'secondary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
@@ -665,12 +667,13 @@ document.addEventListener('submit', async function(event) {
         member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
     }),
     xuangu: {enabled: form.elements.xuangu_enabled.checked, group_role: form.elements.xuangu_role.value, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
-    weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'), group_role: form.elements.weekly_role.value,
+    weekly: {enabled: form.elements.weekly_enabled.checked, qipai_daily_limit: Number(form.elements.qipai_daily_limit.value), participant_identity_ids: selectedMembers('weekly'), group_role: form.elements.weekly_role.value,
       member_names: Object.fromEntries(Array.from(form.querySelectorAll('[data-weekly-name]')).map(function(input) { return [input.dataset.weeklyName, input.value.trim()]; })),
       kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; }),
       teams: Array.from(form.querySelectorAll('[data-weekly-team]')).map(function(row) {
         return {name: row.querySelector('[data-weekly-team-name]').value.trim(), enabled: row.querySelector('[data-weekly-team-enabled]').checked,
           group_role: row.querySelector('[data-weekly-team-role]').value,
+          qipai_daily_limit: Number(row.querySelector('[data-weekly-team-qipai-limit]').value),
           participant_identity_ids: Array.from(row.querySelectorAll('[data-weekly-team-member]:checked')).map(function(input) { return input.value; }),
           member_names: Object.fromEntries(Array.from(row.querySelectorAll('[data-weekly-team-alias]')).map(function(input) { return [input.dataset.weeklyTeamAlias, input.value.trim()]; })),
           kinds: Array.from(row.querySelectorAll('[data-weekly-team-kind]:checked')).map(function(input) { return input.dataset.weeklyTeamKind; }),

@@ -547,6 +547,94 @@ def test_qipai_foreign_recruitment_during_cooldown_defers_next_open(env):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("change", [None, "wrong_reply", "wrong_bot", "wrong_chat", "wrong_topic", "forwarded", "bound", "extra_action", "save_failure"])
+def test_owned_council_opening_cooldown_waits_without_room_occupancy_or_quota(env, change):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["qipai"]
+        record.update(phase="held", requires_reconciliation=True)
+        incoming = event(env, "本群开局冷却中，还需 1 分钟。", reply=101, mid=200)
+        if change == "wrong_reply": incoming.reply_to_msg_id = 42
+        if change == "wrong_bot": incoming.sender_id = 1
+        if change == "wrong_chat": incoming.chat_id = -200
+        if change == "wrong_topic": incoming.topic_id = 43
+        if change == "forwarded": incoming.forwarded = True
+        if change == "bound": record["bound"] = True
+        if change == "extra_action": record["attempts"]["extra"] = {"command": ".入议", "status": "unknown"}
+        if change == "save_failure":
+            before = copy.deepcopy(record)
+            env.ctx.save = Mock(side_effect=RuntimeError("disk failed"))
+            with pytest.raises(RuntimeError, match="disk failed"):
+                await weekly.game_event(env.ctx, incoming)
+            assert record == before
+            return
+        await weekly.game_event(env.ctx, incoming)
+        if change:
+            assert record["phase"] != "cooldown"
+        else:
+            assert record["phase"] == "cooldown" and not record["requires_reconciliation"]
+            assert record["opening_rejection"]["message_id"] == 200
+            assert record["next_at"] == env.now[0] + 75
+            env.now[0] += 60
+            await weekly.scheduler(env.ctx, env.now[0])
+            assert not env.records.get("quotas", {}).get("qipai")
+        assert len(env.sends) == 1  # No dissolve, retry or joining after the refusal.
+    asyncio.run(run())
+
+
+def test_cooldown_recovery_keeps_today_reward_and_never_opens_another_council(env):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        quotas = {str(m["identity_id"]): {"day": weekly.period("qipai", env.now[0]), "used": 1}
+                  for m in env.members}
+        env.records["quotas"] = {"qipai": copy.deepcopy(quotas)}
+        record = env.records["runs"]["qipai"]
+        record.update(phase="held", requires_reconciliation=True)
+        await weekly.game_event(env.ctx, event(env, "本群开局冷却中，还需 1 分钟。", reply=101))
+        env.now[0] += 600
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert record["phase"] == "cooldown"
+        assert env.records["quotas"]["qipai"] == quotas
+        assert len(env.sends) == 1
+        env.ctx.notice.assert_not_awaited()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("limit,opens", [(None, False), (1, False), (3, True)])
+def test_council_reward_cap_is_not_the_automatic_daily_target(env, limit, opens):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        env.records["quotas"] = {"qipai": {str(m["identity_id"]): {"day": weekly.period("qipai", env.now[0]), "used": 1}
+                                           for m in env.members}}
+        if limit is not None: env.ctx.qipai_daily_limit = limit
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert bool(env.sends) is opens
+    asyncio.run(run())
+
+
+def test_startup_recovers_owned_cooldown_from_existing_log_without_resending(env, monkeypatch, tmp_path):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["qipai"]
+        record.update(phase="held", requires_reconciliation=True)
+        row = dict(text="本群开局冷却中，还需 1 分钟。", sender_id=99, chat_id=-100, topic_id=42,
+                   message_id=200, reply_to_msg_id=101, server_event_at=env.now[0] + 1)
+        day = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+        (tmp_path / (day + ".log")).write_text(json.dumps(row, ensure_ascii=False) + "\n")
+        monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0] + 600)
+        assert record["phase"] == "cooldown" and len(env.sends) == 1
+    asyncio.run(run())
+
+
 def test_full_owned_yuejing_flow_and_quota_stop(env):
     async def run():
         record = await open_run(env)

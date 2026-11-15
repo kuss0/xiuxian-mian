@@ -455,8 +455,9 @@ async def scheduler(ctx, now):
             if kind == "qipai" and len(eligible) != len(members):
                 continue  # Keep the configured council together while daily solo tasks finish.
             field = "day" if kind == "qipai" else "week"
+            limit = getattr(ctx, "qipai_daily_limit", 1) if kind == "qipai" else quota_limit(kind)
             unfinished = [m for m in eligible if progress.get(str(m["identity_id"]), {}).get(field) != period(kind, now)
-                          or int(progress[str(m["identity_id"])].get("used") or 0) < quota_limit(kind)]
+                          or int(progress[str(m["identity_id"])].get("used") or 0) < limit]
             key = getattr(ctx, "run_key", lambda k: k)(kind)
             old = records["runs"].get(key, {})
             if float(old.get("next_at") or 0) > now or not unfinished:
@@ -498,6 +499,25 @@ async def game_event(ctx, event):
             attempts = run.get("attempts", {}).values()
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             party = departure(run, text)
+            cooldown = re.fullmatch(r"本群开局冷却中，还需\s*(\d+)\s*分钟。", text.strip())
+            if (kind == "qipai" and cooldown and owned and owned["command"] == ".开密议"
+                    and not run.get("bound") and len(attempts) == 1):
+                # A direct rejection proves this opening created no room.
+                # Preserve its receipt and quotas; do not hold all party members.
+                before = dict(run)
+                retry_at = max(time.time() + 60, ctx.event_time(event) + int(cooldown[1]) * 60 + 15)
+                run.update(phase="cooldown", requires_reconciliation=False, next_at=retry_at, cooldown_until=retry_at,
+                           last_error=None, result=text.strip(), opening_rejection={
+                               "command_id": reply, "message_id": int(getattr(event, "id", 0)),
+                               "event_at": ctx.event_time(event), "text": text.strip()})
+                run.pop("pending_actions", None)
+                try:
+                    ctx.save()
+                except BaseException:
+                    run.clear()
+                    run.update(before)
+                    raise
+                return True
             if (kind == "qipai" and owned and owned["command"] == ".开密议" and not run.get("bound")
                     and text.strip() == "这里已经有一场密议了。.密议 看局面，.入议 加入。"):
                 run.update(phase="waiting_room", requires_reconciliation=False, foreign_busy=True,

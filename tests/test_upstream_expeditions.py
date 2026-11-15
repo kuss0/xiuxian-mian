@@ -35,6 +35,18 @@ def event(text, *, reply=0, chat=-100, topic=300, sender=99):
                            reply_to=SimpleNamespace(reply_to_msg_id=reply, reply_to_top_id=topic))
 
 
+@pytest.mark.parametrize("value", [0, 4, True, 1.5, "2", None])
+def test_weekly_council_daily_target_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="七派每日自动局数"):
+        app_expeditions._normalize_weekly({"qipai_daily_limit": value}, {})
+
+
+def test_weekly_council_daily_target_defaults_and_survives_partial_save():
+    assert app_expeditions._normalize_weekly({}, {})["qipai_daily_limit"] == 1
+    configured = app_expeditions._normalize_weekly({"qipai_daily_limit": 3}, {})
+    assert app_expeditions._normalize_weekly({}, configured)["qipai_daily_limit"] == 3
+
+
 class HuntTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.runs, self.sends = {}, []

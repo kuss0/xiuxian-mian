@@ -93,6 +93,7 @@ def _context(name=""):
         accept_run=lambda run: run.get("team", "") == name, team_name=name,
         run_key=lambda kind: f"{name}:{kind}" if name else kind,
         route=config.get("route"), use_talisman=config.get("use_talisman", True),
+        qipai_daily_limit=config.get("qipai_daily_limit", 1),
         save=_save, send=send, bot_ids=get_game_bot_ids, topic=_event_topic_id,
         unsent=is_game_send_definitely_unsent,
         event_time=lambda event: event.date.timestamp(),
@@ -144,7 +145,7 @@ async def _recover_terminal_receipts(now):
     rows = await asyncio.to_thread(lambda: list(iter_message_log_rows(
         max(earliest, now - 7 * 86400), now, messages_dir=MESSAGES_DIR,
         line_predicate=lambda line: any(marker in line for marker in
-            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "密议", "位长老", ".入议", ".开议", ".点将", ".准", ".驳")))))
+            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "密议", "位长老", "本群开局冷却", ".入议", ".开议", ".点将", ".准", ".驳")))))
     for run, snapshot in before:
         if ctx.records().get("runs", {}).get(run.get("key", run["kind"])) is not run or run != snapshot:
             continue
