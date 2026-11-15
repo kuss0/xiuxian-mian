@@ -3,13 +3,15 @@ import copy
 import random
 import time
 import unittest
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from model import app_expeditions, app_hunt, app_xuangu, persistence
+from model import app_expeditions, app_hunt, app_xuangu, persistence, runtime
 from model import state as state_module
 from model.features import changfeng_trial as trial, hunt, xuangu
 from model.features.expedition_store import FubenFlowStore
@@ -414,6 +416,54 @@ def xuangu_context(rosters):
                            messages=SimpleNamespace(game_command=AsyncMock(), audit=AsyncMock(), notice_by_chat=AsyncMock()),
                            identities=SimpleNamespace(participation_enabled=lambda *_: True),
                            commands=SimpleNamespace(disband=".解散玄骨"))
+
+
+@pytest.mark.parametrize("round_no", range(1, 6))
+@pytest.mark.parametrize("rpc_latency", [0.8, 1.2])
+def test_real_xuangu_30_second_round_fits_all_five_actors_with_rpc_latency(monkeypatch, round_no, rpc_latency):
+    async def run():
+        clock = [102.0]  # Two seconds of panel delivery latency.
+        async def sleep(seconds): clock[0] += seconds
+        monkeypatch.setattr(runtime.time, "time", lambda: clock[0])
+        monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(runtime.asyncio, "sleep", sleep)
+        monkeypatch.setattr(runtime.random, "uniform", lambda _low, high: high)
+        monkeypatch.setattr(runtime, "_GAME_SEND_LOCK", asyncio.Lock())
+        monkeypatch.setattr(runtime, "_GAME_SEND_QUEUE_ITEMS", {})
+        monkeypatch.setattr(runtime, "_GAME_LAST_SEND_AT", 100.0)
+        monkeypatch.setattr(runtime, "_MODULE_LAST_SEND_AT", {})
+        monkeypatch.setattr(runtime, "_IDENTITY_LAST_SEND_AT", {1: 100.0} if round_no == 1 else {})
+        monkeypatch.setattr(runtime, "_wait_for_game_send_tasks", AsyncMock(return_value=True))
+        monkeypatch.setattr(runtime, "_global_recovery_throttle_active", lambda _: False)
+        monkeypatch.setattr(runtime, "_has_ordered_recovery_queue_items", lambda: False)
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("xuangu_watchdog_20261115.json").read_text())
+        body = next(row["text"] for row in fixture["events"] if row["text"].startswith(f"【玄骨遗府·第{round_no}轮"))
+        panel = xuangu.parse_xuangu_round(body)
+        assert panel["remaining"] == 30
+        members = [{"identity_id": index, "username": name} for index, name in enumerate(panel["roles"].values(), 1)]
+        captain = members[0]["username"]
+        item = roster(captain=captain, members=[m["username"] for m in members], my_members=members,
+                      leader_identity_id=1, current_round=round_no)
+        ctx = xuangu_context({captain: item})
+        ctx.commands.act = ".玄骨行动"
+        sent = []
+        async def send(command, **kwargs):
+            async with runtime._send_slot(runtime.SEND_PRIORITY_URGENT_REACTIVE, command=command,
+                                          send_as_id=kwargs["send_as_id"], intent={"source_module": "玄骨遗府"}):
+                if not kwargs["send_guard"](): return None
+                sent.append((clock[0], kwargs["send_as_id"], command))
+                clock[0] += rpc_latency
+                return SimpleNamespace(id=1000 + len(sent))
+        ctx.messages.game_command = send
+        message = event("房间 abcd")
+        message.date = datetime.fromtimestamp(100, timezone.utc)
+        await xuangu._on_xuangu_round(ctx, message, panel, clock[0])
+        assert len(sent) == len({actor for _, actor, _ in sent}) == 5
+        assert clock[0] < item["round_deadline"] == 129
+        assert all(b[0] - a[0] >= 4 for a, b in zip(sent, sent[1:]))
+        if round_no == 4: assert sent[0][2] == ".玄骨行动 4 镇魂"
+        if round_no == 5: assert sent[0][1] == 5 and sent[0][2] == ".玄骨行动 5 收神"
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("changes", [{"chat": -200}, {"topic": 500}])

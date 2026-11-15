@@ -1364,6 +1364,70 @@ def get_world_boss_status_burst_exempt_ids(events: list[dict]) -> set[int]:
     return exempt_ids
 
 
+def get_receipt_verified_xuangu_ids(events: list[dict], now: float) -> set[int]:
+    """Exempt bounded owned actions only after their exact successful bot reply."""
+    replies: dict[tuple, list[dict]] = defaultdict(list)
+    echoes: dict[tuple, dict] = {}
+    flows: dict[tuple, list[tuple]] = defaultdict(list)
+    recent = [item for item in events if 0 < float(item.get("_epoch") or 0) <= now]
+    for item in recent:
+        if item.get("event_type") not in {"message", "edit"} or item.get("forwarded"):
+            continue
+        chat, topic = item.get("chat_id"), item.get("topic_id", 0)
+        if (item.get("sender_is_bot") is True and int(item.get("sender_id") or 0) > 0
+                and re.fullmatch(r"hantianzun[0-9]+_bot", str(item.get("sender_username") or ""))):
+            replies[(chat, topic, item.get("reply_to_msg_id"))].append(item)
+        elif item.get("sender_is_bot") is False:
+            echoes[(chat, item.get("message_id"))] = item
+    for item in recent:
+        if item.get("event_type") != "sent" or item.get("source_module") != "玄骨遗府":
+            continue
+        command = str(item.get("text") or "")
+        op = re.fullmatch(r"(xuangu:-[1-9]\d*:([A-Za-z0-9_]{3,32}):[1-9]\d*):([1-9]\d*):(\.[^:\r\n]+)",
+                          str(item.get("op_id") or ""))
+        if not op or op[4] != command or int(op[3]) != item.get("sender_id") or not item.get("message_id") or not item.get("chat_id"):
+            continue
+        echo = echoes.get((item["chat_id"], item["message_id"]), {})
+        username = str(echo.get("sender_username") or "").lstrip("@")
+        if echo.get("sender_id") != item["sender_id"] or echo.get("text") != command:
+            username = ""
+        stage, slot, pattern = "joining", None, ""
+        if command == ".开启玄骨遗府":
+            stage, slot = "waiting_open", ("open",)
+            pattern = r"^【玄骨遗府·集结 1/5】房间 [0-9a-f]+\n"
+        elif match := re.fullmatch(r"\.加入玄骨 ([0-9a-f]+)", command):
+            slot = ("join", item["sender_id"])
+            pattern = r"^【玄骨遗府·集结 [2-5]/5】房间 " + re.escape(match[1]) + r"\n"
+        elif match := re.fullmatch(r"\.玄骨分工 (探禁|攻伐|护队|镇魂|御傀)", command):
+            slot = ("role", item["sender_id"])
+            pattern = r"^【玄骨遗府·集结 [1-5]/5】房间 [0-9a-f]+\n(?=[\s\S]*^@" + re.escape(username) + r"｜[^\n]*｜" + match[1] + "｜)" if username else ""
+        elif command == ".进入玄骨":
+            slot, pattern = ("enter",), r"^【玄骨遗府·第1轮[：:]"
+        elif match := re.fullmatch(r"\.玄骨行动 ([1-5]) (亮招 )?([\u4e00-\u9fff]{2,8})", command):
+            stage, slot = match[1], ("action", match[1], item["sender_id"])
+            pattern = r"^已提交第" + match[1] + "轮【" + ("亮招·" if match[2] else "") + match[3] + "】"
+        elif match := re.fullmatch(r"\.玄骨收尾 (立即撤离|收拢遗宝|争取全收)", command):
+            stage, slot, pattern = "5", ("finish",), "^【玄骨遗府·" + match[1] + "】"
+        if (not slot or item.get("chain_id") != f"{op[1]}:{stage}"
+                or item.get("priority") != ("urgent_reactive" if stage.isdigit() else "chain")):
+            continue
+        if slot[0] in {"open", "enter", "finish"} and username.lower() != op[2].lower():
+            continue
+        flows[(item["chat_id"], item.get("topic_id", 0), op[1])].append((item, slot, pattern))
+    verified: set[int] = set()
+    for (chat, topic, _flow), items in flows.items():
+        if (len({slot for _, slot, _ in items}) != len(items)
+                or len({item["message_id"] for item, _, _ in items}) != len(items)
+                or len({item["sender_id"] for item, _, _ in items}) > 5):
+            continue
+        for item, _slot, pattern in items:
+            if pattern and any(0 <= float(reply["_epoch"]) - float(item["_epoch"]) <= 90
+                               and re.search(pattern, str(reply.get("text") or ""), re.M | re.I)
+                               for reply in replies.get((chat, topic, item["message_id"]), [])):
+                verified.add(id(item))
+    return verified
+
+
 def non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> list[dict]:
     start = now - float(seconds)
     recent = [item for item in events if item.get("event_type") == "sent" and float(item.get("_epoch", 0) or 0) >= start]
@@ -1371,12 +1435,14 @@ def non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> li
     marked_heart_choice_exempt_ids.update(get_receipt_verified_heart_choice_ids(events, now))
     world_boss_status_exempt_ids = get_world_boss_status_burst_exempt_ids(recent)
     storage_bag_exempt_ids = get_storage_bag_retry_exempt_ids(recent)
+    xuangu_exempt_ids = get_receipt_verified_xuangu_ids(events, now)
     return [
         item for item in recent
         if not is_send_burst_exempt_event(item)
         and id(item) not in marked_heart_choice_exempt_ids
         and id(item) not in world_boss_status_exempt_ids
         and id(item) not in storage_bag_exempt_ids
+        and id(item) not in xuangu_exempt_ids
     ]
 
 

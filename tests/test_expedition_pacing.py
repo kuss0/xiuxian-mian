@@ -29,6 +29,7 @@ def test_party_actions_obey_global_floor_across_accounts_and_fit_45_second_round
             async with runtime._send_slot(runtime.SEND_PRIORITY_URGENT_REACTIVE, command=".准", send_as_id=identity,
                                           intent={"source_module": module}):
                 sent.append(clock[0])
-        assert all(6 <= b - a <= 8 for a, b in zip([100.] + sent, sent))
-        assert sent[-1] - 100 < 42  # 45s panel, retaining the existing 3s deadline margin.
+        low, high = runtime.EXPEDITION_SEND_GAPS[module]
+        assert all(low <= b - a <= high for a, b in zip([100.] + sent, sent))
+        assert sent[-1] - 100 < (29 if module == "玄骨遗府" else 42)
     asyncio.run(run())

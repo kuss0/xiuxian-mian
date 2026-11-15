@@ -88,6 +88,15 @@ _XUANGU_ROUND_PLAN = {
     4: {"探禁": "侦察", "攻伐": "护队", "护队": "护队", "镇魂": "镇魂", "御傀": "护傀"},
     5: {"探禁": "镇魂", "攻伐": "亮招 破敌", "护队": "护队", "镇魂": "收神", "御傀": "收神"},
 }
+# Put the unique mechanics before redundant cover when a network delay leaves
+# too little time for the full party. These orders follow the real round prompts.
+_XUANGU_ROLE_PRIORITY = {
+    1: ("镇魂", "探禁", "护队", "攻伐", "御傀"),
+    2: ("探禁", "攻伐", "护队", "镇魂", "御傀"),
+    3: ("探禁", "护队", "攻伐", "镇魂", "御傀"),
+    4: ("镇魂", "护队", "探禁", "御傀", "攻伐"),
+    5: ("御傀", "探禁", "护队", "攻伐", "镇魂"),
+}
 _XUANGU_SAFE_ACTION = "护队"
 _XUANGU_DEFAULT_ACTION = "防守"
 
@@ -902,10 +911,8 @@ async def _on_xuangu_round(ctx, event, panel, now):
     _upsert_xuangu_roster(ctx, roster)
     roles = panel.get("roles") or {}
     members = list(roster.get("my_members") or [])
-    if round_no == 1:
-        # The captain just entered; let the other identities act while its
-        # existing per-identity cooldown expires.
-        members.sort(key=lambda member: int(member.get("identity_id") or 0) == int(roster.get("leader_identity_id") or 0))
+    priorities = {role: rank for rank, role in enumerate(_XUANGU_ROLE_PRIORITY[round_no])}
+    members.sort(key=lambda member: priorities.get(_role_of_username(roles, str(member.get("username") or "")), len(priorities)))
     for member in members:
         if roster.get("disbanded") or roster.get("phase") != "running" or int(roster.get("current_round") or 0) != round_no:
             return
