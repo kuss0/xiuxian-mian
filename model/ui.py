@@ -10068,12 +10068,15 @@ async def _ui_qingxi_trial_browser(payload, session):
     from .features.qingxi_trial_browser import action
     if payload.get("action") == "start" and _cave_public_shared_hold(time.time()):
         return False, "洞府公共入口共享限流，等待服务端冷却", {}
-    return await action(payload)
+    ok, message, extra = await action(payload)
+    return ok, message, extra.get("browser_trial")
 
 
 _UI_JSON_ACTION_ROUTES = {
     "/api/qingxi-trial-browser": {
         "handler": _ui_qingxi_trial_browser,
+        "extra_key": "browser_trial",
+        "include_snapshot": False,
     },
     "/api/additional-activity-action": {
         "handler": lambda payload, session: ui_additional_activity_action(payload),
@@ -10205,6 +10208,7 @@ async def _serve_ui_json_action_route(writer, *, method, path, payload, session,
         session_token=(session or {}).get("session_token"),
         extra_headers=auth_headers,
         extra=extra,
+        include_snapshot=route.get("include_snapshot", True),
     )
     return True
 
