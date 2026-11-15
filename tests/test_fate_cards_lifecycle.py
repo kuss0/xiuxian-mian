@@ -852,12 +852,147 @@ def test_new_run_cannot_regress_a_verified_same_day_snapshot(env):
     assert state_module.get_miniapp_state_records()["1001:fate_cards"] == previous
 
 
-def test_progress_regression_logs_only_numbers_and_keeps_the_original_guard(env):
+def store_active_cultivation_snapshot(progress=1):
+    raw = native(progress=progress)
+    # Live accept_v1 quests omit startedAt.
+    raw["record"]["quest"].pop("startedAt")
+    raw["record"]["quest"]["key"] = "accept_v1"
+    raw["record"]["questKey"] = "accept_v1"
+    before = api.parse_fate_cards_state(raw)
+    before["quest"]["description"] = "token=SECRET"
+    record = {"state": {
+        "challenge_date": DAY, "status": "waiting_deep_retreat",
+        "snapshot": before, "owner_account_id": 11,
+        "gains": {"修为": 2, "天机残痕": 1}, "receipts": {"choose": "existing"},
+    }}
+    state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
+    return record
+
+
+def cultivation_panel(record, progress, status="active"):
+    observed = copy.deepcopy(record["state"]["snapshot"])
+    observed["quest"].update(progress=progress, status=status, can_settle=progress >= 30 and status == "active")
+    return {"ok": True, "data": {"state": observed}}
+
+
+def test_initial_cultivation_regression_resumes_meditation_without_replaying_card_actions(env, monkeypatch):
+    from model import persistence
+
+    meditation_ready(env)
+    record = store_active_cultivation_snapshot()
+    observed = cultivation_panel(record, 0)
+    env.probe.side_effect = [observed, observed]
+    meditate = AsyncMock(return_value=meditation_result())
+    monkeypatch.setattr(cave, "run_cave_meditation_settle_production_flow", meditate)
+    env.session.return_value["result"]["data"]["overview"]["deep_seclusion"] = {
+        "active": True, "can_settle": False, "remaining_seconds": 28800,
+    }
+
+    result = run()
+
+    assert result["ok"]
+    assert result["extra"]["retry_after_sec"] == 1800
+    assert not result["extra"].get("daily_exhausted")
+    meditate.assert_awaited_once()
+    env.action.assert_not_awaited()
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["snapshot"]["quest"]["progress"] == 0
+    assert row["gains"] == {"修为": 20, "天机残痕": 1}
+    assert row["receipts"] == {"choose": "existing"}
+    assert row["next_check_at"] == NOW + 1800
+    assert not row.get("pending")
+    log = " ".join(call.args[0] for call in cave.console_log.call_args_list)
+    assert "previous_progress=1" in log and "observed_progress=0" in log
+    assert "SECRET" not in log and "token=" not in log
+    assert record["state"]["snapshot"]["record_key"] not in log
+
+    # Persist/reload the lower authoritative value, then wait without replay.
+    _get, encode, restore = persistence._META_STATE_CODEC["miniapp_state_records"]
+    encoded = encode(state_module.get_miniapp_state_records())
+    state_module.set_miniapp_state_records({})
+    restore(encoded)
+    env.probe.side_effect = None
+    env.probe.return_value = observed
+    env.session.return_value["result"]["data"]["overview"]["meditation"]["can_settle"] = False
+    assert run()["ok"]
+    meditate.assert_awaited_once()
+    env.action.assert_not_awaited()
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]["gains"] == row["gains"]
+
+    ready = cultivation_panel(record, 30)
+    settled = cultivation_panel(record, 30, "settled")
+    env.probe.side_effect = [ready, settled, settled]
+    env.action.return_value["data"]["state"] = settled["data"]["state"]
+    assert run()["extra"]["daily_exhausted"]
+    assert run()["extra"]["terminal_skip"]
+    env.action.assert_awaited_once()
+    assert env.action.await_args.args[1] == "settle"
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]["gains"] == {
+        "修为": 20, "天机残痕": 3,
+    }
+
+
+@pytest.mark.parametrize("hold", ["pending", "unconfirmed_prerequisite", "prior_day_unknown", "owner", "missing_owner", "metric", "choice", "status", "day", "record", "quest", "started_at", "expires_at", "target", "old_ready", "legacy_unknown", "unconfirmed_status"])
+def test_initial_cultivation_regression_cannot_bypass_other_guards(env, monkeypatch, hold):
+    meditation_ready(env)
+    record = store_active_cultivation_snapshot()
+    observed = cultivation_panel(record, 0)
+    previous = record["state"]
+    if hold in {"pending", "unconfirmed_prerequisite", "prior_day_unknown"}:
+        previous[hold] = {"action": "meditation", "before": copy.deepcopy(previous["snapshot"])}
+    elif hold == "owner":
+        previous["owner_account_id"] = 22
+    elif hold == "missing_owner":
+        previous.pop("owner_account_id")
+    elif hold == "old_ready":
+        previous["snapshot"]["quest"].update(progress=30, can_settle=True)
+    elif hold in {"legacy_unknown", "unconfirmed_status"}:
+        previous["status"] = "meditation_unknown" if hold == "legacy_unknown" else "meditation_unconfirmed"
+    elif hold in {"metric", "choice", "status"}:
+        field = "choice_key" if hold == "choice" else hold
+        old = previous["snapshot"] if hold == "choice" else previous["snapshot"]["quest"]
+        new = observed["data"]["state"] if hold == "choice" else observed["data"]["state"]["quest"]
+        old[field] = new[field] = {"metric": "wait_seconds", "choice": "hide", "status": "settled"}[hold]
+    elif hold in {"day", "record"}:
+        observed["data"]["state"]["challenge_date" if hold == "day" else "record_key"] = "2026-09-10" if hold == "day" else "different"
+    else:
+        observed["data"]["state"]["quest"]["key" if hold == "quest" else hold] = 31 if hold == "target" else "different"
+    state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
+    env.probe.return_value = observed
+    meditate = AsyncMock()
+    monkeypatch.setattr(cave, "run_cave_meditation_settle_production_flow", meditate)
+
+    assert not run()["ok"]
+    meditate.assert_not_awaited()
+    env.action.assert_not_awaited()
+    assert state_module.get_miniapp_state_records()["1001:fate_cards"] == record
+
+
+def test_same_run_cultivation_regression_after_meditation_is_still_rejected(env, monkeypatch):
+    meditation_ready(env)
+    record = store_active_cultivation_snapshot()
+    env.probe.side_effect = [cultivation_panel(record, 1), cultivation_panel(record, 0)]
+    meditate = AsyncMock(return_value=meditation_result())
+    monkeypatch.setattr(cave, "run_cave_meditation_settle_production_flow", meditate)
+
+    result = run()
+
+    assert not result["ok"]
+    assert result["message"].endswith("fate_progress_regressed")
+    meditate.assert_awaited_once()
+    env.action.assert_not_awaited()
+    row = state_module.get_miniapp_state_records()["1001:fate_cards"]["state"]
+    assert row["snapshot"]["quest"]["progress"] == 1
+    assert row["gains"] == {"修为": 20, "天机残痕": 1}
+
+
+def test_progress_regression_with_unknown_outcome_logs_only_numbers_and_keeps_the_original_guard(env):
     before = api.parse_fate_cards_state(native(progress=5))
     before["quest"]["description"] = "token=SECRET"
     record = {"state": {
         "challenge_date": DAY, "status": "waiting_deep_retreat",
         "snapshot": before, "owner_account_id": 11,
+        "pending": {"action": "meditation", "before": before},
     }}
     state_module.set_miniapp_state_records({"1001:fate_cards": copy.deepcopy(record)})
     env.probe.return_value = {"ok": True, "data": {"state": api.parse_fate_cards_state(native(progress=0))}}

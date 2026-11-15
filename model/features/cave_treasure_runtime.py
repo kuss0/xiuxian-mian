@@ -4113,6 +4113,31 @@ class _CaveFateCardsOperation:
             if type(amount) is int and amount > 0:
                 self.reward[str(name)] = self.reward.get(str(name), 0) + amount
 
+    def can_refresh_cultivation_progress(self, previous, basis, current):
+        # A fresh /start can reflect cultivation spent/lost between runs.
+        # This is observation only; action reconciliation stays monotonic.
+        if (self.fate_state or self.pending or self.unconfirmed_prerequisite or self.prior_day_unknown
+                or previous.get("owner_account_id") != self.owner.account_id
+                or str(previous.get("status") or "").endswith(("_unknown", "_unconfirmed"))
+                or previous.get("challenge_date") != current.get("challenge_date")
+                or basis.get("state_verified") is not True):
+            return False
+        if any(not basis.get(key) or basis[key] != current.get(key) for key in ("challenge_date", "record_key")):
+            return False
+        if any(state.get("choice_key") != "accept" or state.get("has_drawn") is not True
+               or state.get("has_ai_reading") is not True for state in (basis, current)):
+            return False
+        old_quest, quest = basis.get("quest") or {}, current.get("quest") or {}
+        if any(old_quest.get(key, "") != quest.get(key, "") for key in ("key", "started_at", "expires_at", "metric", "target")):
+            return False
+        return bool(old_quest.get("key") and all(
+            item.get("status") == "active" and item.get("metric") == "cultivation_gain"
+            and item.get("can_settle") is False
+            and type(item.get("progress")) is int and type(item.get("target")) is int
+            and 0 <= item["progress"] < item["target"]
+            for item in (old_quest, quest)
+        ))
+
     def accept_state(self, fate_state):
         previous = self.base_record.get("state") or {}
         prior_snapshot = previous.get("snapshot") or {}
@@ -4122,17 +4147,20 @@ class _CaveFateCardsOperation:
         error = _fate_cards_transition_error(basis, fate_state)
         if not error and previous.get("challenge_date", "") > fate_state.get("challenge_date", ""):
             error = "fate_day_regressed"
+        if error == "fate_progress_regressed":
+            refreshed = self.can_refresh_cultivation_progress(previous, basis, fate_state)
+            old_quest = basis.get("quest") or {}
+            quest = fate_state.get("quest") or {}
+            console_log(
+                ("天机命脉进度按服务端刷新：" if refreshed else "天机命脉进度回读下降：")
+                + f"previous_progress={_parse_int(old_quest.get('progress'), 0)}｜"
+                f"observed_progress={_parse_int(quest.get('progress'), 0)}｜"
+                f"target={_parse_int(quest.get('target'), 0)}",
+                scope="identity", send_as_id=self.owner.identity_id, limit=220,
+            )
+            if refreshed:
+                error = ""
         if error:
-            if error == "fate_progress_regressed":
-                old_quest = basis.get("quest") or {}
-                quest = fate_state.get("quest") or {}
-                console_log(
-                    "天机命脉进度回读下降："
-                    f"previous_progress={_parse_int(old_quest.get('progress'), 0)}｜"
-                    f"observed_progress={_parse_int(quest.get('progress'), 0)}｜"
-                    f"target={_parse_int(quest.get('target'), 0)}",
-                    scope="identity", send_as_id=self.owner.identity_id, limit=220,
-                )
             raise MiniAppRequestAborted(error)
         if previous.get("owner_account_id") not in (None, self.owner.account_id):
             raise MiniAppRequestAborted("fate_record_owner_unverified")
