@@ -1416,9 +1416,12 @@ def get_receipt_verified_xuangu_ids(events: list[dict], now: float) -> set[int]:
         flows[(item["chat_id"], item.get("topic_id", 0), op[1])].append((item, slot, pattern))
     verified: set[int] = set()
     for (chat, topic, _flow), items in flows.items():
+        items.sort(key=lambda entry: float(entry[0]["_epoch"]))
         if (len({slot for _, slot, _ in items}) != len(items)
                 or len({item["message_id"] for item, _, _ in items}) != len(items)
-                or len({item["sender_id"] for item, _, _ in items}) > 5):
+                or len({item["sender_id"] for item, _, _ in items}) > 5
+                or any(float(cur[0]["_epoch"]) - float(prev[0]["_epoch"]) < 4
+                       for prev, cur in zip(items, items[1:]))):
             continue
         for item, _slot, pattern in items:
             if pattern and any(0 <= float(reply["_epoch"]) - float(item["_epoch"]) <= 90

@@ -68,3 +68,13 @@ def test_duplicate_action_invalidates_flow_exemptions_and_still_warns(observed):
     assert not watchdog.get_receipt_verified_xuangu_ids(events, now)
     cfg = watchdog.build_config(watchdog.parse_args(["--dry-run"]))
     assert watchdog.find_send_breach(events, now, cfg).startswith("send burst:")
+
+
+def test_successful_receipts_do_not_exempt_a_too_fast_send_sequence(observed):
+    now = watchdog.parse_local_ts("2026-11-15 12:06:00 UTC+8")
+    start = min(item["_epoch"] for item in observed)
+    for item in observed:
+        item["_epoch"] = now - 60 + (item["_epoch"] - start) / 10
+    assert not watchdog.get_receipt_verified_xuangu_ids(observed, now)
+    cfg = watchdog.build_config(watchdog.parse_args(["--dry-run"]))
+    assert watchdog.find_send_breach(observed, now, cfg) == "send burst: 8+ sends in 120s"
