@@ -122,7 +122,7 @@ async def _run(owner, arena, practice_only, job_id):
             log_file = directory / 'runs.jsonl'
             command = [str(TOOL_ROOT / '.venv/bin/python'), str(TOOL_ROOT / 'local-qingxi/run_dungeon.py'),
                        arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
-                       '--profile-dir', str(directory / 'profile'), '--url-file', str(url_file),
+                       '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
                        '--log', str(log_file), '--go', '--runs', '1', '--tier', 'best', '--retries', '1',
                        '--max-run-seconds', '900', '--wait-login', '60']
             if practice_only:
