@@ -3032,6 +3032,30 @@ async def resume_audit_summary():
         _schedule_low_priority_audit_flush()
 
 
+async def reconcile_audit_summary():
+    """Explicit bounded read using the running client; never sends a notification."""
+    from .audit_summary_recovery import delivery_proof
+    if not LOG_GROUP_STRUCTURED_SUMMARY:
+        return False, "结构化摘要未启用"
+    _account, tc = _get_any_authed_client_with_account()
+    trusted = set(get_all_clients())
+    bot_id = LOG_BOT_TOKEN.partition(":")[0]
+    if bot_id.isdigit():
+        trusted.add(int(bot_id))
+
+    async def find(batch):
+        messages = await asyncio.wait_for(tc.get_messages(
+            LOG_GROUP_ID, limit=40, offset_date=datetime.fromtimestamp(batch["at"] + 181, TZ_LOCAL)), timeout=15)
+        return delivery_proof(batch, messages, LOG_GROUP_ID, trusted)
+
+    store = _get_audit_summary_store()
+    try:
+        count = await store.reconcile(find)
+    except Exception as exc:
+        return False, f"摘要只读核对未完成（{type(exc).__name__}），保留原投递状态"
+    return True, f"已按日志群原消息确认 {count} 批；仍有 {len(store.held)} 批待核对，未重发"
+
+
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
     return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵", "天星宗", "阴罗宗"} or str(family or "").strip() in {

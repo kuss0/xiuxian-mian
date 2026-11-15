@@ -95,7 +95,22 @@ def validate_summary_checkpoint(data):
         _number(item.get("count"), integer=True)
     next_at = _number(data["next_at"])
     retired = _number(data["retired_records"], integer=True)
+    _validate_receipts(data.get("receipts", []))
     return rows, held, next_at, retired
+
+
+def _validate_receipts(receipts):
+    if not isinstance(receipts, list) or len(receipts) > 100:
+        raise ValueError("invalid summary receipts")
+    for receipt in receipts:
+        if not isinstance(receipt, dict) or _encoded_size(receipt) > 1024:
+            raise ValueError("invalid summary receipt")
+        if not all(isinstance(receipt.get(k), str) for k in ("batch_id", "hash")):
+            raise ValueError("invalid summary receipt key")
+        for key in ("message_id", "sender_id", "chat_id", "at", "checked_at"):
+            if not isinstance(receipt.get(key), (int, float)) or not math.isfinite(receipt[key]):
+                raise ValueError("invalid summary receipt value")
+    return receipts
 
 
 class AuditSummaryStore:
@@ -108,6 +123,7 @@ class AuditSummaryStore:
         self.sending = False
         self.next_at = 0.0
         self.held = []
+        self.receipts = []
         self.retired_records = 0
         self.last_error = ""
         self._reported_at = None
@@ -174,6 +190,7 @@ class AuditSummaryStore:
                         self.bucket[key] = row
                         self.order.append(key)
                 self.held, self.next_at, self.retired_records = held, next_at, retired
+                self.receipts = data.get("receipts", [])
             self.loaded = True
             self.last_error = ""
             return True
@@ -211,7 +228,7 @@ class AuditSummaryStore:
         try:
             self._bound()
             payload = json.dumps(dict(version=1, rows=[self.bucket[key] for key in self.order],
-                                      held=self.held, next_at=self.next_at, retired_records=self.retired_records),
+                                      held=self.held, receipts=self.receipts, next_at=self.next_at, retired_records=self.retired_records),
                                  ensure_ascii=True, allow_nan=False, separators=(",", ":"))
             if len(payload.encode("utf-8")) > MAX_BYTES:
                 raise ValueError("summary checkpoint exceeds limit")
@@ -229,6 +246,38 @@ class AuditSummaryStore:
             # A restart never immediately drains an old backlog.
             self.next_at = max(self.next_at, self.clock() + interval)
             return await self._save()
+
+    async def reconcile(self, finder):
+        """Read bounded history outside the lock; never replay an unknown send."""
+        async with self.lock:
+            if not await self._load() or self.sending:
+                return 0
+            batches = [dict(item) for item in self.held[:3]]
+        count = 0
+        for batch in batches:
+            proof = await finder(batch)
+            if not proof:
+                continue
+            receipt = dict(proof, batch_id=batch["id"], hash=batch["hash"], checked_at=self.clock())
+            _validate_receipts([receipt])
+            async with self.lock:
+                if self.sending or batch not in self.held:
+                    continue
+                before_held, before_receipts = list(self.held), list(self.receipts)
+                before_retired = self.retired_records
+                self.held.remove(batch)
+                self.receipts = (self.receipts + [receipt])[-100:]
+                try:
+                    if not await self._save():
+                        self.held, self.receipts = before_held, before_receipts
+                        self.retired_records = before_retired
+                        return count
+                except BaseException:
+                    self.held, self.receipts = before_held, before_receipts
+                    self.retired_records = before_retired
+                    raise
+                count += 1
+        return count
 
     async def enqueue(self, add_row, interval):
         async with self.lock:

@@ -97,6 +97,36 @@ def test_trial_held_status_only_never_starts_or_clears_uncertainty(trial_env):
     assert old["observed_status"]["carryAvailable"] == 0
 
 
+def test_changfeng_busy_first_account_does_not_starve_other_participants(trial_env, monkeypatch):
+    async def run():
+        state.set_expedition_config({"changfeng": {"enabled": True, "participant_identity_ids": [1, 2]}})
+        monkeypatch.setattr(trial, "get_identity_ids", lambda: [1, 2])
+        monkeypatch.setattr(trial, "get_activity_block_reason", lambda i, **kw: "busy" if i == 1 else "")
+        monkeypatch.setattr(trial, "_TASKS", {})
+        once = AsyncMock(return_value=(True, "done"))
+        monkeypatch.setattr(trial, "run_changfeng_once", once)
+        await trial.run_changfeng_scheduler(time.time())
+        await asyncio.gather(*trial._TASKS.values())
+        assert once.await_args.args[0] == 2
+        once.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_xuangu_route_change_rejects_unresolved_room_and_survives_partial_form_save(monkeypatch):
+    monkeypatch.setattr(app_expeditions, "hunt_target", lambda role: (-100, 0))
+    monkeypatch.setattr(app_expeditions, "save_state", lambda: True)
+    state.set_expedition_config({"xuangu": {"group_role": "secondary", "enabled": True}})
+    state.set_expedition_run_state({"xuangu_auto": {"rosters": {"r": {"phase": "held"}}}})
+    payload = {"xuangu": {"enabled": True, "group_role": "primary"}}
+    assert not app_expeditions.ui_set_expedition_config(payload)[0]
+    assert state.get_expedition_config()["xuangu"]["group_role"] == "secondary"
+    state.set_expedition_run_state({})
+    assert app_expeditions.ui_set_expedition_config(payload)[0]
+    assert app_expeditions.get_expedition_snapshot()["xuangu"]["group_role"] == "primary"
+    assert app_expeditions.ui_set_expedition_config({"xuangu": {"enabled": True}})[0]
+    assert state.get_expedition_config()["xuangu"]["group_role"] == "primary"
+
+
 def test_trial_session_failure_before_start_does_not_hold_a_nonexistent_run(trial_env, monkeypatch):
     monkeypatch.setattr(cave, "_load_cave_public_identity_session", AsyncMock(return_value={"ok": False}))
     assert not asyncio.run(trial.run_changfeng_once(1, manual=True))[0]

@@ -537,8 +537,11 @@ function renderExpeditionConfig(replica) {
     + '<div class="dungeon-section"><h4>出海猎妖</h4><p>每队选择 2–5 人。勾选周常自动补满后，每趟先核对游戏周次数，所有成员达到5/5后停止；异常结果待核对。未勾选时，在日志群发送「.猎妖 出发 队伍名」。</p>'
     + '<div id="hunt-team-rows">' + (config.hunt_teams || []).map(function(team) { return renderHuntTeamRow(team, replica); }).join('') + '</div>'
     + '<button type="button" class="btn btn-secondary" data-hunt-add>新增队伍</button>' + weekly + '</div>'
-    + '<div class="dungeon-section"><h4>玄骨遗府</h4><label class="checkbox-inline"><input type="checkbox" name="xuangu_enabled"' + (xuangu.enabled ? ' checked' : '') + ' />开启集结与副群应对</label>'
-    + '<p>在副本群发送「.开启玄骨 @队长 @队员1 @队员2 @队员3 @队员4」，五人须结丹以上，游戏操作使用副群。</p>'
+    + '<div class="dungeon-section"><h4>玄骨遗府</h4><label class="checkbox-inline"><input type="checkbox" name="xuangu_enabled"' + (xuangu.enabled ? ' checked' : '') + ' />开启集结与自动应对</label>'
+    + '<p>在副本群发送「.开启玄骨 @队长 @队员1 @队员2 @队员3 @队员4」，五人须结丹以上。</p>'
+    + '<label class="form-label">游戏群<select class="text-input" name="xuangu_role">' + ['primary', 'secondary'].map(function(role) {
+      return '<option value="' + role + '"' + ((xuangu.group_role || 'secondary') === role ? ' selected' : '') + '>' + (role === 'primary' ? '主群' : '副群') + '</option>';
+    }).join('') + '</select></label>'
     + '<label class="checkbox-inline"><input type="checkbox" name="xuangu_auto_daily"' + (xuangu.auto_daily ? ' checked' : '') + ' />有古府寻踪珠时自动组队，每天最多一次</label><label class="form-label">每周最多次数<input class="text-input" type="number" name="xuangu_weekly_limit" min="1" max="7" value="' + escapeHtml(xuangu.weekly_limit || 3) + '" /></label><p>默认每周最多三次；开房前刷新背包，入场前核对全队可领奖。无票跳过，不购买或兑换。</p>'
     + members('xuangu', xuangu.participant_identity_ids)
     + '<label class="form-label">收尾选择<select class="text-input" name="xuangu_finish">' + ['立即撤离', '收拢遗宝', '争取全收'].map(function(choice) {
@@ -661,7 +664,7 @@ document.addEventListener('submit', async function(event) {
         seas: Array.from(row.querySelectorAll('[data-hunt-sea]')).map(function(select) { return select.value; }),
         member_identity_ids: Array.from(row.querySelectorAll('[data-hunt-member]')).map(function(select) { return select.value; }).filter(Boolean)};
     }),
-    xuangu: {enabled: form.elements.xuangu_enabled.checked, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
+    xuangu: {enabled: form.elements.xuangu_enabled.checked, group_role: form.elements.xuangu_role.value, auto_daily: form.elements.xuangu_auto_daily.checked, weekly_limit: Number(form.elements.xuangu_weekly_limit.value), finish_choice: form.elements.xuangu_finish.value, participant_identity_ids: selectedMembers('xuangu')},
     weekly: {enabled: form.elements.weekly_enabled.checked, participant_identity_ids: selectedMembers('weekly'), group_role: form.elements.weekly_role.value,
       member_names: Object.fromEntries(Array.from(form.querySelectorAll('[data-weekly-name]')).map(function(input) { return [input.dataset.weeklyName, input.value.trim()]; })),
       kinds: Array.from(form.querySelectorAll('[data-weekly-kind]:checked')).map(function(input) { return input.dataset.weeklyKind; }),

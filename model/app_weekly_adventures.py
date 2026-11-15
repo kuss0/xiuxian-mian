@@ -1,5 +1,6 @@
 """Bind weekly adventures to the production ownership and shared send queue."""
 import asyncio
+import copy
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from .activity_occupancy import get_activity_block_reason
 from .app_hunt import hunt_target
 from .config import MESSAGES_DIR, TZ_LOCAL, get_registered_client
 from .features import weekly_adventures as weekly
+from .features.council_recovery import completed_manual_council
 from .features.xuangu import _event_topic_id
 from .persistence import mark_dirty, save_state
 from .runtime import is_game_send_definitely_unsent, send_audit_log, send_game_command
@@ -137,11 +139,35 @@ async def _recover_terminal_receipts(now):
     active = [r for r in ctx.records().get("runs", {}).values() if r.get("phase") in weekly.ACTIVE | {"waiting_room"}]
     if not active:
         return
+    before = [(run, copy.deepcopy(run)) for run in active]
     earliest = min(float(r["started_at"]) for r in active)
     rows = await asyncio.to_thread(lambda: list(iter_message_log_rows(
         max(earliest, now - 7 * 86400), now, messages_dir=MESSAGES_DIR,
         line_predicate=lambda line: any(marker in line for marker in
-            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "散议", "密议散了", "这里已经有一场密议了")))))
+            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "密议", "位长老", ".入议", ".开议", ".点将", ".准", ".驳")))))
+    for run, snapshot in before:
+        if ctx.records().get("runs", {}).get(run.get("key", run["kind"])) is not run or run != snapshot:
+            continue
+        proof = completed_manual_council(run, rows, set(ctx.bot_ids()))
+        if proof:
+            records = ctx.records()
+            previous_archive = records.get("reconciliations")
+            archived = {"run_id": run["id"], "original_run": snapshot, "completion_evidence": proof}
+            records["reconciliations"] = (list(previous_archive or []) + [archived])[-50:]
+            run.update(phase="reconciled", requires_reconciliation=False, last_error=None,
+                       completion_evidence=proof, completed_at=proof["terminal_at"], next_at=now + 300,
+                       result="已按本人开议和完整终局消息链核对结束；原定名单不符，未补记奖励")
+            run.pop("pending_actions", None)
+            try:
+                ctx.save()
+            except BaseException:
+                run.clear()
+                run.update(snapshot)
+                if previous_archive is None:
+                    records.pop("reconciliations", None)
+                else:
+                    records["reconciliations"] = previous_archive
+                raise
     for row in rows:
         try:
             at = float(row.get("server_event_at") or 0)

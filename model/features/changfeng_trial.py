@@ -345,6 +345,8 @@ async def run_changfeng_scheduler(now):
     for identity_id in config.get("participant_identity_ids", []):
         if identity_id not in get_identity_ids() or not is_cave_public_identity_available(identity_id):
             continue
+        if get_activity_block_reason(identity_id, include_changfeng=False):
+            continue
         record = _records().get(str(identity_id), {})
         if record.get("phase") not in {None, "done", "idle"} or float(record.get("next_at") or 0) > now:
             continue

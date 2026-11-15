@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from model.audit_summary_health import read_summary_health
+from model.expedition_health import read_expedition_health
 from model.yinluo_recovery_policy import blocking_operations, stale_daily_income
 
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
@@ -2138,10 +2139,13 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     account_target_memberships: dict[str, object] = {}
     world_boss_miniapp_health: dict[str, object] = {}
     public_phaseful_summary: list[dict[str, object]] = []
+    expedition_alerts = []
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
+            expedition_alerts = read_expedition_health(conn, now)
+            alerts.extend(business_alert(item["reason"], module="expeditions", sample=[item]) for item in expedition_alerts)
             meta_state = read_meta_state(conn)
             global_paused = str(meta_state.get("global_enabled") or "1").strip().lower() in {"0", "false", "off"}
             global_pause_source = str(meta_state.get("global_pause_source") or "").strip()
@@ -2496,6 +2500,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "account_target_memberships": account_target_memberships,
         "world_boss_miniapp_health": world_boss_miniapp_health,
         "public_phaseful_summary": public_phaseful_summary,
+        "expedition_health": expedition_alerts,
         "alerts": alerts,
     }
 

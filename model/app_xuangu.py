@@ -30,6 +30,10 @@ _TASKS = set()
 _LOCK = asyncio.Lock()
 
 
+def _target():
+    return hunt_target(get_expedition_config().get("xuangu", {}).get("group_role", "secondary"))
+
+
 def _listener_account_id(event):
     # A configured assembly group may also be the admin log group. The general
     # replica listener excludes that group; Xuangu still validates its mapped client.
@@ -67,7 +71,7 @@ async def _audit(text, **_kwargs):
 
 
 async def _send(command, *, send_as_id, send_guard, deadline=0, op_id=None, chain_id=None, **_kwargs):
-    chat_id, topic_id = hunt_target("secondary")
+    chat_id, topic_id = _target()
     if not chat_id or (deadline and time.time() >= deadline):
         return None
     critical = command.startswith((".玄骨行动 ", ".玄骨收尾 "))
@@ -76,7 +80,7 @@ async def _send(command, *, send_as_id, send_guard, deadline=0, op_id=None, chai
         command, send_as_id=send_as_id, track=False, target_chat_id=chat_id,
         operation_check=lambda: send_guard() and (not deadline or time.time() < deadline) and _enabled(send_as_id)
         and not get_activity_block_reason(send_as_id, include_xuangu=False)
-        and hunt_target("secondary") == (chat_id, topic_id),
+        and _target() == (chat_id, topic_id),
         source_module="玄骨遗府", priority="urgent_reactive" if critical else "chain",
         max_retry=0, queue_timeout=queue_timeout, op_id=op_id, chain_id=chain_id,
     )
@@ -125,7 +129,7 @@ def _context():
         ),
         sleep=asyncio.sleep, spawn=_spawn,
         finish_choice=get_expedition_config().get("xuangu", {}).get("finish_choice", "收拢遗宝"),
-        target=lambda: hunt_target("secondary"),
+        target=_target,
     )
 
 
@@ -148,10 +152,10 @@ async def handle_xuangu_group_command(event):
 async def handle_xuangu_game_event(event, *, event_type="message"):
     if not _enabled() or getattr(event, "sender_id", 0) not in get_game_bot_ids():
         return False
-    chat_id, _topic_id = hunt_target("secondary")
+    chat_id, _topic_id = _target()
     if not chat_id or getattr(event, "chat_id", 0) != chat_id:
         return False
-    _chat_id, topic_id = hunt_target("secondary")
+    _chat_id, topic_id = _target()
     ctx = _context()
     actual_topic = xuangu._event_topic_id(event)
     if actual_topic != topic_id:
@@ -292,7 +296,7 @@ def _backfill_week_rewards():
     from types import SimpleNamespace
     now = time.time()
     local = datetime.fromtimestamp(now, TZ_LOCAL)
-    chat, topic = hunt_target("secondary")
+    chat, topic = _target()
     members = [{"identity_id": i, "username": str(get_send_as_profile(i).get("username") or "").lstrip("@")}
                for i in get_expedition_config().get("xuangu", {}).get("participant_identity_ids", [])]
     for row in iter_message_log_rows(now - local.weekday() * 86400, now, messages_dir=MESSAGES_DIR,

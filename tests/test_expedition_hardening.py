@@ -21,6 +21,15 @@ ROUNDS = [sample for sample in SAMPLES if "·第" in sample["text"]]
 NAMES = ["BitDrifter", "CqdOps", "LazyDaemo", "SilLoop", "Davecy"]
 
 
+@pytest.mark.parametrize("role", ["primary", "secondary"])
+def test_xuangu_target_is_configurable_and_defaults_to_secondary(monkeypatch, role):
+    state.set_expedition_config({"xuangu": {"group_role": role}})
+    monkeypatch.setattr(app_xuangu, "hunt_target", lambda r: (-100 if r == "primary" else -200, 42))
+    assert app_xuangu._context().target() == (-100 if role == "primary" else -200, 42)
+    state.set_expedition_config({"xuangu": {}})
+    assert app_xuangu._target() == (-200, 42)
+
+
 @pytest.fixture(autouse=True)
 def isolated_state():
     previous = copy.deepcopy(state._meta_state)

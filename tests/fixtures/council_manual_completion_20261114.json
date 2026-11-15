@@ -1,0 +1,527 @@
+{
+  "run": {
+    "id": "1794632166453",
+    "kind": "qipai",
+    "members": [
+      {
+        "identity_id": 301299112,
+        "username": "jfdffdddd",
+        "telegram_username": "jfdffdddd",
+        "linggen": "火"
+      },
+      {
+        "identity_id": 8659059191,
+        "username": "WalterWA2000",
+        "telegram_username": "WalterWA2000",
+        "linggen": "雷"
+      },
+      {
+        "identity_id": 7538826434,
+        "username": "Lpprceqei",
+        "telegram_username": "Lpprceqei",
+        "linggen": "木火水土金"
+      },
+      {
+        "identity_id": 8574677796,
+        "username": "wisemole",
+        "telegram_username": "wisemole",
+        "linggen": "金木"
+      },
+      {
+        "identity_id": 8613500668,
+        "username": "xianxia9527",
+        "telegram_username": "xianxia9527",
+        "linggen": "木水"
+      }
+    ],
+    "started_at": 1794632166.4531996,
+    "chat_id": -1001680975844,
+    "topic_id": 7310786,
+    "phase": "held",
+    "bound": false,
+    "attempts": {
+      "0:301299112:.开密议": {
+        "status": "sent",
+        "identity_id": 301299112,
+        "command": ".开密议",
+        "stage": 0,
+        "at": 1794632167.0219545,
+        "tries": 1,
+        "msg_id": 13191002,
+        "confirmed_at": 1794632168.0708404
+      },
+      "0:8659059191:.入议": {
+        "status": "sent",
+        "identity_id": 8659059191,
+        "command": ".入议",
+        "stage": 0,
+        "at": 1794632171.3237011,
+        "tries": 1,
+        "msg_id": 13191005,
+        "confirmed_at": 1794632172.1593692
+      },
+      "0:7538826434:.入议": {
+        "status": "sent",
+        "identity_id": 7538826434,
+        "command": ".入议",
+        "stage": 0,
+        "at": 1794632172.1989539,
+        "tries": 1,
+        "msg_id": 13191006,
+        "confirmed_at": 1794632175.3612678
+      },
+      "0:8574677796:.入议": {
+        "status": "unknown",
+        "identity_id": 8574677796,
+        "command": ".入议",
+        "stage": 0,
+        "at": 1794632175.396062,
+        "tries": 1,
+        "msg_id": 0,
+        "confirmed_at": 1794632177.875218
+      },
+      "0:301299112:.散议": {
+        "status": "sent",
+        "identity_id": 301299112,
+        "command": ".散议",
+        "stage": 0,
+        "at": 1794632338.1201165,
+        "tries": 1,
+        "msg_id": 13191052,
+        "confirmed_at": 1794632339.4852078
+      }
+    }
+  },
+  "rows": [
+    {
+      "message_id": 13191002,
+      "server_event_at": 1794632167.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".开密议"
+    },
+    {
+      "message_id": 13191004,
+      "server_event_at": 1794632170.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8918867302,
+      "reply_to_msg_id": 13191002,
+      "forwarded": false,
+      "text": "【七派密议】@jfdffdddd 召集密议：七派里有两家暗投了魔道，要靠诸位长老排查。.入议 加入（3–8 人），人齐后发起人 .开议。.密议帮助 看规则。"
+    },
+    {
+      "message_id": 13191005,
+      "server_event_at": 1794632171.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".入议"
+    },
+    {
+      "message_id": 13191006,
+      "server_event_at": 1794632174.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".入议"
+    },
+    {
+      "message_id": 13191008,
+      "server_event_at": 1794632176.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8788895566,
+      "reply_to_msg_id": 13191005,
+      "forwarded": false,
+      "text": "@WalterWA2000 入议，现有 2 位长老：@jfdffdddd、@WalterWA2000。满 3 人可开议。"
+    },
+    {
+      "message_id": 13191009,
+      "server_event_at": 1794632177.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8964348409,
+      "reply_to_msg_id": 13191006,
+      "forwarded": false,
+      "text": "@Lpprceqei 入议，现有 3 位长老：@jfdffdddd、@WalterWA2000、@Lpprceqei。发起人可以 .开议 了。"
+    },
+    {
+      "message_id": 13191012,
+      "server_event_at": 1794632190.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".入议"
+    },
+    {
+      "message_id": 13191014,
+      "server_event_at": 1794632193.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8944702077,
+      "reply_to_msg_id": 13191012,
+      "forwarded": false,
+      "text": "@lamsvip 入议，现有 4 位长老：@jfdffdddd、@WalterWA2000、@Lpprceqei、@lamsvip。发起人可以 .开议 了。"
+    },
+    {
+      "message_id": 13191022,
+      "server_event_at": 1794632242.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".开议"
+    },
+    {
+      "message_id": 13191024,
+      "server_event_at": 1794632245.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8918867302,
+      "reply_to_msg_id": 13191022,
+      "forwarded": false,
+      "text": "【七派密议·开议】魔道压境，七派各遣一队弟子听调——其中两家已暗投魔道。五关之中守住三关，越国可保。\n七派：1.黄枫谷　2.掩月宗　3.灵兽山　4.清虚门　5.化刀坞　6.天阙堡　7.巨剑门\n第 1 关（守住 0，失守 0）：主帅 @jfdffdddd 请 .点将 2 家（派名或编号，120 秒）。"
+    },
+    {
+      "message_id": 13191030,
+      "server_event_at": 1794632279.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1"
+    },
+    {
+      "message_id": 13191035,
+      "server_event_at": 1794632290.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 2 3"
+    },
+    {
+      "message_id": 13191038,
+      "server_event_at": 1794632294.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8944702077,
+      "reply_to_msg_id": 13191035,
+      "forwarded": false,
+      "text": "【密议·第 1 关】主帅 @jfdffdddd 点将：掩月宗、灵兽山。诸位长老 .准 或 .驳（60 秒，不表态算准）。"
+    },
+    {
+      "message_id": 13191041,
+      "server_event_at": 1794632307.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191054,
+      "server_event_at": 1794632358.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191056,
+      "server_event_at": 1794632362.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8735907987,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": "【密议·第 1 关】准 4 : 驳 0，掩月宗、灵兽山 出征：暗通 1 张——关隘失守！\n第 2 关（守住 0，失守 1）：主帅 @WalterWA2000 请 .点将 3 家（派名或编号，120 秒）。"
+    },
+    {
+      "message_id": 13191065,
+      "server_event_at": 1794632393.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1 4 6"
+    },
+    {
+      "message_id": 13191066,
+      "server_event_at": 1794632397.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8917921351,
+      "reply_to_msg_id": 13191065,
+      "forwarded": false,
+      "text": "【密议·第 2 关】主帅 @WalterWA2000 点将：黄枫谷、清虚门、天阙堡。诸位长老 .准 或 .驳（60 秒，不表态算准）。"
+    },
+    {
+      "message_id": 13191070,
+      "server_event_at": 1794632413.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191074,
+      "server_event_at": 1794632417.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191093,
+      "server_event_at": 1794632457.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8816935632,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": "【密议·第 2 关】准 4 : 驳 0，黄枫谷、清虚门、天阙堡 出征：关隘无恙。\n第 3 关（守住 1，失守 1）：主帅 @Lpprceqei 请 .点将 3 家（派名或编号，120 秒）。"
+    },
+    {
+      "message_id": 13191094,
+      "server_event_at": 1794632457.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191102,
+      "server_event_at": 1794632477.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1 2 3"
+    },
+    {
+      "message_id": 13191103,
+      "server_event_at": 1794632480.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8944702077,
+      "reply_to_msg_id": 13191102,
+      "forwarded": false,
+      "text": "【密议·第 3 关】主帅 @Lpprceqei 点将：黄枫谷、掩月宗、灵兽山。诸位长老 .准 或 .驳（60 秒，不表态算准）。"
+    },
+    {
+      "message_id": 13191106,
+      "server_event_at": 1794632485.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191109,
+      "server_event_at": 1794632489.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191114,
+      "server_event_at": 1794632494.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191119,
+      "server_event_at": 1794632510.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191121,
+      "server_event_at": 1794632513.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8964348409,
+      "reply_to_msg_id": 13191119,
+      "forwarded": false,
+      "text": "【密议·第 3 关】准 4 : 驳 0，黄枫谷、掩月宗、灵兽山 出征：暗通 1 张——关隘失守！\n第 4 关（守住 1，失守 2）：主帅 @lamsvip 请 .点将 4 家（派名或编号，120 秒）。"
+    },
+    {
+      "message_id": 13191122,
+      "server_event_at": 1794632515.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1 4 6"
+    },
+    {
+      "message_id": 13191127,
+      "server_event_at": 1794632526.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1 4 6 3"
+    },
+    {
+      "message_id": 13191131,
+      "server_event_at": 1794632531.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8735907987,
+      "reply_to_msg_id": 13191127,
+      "forwarded": false,
+      "text": "【密议·第 4 关】主帅 @lamsvip 点将：黄枫谷、灵兽山、清虚门、天阙堡。诸位长老 .准 或 .驳（60 秒，不表态算准）。"
+    },
+    {
+      "message_id": 13191134,
+      "server_event_at": 1794632536.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191137,
+      "server_event_at": 1794632545.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191141,
+      "server_event_at": 1794632553.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191144,
+      "server_event_at": 1794632559.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7965897083,
+      "reply_to_msg_id": 13191141,
+      "forwarded": false,
+      "text": "【密议·第 4 关】准 4 : 驳 0，黄枫谷、灵兽山、清虚门、天阙堡 出征：关隘无恙。\n第 5 关（守住 2，失守 2）：主帅 @jfdffdddd 请 .点将 4 家（派名或编号，120 秒）。"
+    },
+    {
+      "message_id": 13191148,
+      "server_event_at": 1794632576.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 301299112,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".点将 1 2 3 4"
+    },
+    {
+      "message_id": 13191149,
+      "server_event_at": 1794632580.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8816935632,
+      "reply_to_msg_id": 13191148,
+      "forwarded": false,
+      "text": "【密议·第 5 关】主帅 @jfdffdddd 点将：黄枫谷、掩月宗、灵兽山、清虚门。诸位长老 .准 或 .驳（60 秒，不表态算准）。"
+    },
+    {
+      "message_id": 13191153,
+      "server_event_at": 1794632593.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 8659059191,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191156,
+      "server_event_at": 1794632599.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7538826434,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191157,
+      "server_event_at": 1794632600.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 5170745913,
+      "reply_to_msg_id": 7310786,
+      "forwarded": false,
+      "text": ".准"
+    },
+    {
+      "message_id": 13191160,
+      "server_event_at": 1794632603.0,
+      "chat_id": -1001680975844,
+      "topic_id": 7310786,
+      "sender_id": 7965897083,
+      "reply_to_msg_id": 13191156,
+      "forwarded": false,
+      "text": "【密议·第 5 关】准 4 : 驳 0，黄枫谷、掩月宗、灵兽山、清虚门 出征：暗通 1 张——关隘失守！\n【七派密议·散议】三关失守，魔道长驱直入……暗投魔道的是：掩月宗、化刀坞。\n4 位长老各得修为、灵石（按境界）。"
+    }
+  ],
+  "bot_ids": [
+    7965897083,
+    8735907987,
+    8788895566,
+    8816935632,
+    8917921351,
+    8918867302,
+    8944702077,
+    8964348409
+  ]
+}

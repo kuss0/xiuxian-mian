@@ -8,6 +8,7 @@ import json
 import math
 import sqlite3
 import subprocess
+import sys
 import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,10 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from model.expedition_health import read_expedition_health
+
 DB_PATH = PROJECT_ROOT / "data" / "state" / "chaogu_state.db"
 HEARTBEAT_PATH = PROJECT_ROOT / "data" / "state" / "listener_heartbeat.json"
 MESSAGES_DIR = PROJECT_ROOT / "data" / "messages"
@@ -575,6 +580,7 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
         # SELECT alone does not pin a snapshot in sqlite3's legacy transaction mode.
         conn.execute("BEGIN")
         checks.extend(_frozen_voyage_checks(conn, now))
+        checks.extend(read_expedition_health(conn, now))
         pending = _fetch_rows(
             conn,
             """

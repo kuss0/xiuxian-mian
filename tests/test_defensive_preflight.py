@@ -64,6 +64,22 @@ def _create_preflight_db(path, *, identity_enabled):
         )
 
 
+def test_snapshot_reports_missing_expedition_daily_even_with_empty_pending(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 11, 15, 11, tzinfo=timezone(timedelta(hours=8))).timestamp()
+    path = tmp_path / "state.db"
+    _create_preflight_db(path, identity_enabled=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE meta(key TEXT,value TEXT)")
+        conn.execute("INSERT INTO meta VALUES('expedition_config',?)", (json.dumps({
+            "changfeng": {"enabled": True, "participant_identity_ids": [1]}}),))
+    monkeypatch.setattr(preflight, "DB_PATH", path)
+    monkeypatch.setattr(preflight, "_listener_status", lambda _: {"level": "healthy"})
+    monkeypatch.setattr(preflight.time, "time", lambda: now)
+    result = preflight.snapshot(horizon_sec=3600)
+    assert any(r.get("kind") == "changfeng" and r["identity_ids"] == [1] for r in result["checks"])
+
+
 def test_tianxing_outside_prepare_window_is_watch():
     now = 1_700_000_000.0
     item = preflight._tianxing_action_status(

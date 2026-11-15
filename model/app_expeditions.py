@@ -73,6 +73,9 @@ async def _manual_trial(identity_id, arena, *, status_only=False):
 async def ui_additional_activity_action(payload):
     try:
         action = payload.get("action")
+        if action == "reconcile_notifications":
+            from .runtime import reconcile_audit_summary
+            return await reconcile_audit_summary()
         if action == "profile":
             return await avatar_soul.refresh_avatar_profile(int(payload.get("identity_id")))
         if action == "restart_global_duel":
@@ -150,6 +153,7 @@ def get_expedition_snapshot():
         "zhengmo": copy.deepcopy(config.get("zhengmo", {})),
         "zhengmo_runs": copy.deepcopy(get_expedition_run_state().get("zhengmo", {})),
         "xuangu": {"enabled": bool(xuangu.get("enabled")), "participant_identity_ids": xuangu.get("participant_identity_ids", []),
+                   "group_role": xuangu.get("group_role", "secondary"),
                    "finish_choice": xuangu.get("finish_choice", "收拢遗宝"), "auto_daily": bool(xuangu.get("auto_daily")),
                    "weekly_limit": xuangu.get("weekly_limit", 3)},
         "xuangu_daily": copy.deepcopy(get_expedition_run_state().get("xuangu_daily", {})),
@@ -278,8 +282,15 @@ def ui_set_expedition_config(payload):
             choice = raw.get("finish_choice", "收拢遗宝")
             if choice not in {"立即撤离", "收拢遗宝", "争取全收"}:
                 raise ValueError("玄骨收尾选项无效")
-            if raw.get("enabled") and not hunt_target("secondary")[0]:
-                raise ValueError("请先配置游戏副群")
+            role = raw.get("group_role", config.get("xuangu", {}).get("group_role", "secondary"))
+            if role not in {"primary", "secondary"} or raw.get("enabled") and not hunt_target(role)[0]:
+                raise ValueError("请先配置玄骨使用的游戏群")
+            if role != config.get("xuangu", {}).get("group_role", "secondary") and any(
+                    r.get("phase") in {"waiting_open", "joining", "running", "finishing", "interrupted", "held"}
+                    or r.get("requires_reconciliation")
+                    for r in get_expedition_run_state().get("xuangu_auto", {}).get("rosters", {}).values()
+                    if isinstance(r, dict)):
+                raise ValueError("原玄骨房间尚未结束或待核对，不能切换游戏群")
             automatic = raw.get("auto_daily", config.get("xuangu", {}).get("auto_daily", False))
             if type(automatic) is not bool:
                 raise ValueError("玄骨有票自动须为开关")
@@ -293,6 +304,7 @@ def ui_set_expedition_config(payload):
             if any(is_avatar_identity(i) for i in participants):
                 raise ValueError("玄骨暂不支持分身切换，请选择本人或频道身份")
             config["xuangu"] = {"enabled": raw.get("enabled", False), "finish_choice": choice,
+                                "group_role": role,
                                 "auto_daily": automatic, "weekly_limit": weekly_limit,
                                 "participant_identity_ids": participants}
         if "changfeng" in payload:
