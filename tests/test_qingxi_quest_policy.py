@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.qingxi_quest_browser import GUARD, QUEST_COMBAT_ENTRY
+from tools.qingxi_quest_browser import GUARD, QUEST_COMBAT_ENTRY, QUEST_COMBAT_LOOT, finished_phase
 
 
 HARNESS = r"""
@@ -114,9 +114,32 @@ async function check(scenario){
   for(const row of [{resource:'flight',action:'start'},{resource:'quests',action:'turn-in'},{resource:'field-cast'}]){
    const a=environment({},null,[row]);assert.equal(a.c.__qx.error,'quest_browser_pending_requires_review');
   }
+ } else if(scenario==='proof_body_once'){
+  let reads=0;const event={k:'use',s:100,pos:[0,0]};
+  const e=await ready({},r=>{
+   if(r!=='field-cast')return {ok:true,account:{playerId:42}};
+   const response=new Response('{}');response.json=async()=>{reads++;return {ok:true,off:true}};
+   response.clone=()=>{throw Error('second network body read')};return response;
+  });
+  const response=await e.send('field-cast',{events:[event]});
+  assert.equal((await response.json()).off,true);assert.equal(reads,1);
+  const cached=await e.send('field-cast',{events:[event]});
+  assert.equal((await cached.json()).off,true);assert.equal(e.calls.length,2);
+  assert.equal(e.c.__qx.pending.size,0);
+ } else if(scenario==='proof_initial_inflight'){
+  let release;const event={k:'use',s:100,pos:[0,0]};
+  const e=await ready({},async(r,b)=>{
+   if(r==='field-cast')await new Promise(resolve=>{release=resolve});
+   return {ok:true,account:{playerId:42},acked:b.events?.map(event=>event.k+':'+event.s)};
+  });
+  const cast=e.send('field-cast',{events:[event]});
+  while(!release)await new Promise(resolve=>setImmediate(resolve));
+  await e.send('quests',{action:'field-engage',operationId:'engage'});
+  assert.equal(e.calls.length,3);assert.equal(e.c.__qx.error,'');
+  release();await cast;assert.equal(e.c.__qx.pending.size,0);
  } else if(scenario==='proof_guards'){
   const event={k:'use',s:100,pos:[0,0],key:'pierce'};
-  for(const mode of ['changed','prefix','quiescing','identity','readonly','other_unknown']){
+  for(const mode of ['changed','prefix','quiescing','identity','unverified_player','other_unknown']){
    const a=await ready({},(r,b)=>{if(r==='field-cast')throw Error('lost');return {ok:true,account:{playerId:42}}});
    await assert.rejects(a.send('field-cast',{events:[event]}),/lost/);
    const body={events:[event]};
@@ -124,11 +147,14 @@ async function check(scenario){
    if(mode==='prefix')body.events=[{...event,s:101}];
    if(mode==='quiescing')a.c.__qx.quiescing=true;
    if(mode==='identity')body.playerId=43;
-   if(mode==='readonly')a.c.__qx.player=0;
+   if(mode==='unverified_player')a.c.__qx.player=0;
    if(mode==='other_unknown')a.c.__qx.error='other_unknown';
    await assert.rejects(a.send('field-cast',body));
    assert.equal(a.calls.length,2);assert.equal(a.c.__qx.pending.size,1);
   }
+  const a=await ready({readOnly:true});
+  await assert.rejects(a.send('field-cast',{events:[event]}),/quest_runner_read_only/);
+  assert.equal(a.calls.length,1);
  } else if(scenario==='reviewed_journal'){
   const cast={resource:'field-cast',action:'events',operation_id:'field-cast:4',at:10};
   const e=environment({reviewedCastPending:[cast]},null,[cast]);
@@ -192,6 +218,18 @@ check(SCENARIO).catch(e=>{console.error(e);process.exitCode=1});
 """
 
 
+@pytest.mark.parametrize('snapshot,phase', [
+    ({'report': {'error': '主线运行达到设置的时限'}, 'overworld': True, 'combat_active': True}, 'bounded_stop'),
+    ({'report': {'error': '主线运行达到设置的时限'}, 'overworld': False, 'combat_active': False}, 'bounded_stop'),
+    ({'report': {'error': '主线运行达到设置的时限'}, 'overworld': False, 'combat_active': True}, 'held'),
+    ({'report': {'error': '主线运行达到设置的时限'}}, 'held'),
+    ({'report': {'error': '击杀结算未确认'}, 'overworld': True}, 'held'),
+    ({'report': {'error': ''}}, 'done'),
+])
+def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phase):
+    assert finished_phase(snapshot) == phase
+
+
 @pytest.mark.parametrize('scenario', [
     'choices', 'fishing', 'durable_unknown', 'duplicate', 'singleflight',
     'native_cast', 'daily_full', 'daily_retry', 'pacing', 'readonly',
@@ -199,7 +237,7 @@ check(SCENARIO).catch(e=>{console.error(e);process.exitCode=1});
     'flight_cleanup', 'flight_journal',
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
-    'proof_guards', 'reviewed_journal',
+    'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:
@@ -208,6 +246,40 @@ def test_browser_policy(scenario, tmp_path):
     transport = (Path(__file__).parent / 'fixtures/dwelling-cast-transport.js').read_text()
     path.write_text('const GUARD=' + json.dumps(GUARD) + ';const SCENARIO=' + json.dumps(scenario)
                     + ';const CAST_TRANSPORT=' + json.dumps(transport) + ';\n' + HARNESS)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['active', 'ready', 'wrong_region', 'full', 'server_required',
+                                     'failed_battle', 'reentrant', 'pickup_failure'])
+def test_successful_combat_collects_only_missing_active_quest_loot(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to exercise the quest combat adapter')
+    script = """const assert=require('node:assert/strict');
+const state={generation:1,story:{}},slot={status:'active',progress:{goods:0},required:{}};
+const objective={id:'goods',type:'collect',itemId:'cargo',sourceEnemyRole:'blade',arena:'longwind',required:30};
+const quest={id:'q5',region:'yue',objectives:[objective,{...objective}]},questCatalog={quests:[quest]};
+const storySlot=()=>slot,storyData=()=>({world:{current:'yue'}}),readCombat=()=>({arena:'longwind'});
+let battles=0,picked=[];function storyCheck(owner){assert.equal(owner,state.generation)}
+async function pickupNeededCorpses(item,owner){picked.push(item);
+ if(SCENARIO==='reentrant')await fightEnemy('ambusher',owner);
+ if(SCENARIO==='pickup_failure')throw Error('pickup unconfirmed');
+}
+BODY
+ battles++;if(SCENARIO==='failed_battle')throw Error('battle unconfirmed');
+}
+(async()=>{
+ if(SCENARIO==='ready')slot.status='ready';
+ if(SCENARIO==='wrong_region')quest.region='jiuguo';
+ if(SCENARIO==='full')slot.progress.goods=30;
+ if(SCENARIO==='server_required'){slot.required.goods=2;slot.progress.goods=2}
+ if(['failed_battle','pickup_failure'].includes(SCENARIO))await assert.rejects(fightEnemy('bandit',1),/unconfirmed/);
+ else await fightEnemy('bandit',1);
+ assert.equal(picked.length,['active','reentrant','pickup_failure'].includes(SCENARIO)?1:0);
+ assert.equal(battles,SCENARIO==='reentrant'?2:1);assert.ok(!state.story.collectingFieldLoot);
+})().catch(error=>{console.error(error);process.exitCode=1});
+""".replace('SCENARIO', json.dumps(scenario)).replace('BODY', QUEST_COMBAT_LOOT)
+    path = tmp_path / 'loot.cjs'
+    path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
 
 

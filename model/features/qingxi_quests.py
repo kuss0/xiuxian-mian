@@ -261,6 +261,11 @@ def native_flight_only_failure(record, identity_id):
                 for row in receipts))
 
 
+def server_flight_closed(response):
+    return (isinstance(response, dict) and response.get('ok') is True
+            and isinstance(response.get('mana'), dict) and response['mana'].get('flightLocked') is False)
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
@@ -273,16 +278,20 @@ async def review_browser_hold(call, record, identity_id):
         reason = 'read_only_failure_no_mutations'
     elif native_flight_only_failure(record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
-        mana = flight.get('mana')
-        if flight.get('ok') is True and isinstance(mana, dict) and mana.get('flightLocked') is False:
+        if server_flight_closed(flight):
             reason = 'native_flight_session_closed'
     elif orphan_cast_proof_only(record, identity_id):
         # A proof upload alone cannot engage/defeat an enemy or grant rewards.
         # Retain it as abandoned evidence; never reconstruct or replay the lost
         # events. Fresh quest status has already been read by the caller.
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
-        if flight.get('ok') is True and (flight.get('mana') or {}).get('flightLocked') is False:
+        if server_flight_closed(flight):
             reason = 'orphan_cast_no_engagement'
+    elif (record.get('last_error') == 'qingxi_flight_requires_review'
+          and browser.get('server_checked') is True and not browser.get('error')):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'confirmed_browser_flight_closed'
     elif browser.get('server_checked') is True and browser.get('error') in {
             'quest_progress_stalled', 'quest_movement_not_ready', 'KeyboardInterrupt'}:
         reason = 'server_checked_safe_stop'
@@ -465,7 +474,8 @@ async def run_once(identity_id, *, status_only=False):
             if status_only:
                 await review_browser_hold(call, record, identity_id)
             if not status_only and browser_required(record.get('gaps', [])) and config.get('gameplay_enabled', False):
-                await run_gameplay(owner, token, url, record, allowed, choices=config.get('choices'))
+                await run_gameplay(owner, token, url, record, allowed, choices=config.get('choices'),
+                    verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))
                 await run_protocol(call, record, save, choices=config.get('choices'))
                 if record.get('phase') == 'waiting_gameplay' and browser_required(record.get('gaps', [])):
                     reason = (record.get('browser', {}).get('stop_reason') or {}).get('reason')
@@ -491,7 +501,7 @@ async def run_once(identity_id, *, status_only=False):
             return False, code
 
 
-async def run_gameplay(owner, token, url, record, allowed, *, choices=None):
+async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, choices=None):
     from .qingxi_trial_browser import TOOL_ROOT
     from .cave_treasure_miniapp import request_cave_treasure_miniapp_init_data
     script = Path(__file__).resolve().parents[2] / 'tools/qingxi_quest_browser.py'
@@ -560,6 +570,13 @@ async def run_gameplay(owner, token, url, record, allowed, *, choices=None):
         if (process.returncode != 0 or result.get('player') != owner.identity_id
                 or result.get('server_checked') is not True):
             raise RuntimeError('qingxi_browser_requires_review')
+        try:
+            flight = await verify_flight()
+        except Exception:
+            raise RuntimeError('qingxi_flight_requires_review') from None
+        if not server_flight_closed(flight):
+            raise RuntimeError('qingxi_flight_requires_review')
+        record['browser'].update(flight_checked=True, flight_checked_at=time.time())
         record['gameplay_uncertain'] = False
         save()
     finally:

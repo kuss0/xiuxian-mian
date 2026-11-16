@@ -322,7 +322,8 @@ def test_reward_choice_update_wakes_waiting_task_but_never_bypasses_hold(monkeyp
         act.assert_awaited_once_with({'action': 'run', 'send_as_id': 42})
 
 
-@pytest.mark.parametrize('outcome', ['missing', 'malformed', 'cancelled', 'unconfirmed', 'wrong_player', 'confirmed'])
+@pytest.mark.parametrize('outcome', ['missing', 'malformed', 'cancelled', 'unconfirmed', 'wrong_player',
+                                     'flight_locked', 'flight_missing', 'flight_unconfirmed', 'flight_timeout', 'confirmed'])
 def test_browser_requires_confirmed_final_receipt_to_release_hold(monkeypatch, tmp_path, outcome):
     import json
     from pathlib import Path
@@ -352,7 +353,11 @@ def test_browser_requires_confirmed_final_receipt_to_release_hold(monkeypatch, t
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', spawn)
-    flow = quests.run_gameplay(SimpleNamespace(identity_id=42), 'token', 'url', record, lambda: True)
+    flight = ({'ok': True} if outcome == 'flight_missing' else {
+        'ok': outcome != 'flight_unconfirmed', 'mana': {'flightLocked': outcome == 'flight_locked'}})
+    verify = AsyncMock(side_effect=RuntimeError('timeout')) if outcome == 'flight_timeout' else AsyncMock(return_value=flight)
+    flow = quests.run_gameplay(SimpleNamespace(identity_id=42), 'token', 'url', record, lambda: True,
+                              verify_flight=verify)
     if outcome == 'confirmed':
         asyncio.run(flow)
         assert record['gameplay_uncertain'] is False
@@ -364,6 +369,19 @@ def test_browser_requires_confirmed_final_receipt_to_release_hold(monkeypatch, t
             asyncio.run(flow)
         assert record['gameplay_uncertain'] is True
     assert not list(tmp_path.glob('.runtime/**/launch.url'))
+
+
+@pytest.mark.parametrize('checked,error,locked,released', [
+    (True, '', False, True), (True, '', True, False), (True, '', None, False),
+    (False, '', False, False), (True, 'unknown_write', False, False),
+])
+def test_confirmed_browser_must_wait_for_fresh_server_flight_closure(monkeypatch, checked, error, locked, released):
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'last_error': 'qingxi_flight_requires_review',
+              'browser': {'server_checked': checked, 'error': error}}
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': locked}})
+    monkeypatch.setattr(quests, 'save', Mock())
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is not released
 
 
 @pytest.fixture

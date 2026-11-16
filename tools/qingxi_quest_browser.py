@@ -24,6 +24,27 @@ QUEST_COMBAT_ENTRY = """step('准备郊外战斗 · ' + objective.text);
             !runtime.canStartQuestCombat(objective.arena)) throw new Error('尚未进入郊外战斗区域');
         return runtime.startQuestCombat?.(objective.arena) === true;
       }, 90000, '郊外敌人模型与战斗入口', owner);"""
+QUEST_COMBAT_LOOT = """async function fightEnemy(enemyId, owner) {
+    await fightEnemyCore(enemyId, owner);
+    storyCheck(owner);
+    if (state.story.collectingFieldLoot) return;
+    const region = storyData()?.world?.current || 'yue', arena = readCombat()?.arena;
+    const items = new Set();
+    for (const quest of questCatalog?.quests || []) {
+      const slot = storySlot(quest.id);
+      if (slot?.status !== 'active' || (quest.region || 'yue') !== region) continue;
+      for (const objective of quest.objectives || []) {
+        const required = slot.required?.[objective.id] ?? objective.required;
+        if (objective.type === 'collect' && objective.itemId && objective.sourceEnemyRole &&
+            objective.arena === arena && Number.isInteger(required) && required > 0 &&
+            (slot.progress?.[objective.id] || 0) < required) items.add(objective.itemId);
+      }
+    }
+    state.story.collectingFieldLoot = true;
+    try { for (const item of items) await pickupNeededCorpses(item, owner); }
+    finally { if (owner === state.generation && state.story) state.story.collectingFieldLoot = false; }
+  }
+  async function fightEnemyCore(enemyId, owner) {"""
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None):
@@ -45,6 +66,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
             "    throw Object.assign(new Error('河岸钓鱼等待现有日计划'), {code:'fishing_daily_limit_reached'});",
         "if (!window.__rt.startQuestCombat?.(objective.arena)) throw new Error('游戏未接受郊外战斗入口，请确认人物已进入区域');":
             QUEST_COMBAT_ENTRY,
+        'async function fightEnemy(enemyId, owner) {': QUEST_COMBAT_LOOT,
     }
     for before, after in patches.items():
         if script.count(before) != 1:
@@ -59,7 +81,7 @@ SNAPSHOT = r"""(() => {
   requests:window.__qx?.requests,casts:window.__qx?.casts,status_error:window.__qx?.statusError,states:q?.states||{},
   cast_error:window.__qx?.castError,
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
-  state:s?.state,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
+  state:s?.state,combat_active:s?.active,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
@@ -73,6 +95,18 @@ def write_result(path, payload):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(payload, ensure_ascii=False))
     os.replace(temporary, path)
+
+
+def finished_phase(snapshot):
+    if snapshot.get('stop_reason'):
+        return 'waiting'
+    error = (snapshot.get('report') or {}).get('error')
+    if not error:
+        return 'done'
+    if (error == '主线运行达到设置的时限' and
+            (snapshot.get('overworld') is True or snapshot.get('combat_active') is False)):
+        return 'bounded_stop'
+    return 'held'
 
 
 def open_page(browser, cdp, url, player, choices, read_only, reviewed_cast_pending=None):
@@ -140,8 +174,9 @@ def main():
                         if (snap.get('run') or {}).get('done'):
                             if snap.get('status_error') and (snap.get('report') or {}).get('error'):
                                 result['stop_reason'] = {'reason': 'status_query_failed'}
-                            result['phase'] = 'waiting' if result.get('stop_reason') else (
-                                'held' if (snap.get('report') or {}).get('error') else 'done')
+                            result['phase'] = finished_phase({**snap, 'stop_reason': result.get('stop_reason')})
+                            if result['phase'] == 'bounded_stop':
+                                result['stop_reason'] = {'reason': 'quest_time_limit'}
                             break
                         if snap.get('requests', 0) >= 200:
                             result['phase'] = 'bounded_stop'
