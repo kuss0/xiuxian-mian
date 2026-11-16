@@ -500,12 +500,18 @@ async def game_event(ctx, event):
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             party = departure(run, text)
             cooldown = re.fullmatch(r"本群开局冷却中，还需\s*(\d+)\s*分钟。", text.strip())
-            if (kind == "qipai" and cooldown and owned and owned["command"] == ".开密议"
+            daily_limit = re.fullmatch(r"主魂今日发起次数已满（共 [1-9]\d* 局），北京时间零点后再来。", text.strip())
+            if (((kind == "qipai" and cooldown) or daily_limit)
+                    and owned and owned["command"] == KINDS[kind]["open"]
                     and not run.get("bound") and len(attempts) == 1):
                 # A direct rejection proves this opening created no room.
                 # Preserve its receipt and quotas; do not hold all party members.
                 before = dict(run)
-                retry_at = max(time.time() + 60, ctx.event_time(event) + int(cooldown[1]) * 60 + 15)
+                if daily_limit:
+                    local = datetime.fromtimestamp(max(time.time(), ctx.event_time(event)), timezone(timedelta(hours=8)))
+                    retry_at = (local + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0).timestamp()
+                else:
+                    retry_at = max(time.time() + 60, ctx.event_time(event) + int(cooldown[1]) * 60 + 15)
                 run.update(phase="cooldown", requires_reconciliation=False, next_at=retry_at, cooldown_until=retry_at,
                            last_error=None, result=text.strip(), opening_rejection={
                                "command_id": reply, "message_id": int(getattr(event, "id", 0)),

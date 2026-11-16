@@ -145,7 +145,8 @@ async def _recover_terminal_receipts(now):
     rows = await asyncio.to_thread(lambda: list(iter_message_log_rows(
         max(earliest, now - 7 * 86400), now, messages_dir=MESSAGES_DIR,
         line_predicate=lambda line: any(marker in line for marker in
-            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "密议", "位长老", "本群开局冷却", ".入议", ".开议", ".点将", ".准", ".驳")))))
+            ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥", "密议", "位长老", "本群开局冷却",
+             "主魂今日发起次数已满", ".入议", ".开议", ".点将", ".准", ".驳")))))
     for run, snapshot in before:
         if ctx.records().get("runs", {}).get(run.get("key", run["kind"])) is not run or run != snapshot:
             continue

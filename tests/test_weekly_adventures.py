@@ -423,6 +423,89 @@ def test_startup_replays_saved_terminal_locally_once(env, monkeypatch, tmp_path)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("kind", ["tianlan", "yuejing", "yinming"])
+@pytest.mark.parametrize("phase", ["opening", "held"])
+def test_daily_open_limit_releases_members_without_rewards_or_another_open(env, monkeypatch, kind, phase):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add(kind)
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"][kind]
+        record.update(phase=phase, requires_reconciliation=phase == "held")
+        original_attempts = copy.deepcopy(record["attempts"])
+        original_quotas = copy.deepcopy(env.records.get("quotas", {}))
+        monkeypatch.setattr(activity_occupancy, "get_expedition_run_state", lambda: {"weekly": env.records})
+        assert "组队周常" in activity_occupancy.get_activity_block_reason(1)
+        text = "主魂今日发起次数已满（共 2 局），北京时间零点后再来。"
+        await weekly.game_event(env.ctx, event(env, text, reply=101, mid=200))
+        assert record["phase"] == "cooldown" and not record["requires_reconciliation"]
+        assert not activity_occupancy.get_activity_block_reason(1)
+        reset = datetime.fromtimestamp(record["next_at"], app_weekly_adventures.TZ_LOCAL)
+        local = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL)
+        assert (reset.date() - local.date()).days == 1
+        assert (reset.hour, reset.minute) == (0, 5)
+        assert record["opening_rejection"]["command_id"] == 101
+        assert record["opening_rejection"]["message_id"] == 200
+        await weekly.scheduler(env.ctx, record["next_at"] - 1)
+        assert len(env.sends) == 1
+        assert record["attempts"] == original_attempts
+        assert env.records.get("quotas", {}) == original_quotas
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("change", ["reply", "sender", "chat", "topic", "forwarded", "bound", "extra_action", "save_failure"])
+def test_daily_open_limit_requires_single_owned_unbound_open_and_durable_save(env, change):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("tianlan")
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["tianlan"]
+        record.update(phase="held", requires_reconciliation=True)
+        incoming = event(env, "主魂今日发起次数已满（共 2 局），北京时间零点后再来。", reply=101)
+        if change == "reply": incoming.reply_to_msg_id = 42
+        if change == "sender": incoming.sender_id = 1
+        if change == "chat": incoming.chat_id = -200
+        if change == "topic": incoming.topic_id = 43
+        if change == "forwarded": incoming.forwarded = True
+        if change == "bound": record["bound"] = True
+        if change == "extra_action": record["attempts"]["join"] = {"command": ".同行", "msg_id": 102}
+        if change == "save_failure":
+            env.ctx.save = Mock(side_effect=RuntimeError("disk failed"))
+            with pytest.raises(RuntimeError, match="disk failed"):
+                await weekly.game_event(env.ctx, incoming)
+        else:
+            await weekly.game_event(env.ctx, incoming)
+        assert record["phase"] != "cooldown" and record["requires_reconciliation"]
+        assert len(env.sends) == 1
+
+    asyncio.run(run())
+
+
+def test_startup_recovers_real_daily_open_rejection_from_local_log(env, monkeypatch, tmp_path):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add("tianlan")
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"]["tianlan"]
+        record.update(phase="held", requires_reconciliation=True)
+        original_quotas = copy.deepcopy(env.records.get("quotas", {}))
+        row = {"text": "主魂今日发起次数已满（共 2 局），北京时间零点后再来。",
+               "chat_id": -100, "topic_id": 42, "sender_id": 99, "message_id": 1001,
+               "reply_to_msg_id": 101, "server_event_at": env.now[0]}
+        day = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+        (tmp_path / (day + ".log")).write_text(json.dumps(row, ensure_ascii=False) + "\n")
+        monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0])
+        assert record["phase"] == "cooldown" and not record["requires_reconciliation"]
+        assert record["opening_rejection"]["message_id"] == 1001
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0])
+        assert len(env.sends) == 1 and env.records.get("quotas", {}) == original_quotas
+
+    asyncio.run(run())
+
+
 def test_startup_log_scan_does_not_block_owner_event_loop(env, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     owner_thread = threading.get_ident()
