@@ -64,8 +64,17 @@ def block(identity, chat, now=None, *, owner=""):
     if group.get("until", 0) > now:
         return {"reason": "本群副本共享开局冷却中", "until": group["until"]}
     for key, opening in records.get("openings", {}).items():
-        if (key != owner and opening.get("phase") == "pending" and not _operator_closed(opening)
-                and (opening.get("chat_id") == chat or str(opening.get("root")) == root)):
+        if key == owner or opening.get("phase") != "pending":
+            continue
+        confirmation = _operator_closed(opening)
+        if confirmation:
+            # Retain the exact manual proof before the feature can replace
+            # its old run with a new one. Otherwise that replacement would
+            # make this already-reconciled claim block the new opening again.
+            _change(lambda current: current["openings"][key].update(
+                phase="operator_confirmed", reconciliation=confirmation))
+            continue
+        if opening.get("chat_id") == chat or str(opening.get("root")) == root:
             return {"reason": "已有副本开局等待回执，不重复发起", "until": now + 60}
     return {}
 
@@ -82,15 +91,16 @@ def _operator_closed(opening):
             continue
         if run.get("chat_id") != opening.get("chat_id"):
             continue
+        proof = {"at": run["operator_confirmed_at"], "run_id": run.get("id", run.get("started_at"))}
         attempts = run.get("command_attempts", run.get("attempts", {})).values()
         if any(a.get("command") == opening.get("command") and a.get("msg_id")
                and a["msg_id"] == opening.get("msg_id") for a in attempts):
-            return True
-        prefix = (f"hunt:{run['started_at']}:" if opening.get("command") == ".出海猎妖"
+            return proof
+        prefix = (f"hunt:{run.get('started_at')}:" if opening.get("command") == ".出海猎妖"
                   else f"weekly:{run.get('kind')}:{run.get('id')}:")
         if str(opening.get("op_id") or "").startswith(prefix):
-            return True
-    return False
+            return proof
+    return None
 
 
 def ready(identity, chat, now=None):

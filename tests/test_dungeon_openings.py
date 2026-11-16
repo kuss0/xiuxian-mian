@@ -245,7 +245,12 @@ def test_manual_reconciliation_releases_only_its_original_pending_claim(opening_
         "kind": "yuejing", "id": "abc", "chat_id": -100, "phase": "operator_confirmed",
         "operator_confirmed_at": opening_env.now[0], "requires_reconciliation": False}}
     limits._records()["openings"] = {"pending": {"phase": "pending", "command": ".夜探越京",
-        "root": 1, "chat_id": -100, "op_id": "weekly:yuejing:abc:0:1:.夜探越京"}}
-    assert limits.ready(1, -100)
-    limits._records()["openings"]["pending"]["op_id"] = "weekly:yuejing:other:0:1:.夜探越京"
+        "root": 1, "chat_id": -100, "op_id": "weekly:yuejing:other:0:1:.夜探越京"}}
     assert not limits.ready(1, -100)
+    limits._records()["openings"]["pending"]["op_id"] = "weekly:yuejing:abc:0:1:.夜探越京"
+    assert limits.ready(1, -100)
+    claim = limits._records()["openings"]["pending"]
+    assert claim["phase"] == "operator_confirmed" and claim["reconciliation"]["run_id"] == "abc"
+    opening_env.save.assert_called_once()
+    state.get_expedition_run_state()["weekly"]["runs"]["yuejing"] = {"phase": "opening", "id": "new"}
+    assert limits.ready(1, -100)
