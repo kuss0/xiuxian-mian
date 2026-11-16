@@ -12,8 +12,9 @@
 
 `vendor/dwelling-autobot/trial-bot.user.js` 保留上游原文，提交固定为
 `2d0c11fbaa9891a6e9a4f09751dc59bc23b56bb2`，启动前校验 SHA256。
-本地策略位于 `tools/qingxi_quest_policy.js`；仅在内存适配两处明确锚点，
-让未选奖励和任务钓鱼进入上游暂缓分支，继续其他任务。锚点变化拒绝启动。
+本地策略位于 `tools/qingxi_quest_policy.js`；仅在内存适配三处明确锚点，
+让未选奖励和任务钓鱼进入上游暂缓分支，并为原生野外入口增加模型
+就绪等待。锚点变化拒绝启动。
 
 - `available -> active/ready -> rewarded` 才是已确认的任务生命周期。
   服务端实际使用 `rewarded`，不能把本地发送成功当作领奖。
@@ -57,3 +58,8 @@
 失败安全降落，结束失败等待会话过期。本地守卫不阻断这两种原生清理，
 起飞仍受保护。历史心跳冻结只有在证据无任务/战斗写入，且新读取的
 官方 `flight` 状态明确为 `mana.flightLocked=false` 时才解除。
+
+原生 `startQuestCombat()` 在敌人模型加载时返回 false；接入层先验证
+`canStartQuestCombat()`，再等待至多 90 秒。发现活动剧情副本或区域
+不符立即停止；不发送试炼开局。旧版仅因入口未就绪停止的记录，也必须
+证明最终已核对、仅有只读任务回执、无战斗写入才可恢复。

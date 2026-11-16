@@ -217,9 +217,12 @@ def legacy_cast_only(record, identity_id):
 def read_only_browser_failure(record, identity_id):
     """Review old query/checkpoint failures; unresolved gameplay stays held."""
     browser = record.get('browser') or {}
-    if browser.get('error') not in {'quest_transport_unconfirmed', 'quest_http_200_non_json'} or not browser.get('evidence_dir'):
-        return False
     result = _browser_evidence(record)
+    entry_loading = (browser.get('server_checked') is True and not browser.get('error')
+                     and (result.get('report') or {}).get('error') ==
+                     '游戏未接受郊外战斗入口，请确认人物已进入区域')
+    if not entry_loading and browser.get('error') not in {'quest_transport_unconfirmed', 'quest_http_200_non_json'}:
+        return False
     receipts = result.get('receipts') or []
     statuses = [row for row in receipts if row.get('resource') == 'quests' and row.get('action') == 'status']
     pending = result.get('pending_operations')

@@ -284,6 +284,24 @@ def test_initial_status_transport_failure_can_be_reviewed_but_writes_cannot(tmp_
     assert quests.read_only_browser_failure(record, 42)
 
 
+def test_native_entry_failure_requires_final_query_only_evidence(tmp_path):
+    import json
+    result = {'player': 42, 'upstream_version': '2.0.53', 'requests': 1, 'casts': 0,
+              'pending': 0, 'pending_operations': [],
+              'report': {'error': '游戏未接受郊外战斗入口，请确认人物已进入区域'},
+              'receipts': [{'resource': 'quests', 'action': 'status', 'ok': True}]}
+    path = tmp_path / 'result.json'
+    path.write_text(json.dumps(result))
+    record = {'browser': {'error': '', 'server_checked': True, 'evidence_dir': str(tmp_path)}}
+    assert quests.read_only_browser_failure(record, 42)
+    record['browser']['server_checked'] = False
+    assert not quests.read_only_browser_failure(record, 42)
+    record['browser']['server_checked'] = True
+    result['receipts'].append({'resource': 'quests', 'action': 'field-engage', 'ok': True})
+    path.write_text(json.dumps(result))
+    assert not quests.read_only_browser_failure(record, 42)
+
+
 @pytest.mark.parametrize('held', [False, True])
 def test_reward_choice_update_wakes_waiting_task_but_never_bypasses_hold(monkeypatch, held):
     from model.features import cave_treasure_runtime as cave

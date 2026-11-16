@@ -15,6 +15,15 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
+QUEST_COMBAT_ENTRY = """step('准备郊外战斗 · ' + objective.text);
+      await until(() => {
+        const combat = readCombat(), runtime = window.__rt;
+        if (combat?.overworld) return true;
+        if (combat?.active) throw new Error('当前副本尚未结算');
+        if (typeof runtime?.canStartQuestCombat !== 'function' ||
+            !runtime.canStartQuestCombat(objective.arena)) throw new Error('尚未进入郊外战斗区域');
+        return runtime.startQuestCombat?.(objective.arena) === true;
+      }, 90000, '郊外敌人模型与战斗入口', owner);"""
 
 
 def browser_script(player, choices=None, *, read_only=False):
@@ -33,6 +42,8 @@ def browser_script(player, choices=None, *, read_only=False):
         'async function fishObjective(q, objective, owner) {':
             "async function fishObjective(q, objective, owner) {\n"
             "    throw Object.assign(new Error('河岸钓鱼等待现有日计划'), {code:'fishing_daily_limit_reached'});",
+        "if (!window.__rt.startQuestCombat?.(objective.arena)) throw new Error('游戏未接受郊外战斗入口，请确认人物已进入区域');":
+            QUEST_COMBAT_ENTRY,
     }
     for before, after in patches.items():
         if script.count(before) != 1:

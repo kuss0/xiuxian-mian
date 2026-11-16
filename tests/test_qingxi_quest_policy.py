@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tools.qingxi_quest_browser import GUARD
+from tools.qingxi_quest_browser import GUARD, QUEST_COMBAT_ENTRY
 
 
 HARNESS = r"""
@@ -130,4 +130,25 @@ def test_browser_policy(scenario, tmp_path):
         pytest.skip('Node is required to exercise real browser policy code')
     path = tmp_path / 'policy.cjs'
     path.write_text('const GUARD=' + json.dumps(GUARD) + ';const SCENARIO=' + json.dumps(scenario) + ';\n' + HARNESS)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['loading', 'overworld', 'wrong_area', 'instance', 'timeout'])
+def test_native_quest_entry_waits_for_models_without_opening_a_trial(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to exercise the browser entry adapter')
+    script = """const assert=require('node:assert/strict');
+let calls=0;const objective={arena:'longwind',text:'任务'},owner=1,step=()=>{};
+const readCombat=()=>({active:SCENARIO==='instance',overworld:SCENARIO==='overworld'});
+const window={__rt:{canStartQuestCombat:()=>SCENARIO!=='wrong_area',startQuestCombat:()=>++calls>=3&&SCENARIO!=='timeout'}};
+async function until(fn,timeout,label){assert.equal(timeout,90000);for(let i=0;i<4;i++){if(fn())return;await Promise.resolve()}throw Error('timeout')}
+async function entry(){ BODY }
+(async()=>{
+ if(SCENARIO==='wrong_area'||SCENARIO==='instance'){await assert.rejects(entry());assert.equal(calls,0)}
+ else if(SCENARIO==='timeout'){await assert.rejects(entry(),/timeout/);assert.equal(calls,4)}
+ else{await entry();assert.equal(calls,SCENARIO==='loading'?3:0)}
+})().catch(e=>{console.error(e);process.exitCode=1});
+""".replace('SCENARIO', json.dumps(scenario)).replace('BODY', QUEST_COMBAT_ENTRY)
+    path = tmp_path / 'entry.cjs'
+    path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
