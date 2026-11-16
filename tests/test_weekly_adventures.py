@@ -454,6 +454,28 @@ def test_daily_open_limit_releases_members_without_rewards_or_another_open(env, 
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("kind", ["tianlan", "yuejing", "yinming", "qipai"])
+def test_group_open_cooldown_blocks_other_weekly_openings_without_holding_members(env, monkeypatch, kind):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add(kind)
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"][kind]
+        record.update(phase="held", requires_reconciliation=True)
+        await weekly.game_event(env.ctx, event(env, "本群开局冷却中，还需 9 分钟。", reply=101))
+        assert record["phase"] == "cooldown" and not record["requires_reconciliation"]
+        monkeypatch.setattr(activity_occupancy, "get_expedition_run_state", lambda: {"weekly": env.records})
+        assert not activity_occupancy.get_activity_block_reason(1)
+        env.enabled.update(weekly.KINDS)
+        env.now[0] += 120
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 1  # Same group cooldown also covers other weekly kinds.
+        assert record["next_at"] > env.now[0]
+        assert not any(env.records.get("quotas", {}).values())
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("change", ["reply", "sender", "chat", "topic", "forwarded", "bound", "extra_action", "save_failure"])
 def test_daily_open_limit_requires_single_owned_unbound_open_and_durable_save(env, change):
     async def run():

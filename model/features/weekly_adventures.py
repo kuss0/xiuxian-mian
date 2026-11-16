@@ -471,6 +471,11 @@ async def scheduler(ctx, now):
             chat, topic = ctx.target()
             if not chat:
                 continue
+            if any(other.get("chat_id") == chat and float(other.get("cooldown_until") or 0) > now
+                   and re.fullmatch(r"本群开局冷却中，还需\s*\d+\s*分钟。",
+                                    str((other.get("opening_rejection") or {}).get("text") or ""))
+                   for other in records["runs"].values()):
+                continue
             run = {"id": str(int(now * 1000)), "kind": kind, "members": chosen, "started_at": now,
                    "chat_id": chat, "topic_id": topic, "phase": "opening", "deadline": now + 120,
                    "stage": 0, "observed_stage": 0, "bound": False, "attempts": {}}
@@ -501,7 +506,7 @@ async def game_event(ctx, event):
             party = departure(run, text)
             cooldown = re.fullmatch(r"本群开局冷却中，还需\s*(\d+)\s*分钟。", text.strip())
             daily_limit = re.fullmatch(r"主魂今日发起次数已满（共 [1-9]\d* 局），北京时间零点后再来。", text.strip())
-            if (((kind == "qipai" and cooldown) or daily_limit)
+            if ((cooldown or daily_limit)
                     and owned and owned["command"] == KINDS[kind]["open"]
                     and not run.get("bound") and len(attempts) == 1):
                 # A direct rejection proves this opening created no room.
