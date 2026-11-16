@@ -9,7 +9,7 @@ import time
 import uuid
 
 from ..activity_occupancy import get_activity_block_reason
-from ..runtime import track_background_task
+from ..runtime import send_audit_log, track_background_task
 from ..state import get_global_enabled, is_cave_public_identity_available
 from ..webapp_core import extract_miniapp_init_data_from_url, parse_miniapp_init_data
 from . import changfeng_trial as trial
@@ -27,18 +27,72 @@ def snapshot():
 
 def summarize_network(network):
     """Only genuine server results can establish completion or resource consumption."""
-    receipts = network.get('receipts') or []
-    rewarded = any((row.get('trial', {}).get('run') or {}).get('rewarded') is True for row in receipts)
-    terminal = next((row['trial'] for row in reversed(receipts)
-                     if row.get('ok') is True and isinstance(row.get('trial', {}).get('result'), dict)
-                     and row['trial']['result'].get('grade')), None)
+    successful = [row['trial'] for row in network.get('receipts') or []
+                  if isinstance(row, dict) and row.get('ok') is True and isinstance(row.get('trial'), dict)
+                  and not row['trial'].get('pending') and not row['trial'].get('anomaly')]
+    run = next((row['run'] for row in reversed(successful)
+                if isinstance(row.get('run'), dict) and row['run'].get('id')), {})
+    run_id = run.get('id')
+    successful = [row for row in successful if (row.get('run') or {}).get('id') in (None, run_id)]
+    rewarded = any((row.get('run') or {}).get('rewarded') is True for row in successful)
+    terminal = next((row for row in reversed(successful)
+                     if isinstance(row.get('result'), dict) and row['result'].get('grade')), None)
     started = any(row.get('action') in {'start', 'checkpoint', 'end'} for row in network.get('requests') or [])
-    successful = [row.get('trial', {}) for row in receipts if row.get('ok') is True]
     # A pre-start status with activeRun=null cannot confirm an ambiguous start ended.
-    accepted = any((row.get('run') or {}).get('id') for row in successful)
     latest_status = (successful[-1].get('status') or {}) if successful else {}
-    closed = bool(started and accepted and 'activeRun' in latest_status and latest_status['activeRun'] is None)
-    return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed}
+    closed = bool(started and run_id and 'activeRun' in latest_status and latest_status['activeRun'] is None)
+    gains, cultivation, seen = {}, 0, set()
+    for row in successful:
+        current = row.get('run') or {}
+        wave = current.get('cleared')
+        if (not run_id or current.get('id') != run_id or current.get('rewarded') is not True
+                or type(wave) is not int or not 0 <= wave <= 3 or wave in seen):
+            continue
+        grants = [grant for grant in row.get('grants') or []
+                  if isinstance(grant, dict) and isinstance(grant.get('name'), str) and grant['name'].strip()
+                  and type(grant.get('quantity')) is int and grant['quantity'] > 0]
+        amount = row.get('cultivation')
+        amount = amount if type(amount) is int and amount > 0 else 0
+        if not grants and not amount:
+            continue
+        # Retransmitted checkpoint receipts are the same wave; separate stacks
+        # within one receipt are real grants and must still be added together.
+        seen.add(wave)
+        for grant in grants:
+            gains[grant['name']] = gains.get(grant['name'], 0) + grant['quantity']
+        cultivation += amount
+    return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed,
+            'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
+            'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
+
+
+async def _notify_result(record):
+    status = record.get('browser_trial') or {}
+    run_id = status.get('run_id')
+    gains, cultivation = status.get('gains') or {}, status.get('cultivation') or 0
+    if (not run_id or not (gains or cultivation)
+            or (record.get('browser_trial_notice') or {}).get('run_id') == run_id):
+        return
+    arena = trial.TRIAL_ARENAS[status['arena']]
+    tier = status.get('tier')
+    title = f"⚔️ 青溪试炼·{arena}" + (f"·第{tier}重" if type(tier) is int and tier > 0 else '')
+    outcome = '已通关' if status.get('server_cleared') else ('已结束' if status.get('server_closed') else '结算待核对')
+    summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
+    if cultivation:
+        summary += ('，' if summary else '') + f'修为+{cultivation}'
+    notice = {'run_id': run_id, 'attempted_at': time.time(), 'state': 'attempted'}
+    record['browser_trial_notice'] = notice
+    # Persist intent before sending. An unknown Telegram outcome must not cause
+    # another notice or, more importantly, another game run.
+    trial._save()
+    try:
+        delivered = await send_audit_log(f'{title}{outcome}｜已确认收获：{summary}',
+                                         scope='identity', send_as_id=status['identity_id'], priority='normal', limit=700)
+        notice['state'] = 'sent' if delivered else 'unconfirmed'
+    except Exception as error:
+        notice.update(state='unconfirmed', error=type(error).__name__)
+    finally:
+        trial._save()
 
 
 async def action(payload):
@@ -77,6 +131,7 @@ async def action(payload):
 async def _run(owner, arena, practice_only, job_id):
     from . import cave_treasure_runtime as cave
     identity_id = owner.identity_id
+    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena)
     lock = cave._public_entry_lock(identity_id)
     record = trial._records().get(str(identity_id))
     if record is None:
@@ -158,6 +213,8 @@ async def _run(owner, arena, practice_only, job_id):
             _STATUS.update(phase='done' if facts['terminal'] else 'stopped', returncode=process.returncode,
                            finished_at=time.time(), kind=(results[-1].get('kind') if results else 'not_started'),
                            rewarded=facts['rewarded'], server_closed=facts['closed'],
+                           server_cleared=facts['cleared'], run_id=facts['run_id'], tier=facts['tier'],
+                           gains=facts['gains'], cultivation=facts['cultivation'],
                            server_result=(facts['terminal'] or {}).get('result'))
             if facts['rewarded']:
                 day = trial._day(time.time())
@@ -181,3 +238,5 @@ async def _run(owner, arena, practice_only, job_id):
         if trial._records().get(str(identity_id)) is record:
             record['browser_trial'] = snapshot()
             trial._save()
+    if trial._records().get(str(identity_id)) is record:
+        await _notify_result(record)

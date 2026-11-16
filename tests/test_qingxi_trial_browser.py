@@ -28,6 +28,8 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(browser.MiniAppIdentityOwner, 'capture', lambda _id: owner)
     monkeypatch.setattr(browser, '_TASK', None)
     monkeypatch.setattr(browser, '_STATUS', {'job_id': 'fixture-job'})
+    notice = AsyncMock(return_value=True)
+    monkeypatch.setattr(browser, 'send_audit_log', notice, raising=False)
     lock = asyncio.Lock()
     monkeypatch.setattr(cave, '_public_entry_lock', lambda _id: lock)
     monkeypatch.setattr(cave, '_parse_public_cave_entry_url', lambda _url: ('fixture-token', 'fixture-url', ''))
@@ -45,7 +47,106 @@ def harness(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', spawn)
-    return SimpleNamespace(owner=owner, record=original, network=network, commands=commands, launch=launch, lock=lock)
+    return SimpleNamespace(owner=owner, record=original, network=network, commands=commands,
+                           launch=launch, lock=lock, notice=notice)
+
+
+@pytest.fixture
+def victory_network():
+    # Deidentified server receipts from WA's 2026-11-16 browser run. The final
+    # wave legitimately grants two separate stacks of the same potion.
+    network = {'requests': [{'action': 'start'}], 'receipts': []}
+    for wave, stones, extras in (
+        (0, 105, [('回灵丹', 1)]), (1, 124, [('天雷竹', 2)]),
+        (2, 124, [('天雷竹', 1)]), (3, 229, [('回灵丹', 1), ('回灵丹', 2)]),
+    ):
+        trial = {'run': {'id': 'browser-run', 'rewarded': True, 'tier': 2, 'cleared': wave,
+                         'status': 'cleared' if wave == 3 else 'active'},
+                 'grants': [{'name': name, 'quantity': quantity}
+                            for name, quantity in [('灵石', stones), *extras]],
+                 'cultivation': 400000 if wave == 3 else 0}
+        if wave == 3:
+            trial.update(result={'grade': '丙', 'score': 0}, status={'activeRun': None})
+        network['receipts'].append({'ok': True, 'trial': trial})
+    return network
+
+
+def test_server_rewards_are_summed_once_per_wave(victory_network):
+    victory_network['receipts'] += victory_network['receipts'][:]
+    facts = browser.summarize_network(victory_network)
+    assert facts['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
+    assert facts['cultivation'] == 400000
+    assert facts['run_id'] == 'browser-run'
+    assert facts['tier'] == 2
+
+
+def test_rewards_ignore_failed_pending_anomalous_and_other_run_receipts(victory_network):
+    import copy
+
+    noise = []
+    for flags in ({'ok': False}, {'pending': True}, {'anomaly': 'unconfirmed'}, {'other_run': True}):
+        row = copy.deepcopy(victory_network['receipts'][0])
+        row['trial']['grants'] = [{'name': '伪奖励', 'quantity': 999}]
+        row['trial']['cultivation'] = 999
+        if 'ok' in flags:
+            row['ok'] = flags['ok']
+        elif 'other_run' in flags:
+            row['trial']['run']['id'] = 'old-run'
+        else:
+            row['trial'].update(flags)
+        noise.append(row)
+    victory_network['receipts'] = noise + victory_network['receipts']
+    facts = browser.summarize_network(victory_network)
+    assert facts['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
+    assert facts['cultivation'] == 400000
+
+
+def test_browser_completion_notifies_original_identity_once(harness, victory_network):
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    text = harness.notice.call_args.args[0]
+    assert '青溪试炼·麦田试炼' in text and '第2重' in text and '通关' in text
+    assert all(piece in text for piece in ('灵石×582', '回灵丹×4', '天雷竹×3', '修为+400000'))
+    assert 'score' not in text and 'fixture-job' not in text and 'browser-run' not in text
+    assert harness.notice.call_args.kwargs['send_as_id'] == harness.owner.identity_id
+    assert harness.record['browser_trial']['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
+    assert harness.record['browser_trial_notice']['state'] == 'sent'
+    asyncio.run(browser._notify_result(harness.record))
+    harness.notice.assert_awaited_once()
+
+
+@pytest.mark.parametrize('raises', [False, True])
+def test_notification_failure_preserves_completion_and_never_replays(harness, victory_network, raises):
+    harness.network.update(victory_network)
+    if raises:
+        harness.notice.side_effect = RuntimeError('transport_failed')
+    else:
+        harness.notice.return_value = False
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    assert harness.record['phase'] == 'done'
+    assert harness.record['daily_used'] == 2
+    assert browser.snapshot()['phase'] == 'done'
+    assert harness.record['browser_trial_notice']['state'] == 'unconfirmed'
+    asyncio.run(browser._notify_result(harness.record))
+    harness.notice.assert_awaited_once()
+
+
+def test_closed_timeout_reports_only_confirmed_partial_rewards(harness, victory_network):
+    harness.network.update(victory_network)
+    harness.network['receipts'] = victory_network['receipts'][:3] + [
+        {'ok': True, 'trial': {'status': {'activeRun': None}}},
+    ]
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    text = harness.notice.call_args.args[0]
+    assert '通关' not in text and '已结束' in text
+    assert '灵石×353' in text and '回灵丹×1' in text and '天雷竹×3' in text
+    assert '修为+' not in text
+
+
+def test_local_victory_without_server_rewards_never_notifies(harness):
+    harness.network['requests'] = [{'action': 'start'}]
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
+    harness.notice.assert_not_awaited()
 
 
 def test_terminal_server_receipt_preserves_original_and_counts_one_extra(harness):
@@ -138,5 +239,6 @@ def test_snapshot_does_not_return_login_url(harness):
 
 
 def test_unverified_client_victory_is_not_server_completion():
-    assert browser.summarize_network({'requests': [{'action': 'start'}], 'receipts': []}) == {
+    facts = browser.summarize_network({'requests': [{'action': 'start'}], 'receipts': []})
+    assert {key: facts[key] for key in ('started', 'rewarded', 'terminal', 'closed')} == {
         'started': True, 'rewarded': False, 'terminal': None, 'closed': False}
