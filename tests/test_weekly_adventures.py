@@ -763,6 +763,38 @@ def test_cooldown_recovery_keeps_today_reward_and_never_opens_another_council(en
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("kind", ["tianlan", "yuejing", "yinming", "qipai"])
+@pytest.mark.parametrize("refusal", [
+    "本群今日发起次数已满（共 12 局），北京时间零点后再来。",
+    "主魂今日发起次数已满（共 2 局），北京时间零点后再来。",
+    "本群开局冷却中，还需 1 分钟。",
+])
+def test_restart_replays_each_owned_opening_refusal_without_rewards_or_new_sends(
+        env, monkeypatch, tmp_path, kind, refusal):
+    async def run():
+        env.enabled.clear()
+        env.enabled.add(kind)
+        await weekly.scheduler(env.ctx, env.now[0])
+        record = env.records["runs"][kind]
+        record.update(phase="interrupted", requires_reconciliation=True)
+        attempts = copy.deepcopy(record["attempts"])
+        quotas = copy.deepcopy(env.records.get("quotas", {}))
+        row = {"event_type": "message", "chat_id": -100, "topic_id": 42, "message_id": 999,
+               "reply_to_msg_id": 101, "sender_id": 99, "server_event_at": env.now[0] + 1, "text": refusal}
+        day = datetime.fromtimestamp(env.now[0], app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+        (tmp_path / (day + ".log")).write_text(json.dumps(row, ensure_ascii=False) + "\n")
+        monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+        await app_weekly_adventures._recover_terminal_receipts(env.now[0] + 2)
+        assert record["phase"] == "cooldown" and not record["requires_reconciliation"]
+        assert record["opening_rejection"]["message_id"] == 999
+        assert record["attempts"] == attempts
+        assert env.records.get("quotas", {}) == quotas
+        assert len(env.sends) == 1
+        env.ctx.notice.assert_not_awaited()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("limit,opens", [(None, False), (1, False), (3, True)])
 def test_council_reward_cap_is_not_the_automatic_daily_target(env, limit, opens):
     async def run():
