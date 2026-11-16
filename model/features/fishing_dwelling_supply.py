@@ -145,16 +145,27 @@ def plan_supply(payload, *, bait_choice, auto_buy=False, buy_count=20, chum_name
             continue
         if not auto_buy:
             raise p.ProtocolError("fishing_bait_missing")
-        quantity = max(buy_count, needed - row["count"])
-        if quantity > 99 or not row["unlocked"]:
+        minimum = needed - row["count"]
+        maximum = max(buy_count, minimum)
+        if maximum > 99 or not row["unlocked"]:
             raise p.ProtocolError("fishing_supply_ineligible")
-        purchases.append({"baitItemId": item_id, "quantity": quantity})
+        purchases.append((row, minimum, maximum))
         for cost in row["cost"]:
-            reserved[cost["itemId"]] = reserved.get(cost["itemId"], 0) + cost["qty"] * quantity
+            reserved[cost["itemId"]] = reserved.get(cost["itemId"], 0) + cost["qty"] * minimum
     if any(shop["resources"][item_id]["count"] < cost for item_id, cost in reserved.items()):
         raise p.ProtocolError("fishing_shop_cost_missing")
+    # Fund every required bait and chum first; the configured batch is a target,
+    # not a reason to reject an affordable smaller replenishment.
+    planned = []
+    for row, minimum, maximum in purchases:
+        extra = min([maximum - minimum] + [
+            (shop["resources"][cost["itemId"]]["count"] - reserved[cost["itemId"]]) // cost["qty"]
+            for cost in row["cost"]])
+        for cost in row["cost"]:
+            reserved[cost["itemId"]] += cost["qty"] * extra
+        planned.append({"baitItemId": row["itemId"], "quantity": minimum + extra})
     if purchases:
-        return "buy-bait", purchases[0]
+        return "buy-bait", planned[0]
     if target:
         if not target["affordable"]:
             raise p.ProtocolError("fishing_shop_cost_missing")

@@ -17,6 +17,7 @@ from .miniapp_common import MiniAppFlowCancelled
 SITE_CHOICES = {"青溪浅滩": "west-shore", "灵眼寒潭": "waterfall-pool", "乱星海礁": "east-shore"}
 VOYAGE_HANDOFF_SEC = 15 * 60
 SAILING_RECHECK_SEC = 10 * 60
+SUPPLY_RECHECK_SEC = 30 * 60
 
 
 def pending(identity):
@@ -160,7 +161,8 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                          and not result.get("outcome_unknown") and not pending(operation.owner.identity)
                          and can_continue() and enabled() and cancelled is None)
         expected_wait = (
-            reason == "fishing_companion_sailing" and result.get("ok") is False
+            reason in {"fishing_companion_sailing", "fishing_shop_cost_missing", "fishing_bait_missing"}
+            and result.get("ok") is False
             and result.get("status") == "blocked" and not committed and not supplied
             and not result.get("outcome_unknown") and not pending(operation.owner.identity)
             and can_continue() and enabled() and cancelled is None
@@ -171,7 +173,11 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
         if supplied:
             message = "洞府钓鱼补给已确认：" + str(data.get("supply_action") or "补给") + "，未抛竿"
         if expected_wait:
-            message = "洞府原生钓鱼：侍妾远航中，等待归航后钓鱼"
+            message = {
+                "fishing_companion_sailing": "洞府原生钓鱼：侍妾远航中，等待归航后钓鱼",
+                "fishing_shop_cost_missing": "洞府原生钓鱼：补给资源不足，等待资源恢复后再钓",
+                "fishing_bait_missing": "洞府原生钓鱼：所选鱼饵不足，等待补给后再钓",
+            }[reason]
         if terminal_skip:
             message = {
                 "fishing_rod_missing": "洞府原生钓鱼：未持有鱼竿，今日跳过",
@@ -189,8 +195,10 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
                 delay = max(30 if supplied else 60, float(result.get("retry_after_sec") or 0))
                 if result.get("status") == "supply_pending":
                     delay = max(delay, 1800)
-                if reason in {"fishing_bait_missing", "fishing_rod_missing"}:
+                if reason == "fishing_rod_missing":
                     delay = max(delay, 1800)
+                if reason in {"fishing_shop_cost_missing", "fishing_bait_missing"}:
+                    delay = max(delay, SUPPLY_RECHECK_SEC)
                 if reason == "fishing_companion_sailing":
                     # A 30-minute retry can miss the entire 15-minute return handoff.
                     delay = max(delay, SAILING_RECHECK_SEC)

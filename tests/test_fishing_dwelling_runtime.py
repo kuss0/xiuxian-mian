@@ -484,3 +484,45 @@ def test_accounted_canary_clears_old_error_without_advancing_timer(fishing_env, 
     assert h.identity["fishing_last_error"] == ""
     assert h.identity["fishing_last_result"] == result["message"]
     assert h.identity["next_fishing_time"] == timer
+
+
+@pytest.mark.parametrize("reason", ["fishing_shop_cost_missing", "fishing_bait_missing"])
+def test_known_supply_shortage_waits_without_error_or_quota_consumption(fishing_env, monkeypatch, reason):
+    h = fishing_env
+    configure(h)
+    h.identity["fishing_last_error"] = reason
+    before_count = h.identity["fishing_daily_count"]
+    monkeypatch.setattr(native.persistence, "save_state", lambda: True)
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", AsyncMock(return_value={
+        "ok": False, "status": "blocked", "error": reason, "outcome_unknown": False,
+    }))
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
+    assert not result["ok"] and result["extra"]["expected_wait"]
+    assert not result["extra"]["terminal_skip"]
+    assert "等待" in h.identity["fishing_last_result"]
+    assert h.identity["fishing_last_error"] == ""
+    assert h.identity["fishing_daily_count"] == before_count
+    assert h.identity["next_fishing_time"] == h.now + native.SUPPLY_RECHECK_SEC
+    monkeypatch.setattr(ui, "normalize_miniapp_auto_config", lambda: {"cave_public_fishing_identity_ids": [h.identity_id]})
+    assert not ui._cave_public_background_action_due("fishing", h.identity_id, h.now + 120)
+    assert ui._cave_public_background_action_due("fishing", h.identity_id, h.now + native.SUPPLY_RECHECK_SEC)
+    h.items.assert_not_called()
+    h.daily.assert_not_awaited()
+
+
+@pytest.mark.parametrize("unsafe", ["unknown", "pending", "save_failed"])
+def test_shortage_does_not_hide_unknown_actions_or_failed_state_save(fishing_env, monkeypatch, unsafe):
+    h = fishing_env
+    configure(h)
+    monkeypatch.setattr(native.persistence, "save_state", lambda: unsafe != "save_failed")
+    if unsafe == "pending":
+        h.identity[native.STATE_KEY] = pending_receipt(h, native.STATE_KEY)
+    worker = AsyncMock(return_value={
+        "ok": False, "status": "blocked", "error": "fishing_shop_cost_missing",
+        "outcome_unknown": unsafe == "unknown",
+    })
+    monkeypatch.setattr(native, "run_native_fishing_production_flow", worker)
+    result = asyncio.run(cave.run_cave_public_fishing(h.identity_id, h.url))
+    worker.assert_awaited_once()
+    assert not result["extra"]["expected_wait"]
+    assert not result["extra"]["terminal_skip"]

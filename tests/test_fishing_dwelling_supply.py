@@ -61,7 +61,7 @@ def test_bad_or_ineligible_context_cannot_authorize_purchase(change):
     elif change == "cost":
         del ctx["shop"]["baits"][1]["cost"]
     elif change == "currency":
-        root = shop_context(stone=500)
+        root = shop_context(stone=32)
     elif change == "count_disagreement":
         ctx["shop"]["baits"][1]["count"] = 20
     elif change == "duplicate":
@@ -89,10 +89,27 @@ def test_no_purchase_when_disabled_and_live_daily_limits_take_precedence():
     assert supply.plan_supply(root, **SETTINGS) == ("", {})
 
 
-def test_all_planned_bait_and_chum_costs_are_reserved_before_first_purchase():
+def test_all_minimum_bait_and_chum_costs_are_reserved_before_first_purchase():
     with pytest.raises(ProtocolError, match="fishing_shop_cost_missing"):
-        supply.plan_supply(shop_context(stone=969), **SETTINGS)
+        supply.plan_supply(shop_context(stone=88), **SETTINGS)
+    assert supply.plan_supply(shop_context(stone=89), **SETTINGS) == ("buy-bait", {"baitItemId": "rice", "quantity": 1})
+    assert supply.plan_supply(shop_context(rice=1, stone=54), **SETTINGS) == ("buy-bait", {"baitItemId": "plain", "quantity": 2})
+    assert supply.plan_supply(shop_context(rice=1, plain=2, stone=30), **SETTINGS) == ("chum", {"chumKey": "rice-chum"})
     assert supply.plan_supply(shop_context(stone=970), **SETTINGS)[0] == "buy-bait"
+
+
+def test_low_balance_replenishes_affordable_bait_without_spending_chum_reserve():
+    assert supply.plan_supply(shop_context(plain=4, stone=189), **SETTINGS) == (
+        "buy-bait", {"baitItemId": "rice", "quantity": 4})
+    assert supply.plan_supply(shop_context(plain=4, rice=4, stone=49), **SETTINGS) == (
+        "chum", {"chumKey": "rice-chum"})
+
+
+def test_reduced_batch_respects_every_material_cost():
+    root = shop_context(plain=4)
+    root["context"]["shop"]["baits"][1]["cost"].append(
+        {"itemId": "herb", "name": "herb", "qty": 2, "owned": 7})
+    assert supply.plan_supply(root, **SETTINGS) == ("buy-bait", {"baitItemId": "rice", "quantity": 3})
 
 
 class Store:
@@ -117,17 +134,20 @@ def prepare(journal, root=None):
     return journal.prepare(context=root or shop_context(), site_id="west-shore", model_id="ngw", **SETTINGS)
 
 
-def test_supply_receipt_before_dispatch_and_exact_confirmation():
+@pytest.mark.parametrize("plain,stone,quantity", [(0, 5000, 20), (4, 189, 4)])
+def test_supply_receipt_before_dispatch_and_exact_confirmation(plain, stone, quantity):
     store = Store()
     journal = store.open()
-    action, expected, payload = prepare(journal)
+    action, expected, payload = prepare(journal, shop_context(plain=plain, stone=stone))
     assert action == "buy-bait" and store.record["phase"] == "pending"
-    assert payload["operationId"] == store.record["operation_id"] and payload["quantity"] == 20
-    journal.accept(expected, shop_context(rice=20, stone=4300))
+    assert payload["operationId"] == store.record["operation_id"] and payload["quantity"] == quantity
+    response = shop_context(plain=plain, rice=quantity, stone=stone - quantity * 35)
+    journal.accept(expected, response)
     assert store.record["phase"] == "confirmed" and len(store.writes) == 2
-    assert supply.supply_deltas(supply.parse_shop(store.record["before"]), action, store.record["payload"]) == {"rice": 20, "stone": -700}
+    assert supply.supply_deltas(supply.parse_shop(store.record["before"]), action, store.record["payload"]) == {
+        "rice": quantity, "stone": -quantity * 35}
     with pytest.raises(ProtocolError, match="stale_supply_response"):
-        journal.accept(expected, shop_context(rice=20, stone=4300))
+        journal.accept(expected, response)
 
 
 @pytest.mark.parametrize("bad", ["false", "no_delta", "partial", "foreign_player", "foreign_operation", "changed"])
