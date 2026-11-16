@@ -513,6 +513,7 @@ function renderExpeditionConfig(replica) {
   const config = replica.expeditions || {};
   const xuangu = config.xuangu || {};
   const changfeng = config.changfeng || {};
+  const qingxi = config.qingxi_quests || {};
   const weeklyConfig = config.weekly || {};
   const war = config.zhengmo || {};
   const spirit = config.spirit_beast || {};
@@ -593,6 +594,22 @@ function renderExpeditionConfig(replica) {
     + ['longwind', 'bamboo'].map(function(arena) {
       return '<label class="checkbox-inline"><input type="checkbox" data-changfeng-arena="' + arena + '"' + ((changfeng.arenas || ['longwind', 'bamboo']).includes(arena) ? ' checked' : '') + ' />' + (arena === 'longwind' ? '麦田试炼' : '竹林试炼') + '</label>';
     }).join('') + '</div></div>'
+    + '<div class="dungeon-section"><h4>青溪坊 NPC 任务</h4>'
+    + '<label class="checkbox-inline"><input type="checkbox" name="qingxi_enabled"' + (qingxi.enabled ? ' checked' : '') + '>自动接取、推进和交付任务</label>'
+    + '<label class="checkbox-inline"><input type="checkbox" name="qingxi_gameplay"' + (qingxi.gameplay_enabled ? ' checked' : '') + '>自动推进野外战斗、机关和跨区任务</label>'
+    + '<p>一次性剧情任务，完成后停止。河岸钓鱼任务使用原有钓鱼次数；奖励选项未设置时保留待选。</p>'
+    + members('qingxi_quests', qingxi.participant_identity_ids)
+    + '<div class="replica-config-grid">' + (config.qingxi_quest_choices || []).map(function(choice) {
+      return '<label class="form-label">' + escapeHtml(choice.title) + '<select class="text-input" data-qingxi-choice="' + escapeHtml(choice.quest_id) + '"><option value="">保留待选</option>'
+        + choice.options.map(function(option) { return '<option value="' + escapeHtml(option.id) + '"' + ((qingxi.choices || {})[choice.quest_id] === option.id ? ' selected' : '') + '>' + escapeHtml(option.label) + '</option>'; }).join('') + '</select></label>';
+    }).join('') + '</div>'
+    + Object.entries(config.qingxi_quests_runs || {}).map(function(entry) {
+      const run = entry[1], identity = identities.find(function(item) { return String(item.identity_id) === entry[0]; }) || {};
+      const done = Object.values(run.observed || {}).filter(function(q) { return q.status === 'rewarded'; }).length;
+      const phases = {idle: '待安排', loading: '读取任务', running: '任务进行中', waiting_gameplay: '等待目标完成', done: '本轮完成', held: '待核对'};
+      const gaps = (run.gaps || []).map(function(gap) { return gap.title + (gap.progress === undefined ? '' : ' ' + gap.progress + '/' + gap.required); });
+      return '<p>' + escapeHtml((identity.display_name || entry[0]) + '：已交付 ' + done + ' 项｜' + (phases[run.phase] || '待安排') + (gaps.length ? '｜' + Array.from(new Set(gaps)).join('，') : '') + (run.last_error ? '｜' + run.last_error : '')) + '</p>';
+    }).join('') + '</div>'
     + '<div class="dungeon-section"><h4>驭灵行迹</h4><label class="checkbox-inline"><input type="checkbox" name="spirit_beast_enabled"' + (spirit.enabled ? ' checked' : '') + '>万灵宗账号自动互动、远征和探渊</label><p>按游戏剩余次数与体力安排；缺少确认时暂停。</p>'
     + members('spirit_beast', spirit.participant_identity_ids) + '</div>'
     + renderPairedActivityConfig(config, replica)
@@ -684,6 +701,8 @@ document.addEventListener('submit', async function(event) {
       auto_meeting: form.elements.zhengmo_meeting.checked,
       identities: selectedMembers('zhengmo').map(function(id) { return {identity_id: id, faction: ''}; })},
     spirit_beast: {enabled: form.elements.spirit_beast_enabled.checked, participant_identity_ids: selectedMembers('spirit_beast')},
+    qingxi_quests: {enabled: form.elements.qingxi_enabled.checked, gameplay_enabled: form.elements.qingxi_gameplay.checked, participant_identity_ids: selectedMembers('qingxi_quests'),
+      choices: Object.fromEntries(Array.from(form.querySelectorAll('[data-qingxi-choice]')).filter(function(input) { return input.value; }).map(function(input) { return [input.dataset.qingxiChoice, input.value]; }))},
     warm_pairs: {enabled: form.elements.warm_pairs_enabled.checked, lead_text: form.elements.warm_pairs_lead.value,
       pairs: Array.from(form.querySelectorAll('[data-warm-pair]')).map(function(row) {
         return {name: row.querySelector('[data-pair-name]').value.trim(), source_identity_id: row.querySelector('[data-pair-source]').value,

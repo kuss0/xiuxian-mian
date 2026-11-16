@@ -21,6 +21,8 @@ SITES = {
     "west-shore": (-9.3, -0.98, 7.78),
     "waterfall-pool": (2.6, -0.56, -11.05),
     "east-shore": (9.3, -0.98, 7.78),
+    # Official dwelling-fishing.js v85, the shared six-seat town venue.
+    "qingxi-riverside": (54, 0.20, 73.79),
 }
 
 

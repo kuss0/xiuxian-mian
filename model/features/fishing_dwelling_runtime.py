@@ -117,7 +117,9 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
     supply_record = operation.owner.identity.get(supply.STATE_KEY) or {}
     if isinstance(supply_record, dict) and supply_record and supply_record.get("phase") != "accounted":
         record = supply_record
-    site_id = record.get("site_id") if pending(operation.owner.identity) and isinstance(record, dict) else SITE_CHOICES.get(operation.pond_choice)
+    from .qingxi_quests import fishing_task_site, observe_town_catch
+    site_id = (record.get("site_id") if pending(operation.owner.identity) and isinstance(record, dict)
+               else fishing_task_site(identity_id) or SITE_CHOICES.get(operation.pond_choice))
     model = raw.get("characterModel")
     model_id = model.get("selectedId") if isinstance(model, dict) else None
     if not site_id or not isinstance(model_id, str) or not model_id:
@@ -155,6 +157,8 @@ async def run_selected_identity(operation, session, *, token, can_continue, upda
     else:
         data = result.get("data") or {}
         catches = data.get("catches") if isinstance(data.get("catches"), dict) else {}
+        if committed and catches and site_id == 'qingxi-riverside':
+            observe_town_catch(identity_id)
         rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
         reason = str(result.get("error") or result.get("status") or "unknown")
         terminal_skip = (reason in {"fishing_rod_missing", "fishing_daily_limit_reached", "fishing_companion_missing"}

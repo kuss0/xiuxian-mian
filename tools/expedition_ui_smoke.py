@@ -74,6 +74,7 @@ def main():
                     team.locator("[data-hunt-weekly]").check()
                     page.locator("[data-expedition-member=xuangu][value='990001']").check()
                     page.locator("[data-expedition-member=changfeng][value='990002']").check()
+                    page.locator("[data-expedition-member=qingxi_quests][value='990001']").check()
                     page.locator("[data-weekly-kind=qipai]").check()
                     page.locator("[data-expedition-member=zhengmo][value='990001']").check()
                     page.locator("[name=zhengmo_hour]").fill("8")
@@ -91,6 +92,8 @@ def main():
                     assert saved["xuangu"]["enabled"] is False and saved["changfeng"]["enabled"] is False
                     assert saved["xuangu"]["participant_identity_ids"] == ["990001"]
                     assert saved["changfeng"]["participant_identity_ids"] == ["990002"]
+                    assert saved['qingxi_quests'] == {'enabled': False, 'gameplay_enabled': False,
+                                                       'participant_identity_ids': ['990001'], 'choices': {}}
                     assert "qipai" in saved["weekly"]["kinds"]
                     assert saved["zhengmo"] == {"enabled": False, "hour": 8, "group_role": "primary", "auto_meeting": True, "identities": [{"identity_id": "990001", "faction": ""}]}
                     page.evaluate("document.querySelectorAll('.modal-backdrop.show').forEach(el => el.classList.remove('show'))")

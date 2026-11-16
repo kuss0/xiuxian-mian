@@ -1,0 +1,3535 @@
+{
+  "sources": [
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/qingxi-quest-design-v1.json",
+      "sha256": "662ba26d3ce0ac01f7fb3384eed72bdc98efe17dc1b09fb1b0bb538b4e826851"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/yue-ch4.json",
+      "sha256": "6f1790459210f0767cdd0bddfc8e2a18ebbd4804107372e0d48e68fa43df73ce"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/yue-ch5.json",
+      "sha256": "72557faf0319436bc588900de701aa03525b8d372d5a6d5287b4b312c8c73147"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/jiuguo-ch6.json",
+      "sha256": "a5f66a3c8c4e304c86e70ea0b6f493eda1974517d999f3cfe235810f07cba8df"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/jiuguo-ch7.json",
+      "sha256": "1ca62a2e6c4557cee3cf53d19a21b892b2f1ed5a7c98a4ecb8dc4df95be560be"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/jiuguo-yufengche.json",
+      "sha256": "d7ad8e9877a64c25b3a67727f3f81aa4451b12a4d755f2e54295ac7fa2916b5e"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/tiandao-ch8.json",
+      "sha256": "a8d47055492cf43421cc3c4603866351d50a83e2f46136dd83148658f25f5306"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/tiandao-ch9.json",
+      "sha256": "551eb5059433406a89e001e9da93a1eb2ec198793983add9b42f7fd3cdd52f94"
+    },
+    {
+      "url": "https://asc.aiopenai.app/staticweb/assets/tiannan-quests/tiandao-ch9b.json",
+      "sha256": "b3b8ea0daf54a328a467461d0ddc0298ff1c14539f4266baa13634fcef3a9eda"
+    }
+  ],
+  "npcs": [
+    {
+      "id": "guard",
+      "name": "顾守衡",
+      "modelKey": "N_GuShouheng",
+      "positionXZ": [
+        -2,
+        107
+      ],
+      "location": "南门内侧",
+      "region": "yue"
+    },
+    {
+      "id": "steward",
+      "name": "程执事",
+      "modelKey": "N_ChengZhishi",
+      "positionXZ": [
+        -12.55,
+        -46
+      ],
+      "location": "执事堂",
+      "region": "yue"
+    },
+    {
+      "id": "courier",
+      "name": "叶行舟",
+      "modelKey": "N_YeXingzhou",
+      "positionXZ": [
+        14.4,
+        97.7
+      ],
+      "location": "归云驿馆",
+      "region": "yue"
+    },
+    {
+      "id": "herbalist",
+      "name": "白药娘",
+      "modelKey": "N_BaiYaoniang",
+      "positionXZ": [
+        54.75,
+        -40
+      ],
+      "location": "灵药铺",
+      "region": "yue"
+    },
+    {
+      "id": "smith",
+      "name": "石炉师",
+      "modelKey": "N_ShiLushi",
+      "positionXZ": [
+        57,
+        5
+      ],
+      "location": "炼器坊",
+      "region": "yue"
+    },
+    {
+      "id": "patrol",
+      "name": "严行",
+      "modelKey": "N_YanXing",
+      "positionXZ": [
+        -47,
+        -20
+      ],
+      "location": "西街巡守处",
+      "region": "yue"
+    },
+    {
+      "id": "fisher",
+      "name": "柳翁",
+      "modelKey": "N_LiuWeng",
+      "positionXZ": [
+        46.2,
+        73.5
+      ],
+      "location": "东桥河岸",
+      "region": "yue"
+    },
+    {
+      "id": "talisman",
+      "name": "凌符师",
+      "modelKey": "N_LingFushi",
+      "positionXZ": [
+        -35,
+        -12.75
+      ],
+      "location": "符箓铺",
+      "region": "yue"
+    },
+    {
+      "id": "bridge_guard",
+      "name": "邵原",
+      "modelKey": "N_ShaoYuan",
+      "positionXZ": [
+        40,
+        50
+      ],
+      "location": "东桥西侧",
+      "region": "yue"
+    },
+    {
+      "id": "appraiser",
+      "name": "顾鉴",
+      "modelKey": "N_GuJian",
+      "positionXZ": [
+        9.9,
+        -1
+      ],
+      "location": "鉴物斋",
+      "region": "yue"
+    },
+    {
+      "id": "zhong_lingdao",
+      "name": "钟灵道",
+      "modelKey": "Q_ZhongLingdao",
+      "positionXZ": [
+        -1607,
+        -2398
+      ],
+      "location": "黄枫谷 · 议事殿阶前",
+      "region": "yue"
+    },
+    {
+      "id": "jujian_disciple",
+      "name": "陆铮",
+      "modelKey": "Q_LuZheng",
+      "positionXZ": [
+        -2,
+        600
+      ],
+      "location": "长风原北口",
+      "region": "yue"
+    },
+    {
+      "id": "huadao_disciple",
+      "name": "柳寒刀",
+      "modelKey": "Q_LiuHandao",
+      "positionXZ": [
+        -40,
+        -382
+      ],
+      "location": "长街灯火北口",
+      "region": "yue"
+    },
+    {
+      "id": "qingxu_daoist",
+      "name": "玄清子",
+      "modelKey": "Q_XuanQingzi",
+      "positionXZ": [
+        50,
+        1080
+      ],
+      "location": "听竹坳口",
+      "region": "yue"
+    },
+    {
+      "id": "hf_gate_disciple",
+      "name": "陆师兄",
+      "modelKey": "Q_HfGateDisciple",
+      "positionXZ": [
+        -1595,
+        -2464
+      ],
+      "location": "黄枫谷山门",
+      "region": "yue"
+    },
+    {
+      "id": "ma_rong",
+      "name": "马荣",
+      "modelKey": "Q_MaRong",
+      "positionXZ": [
+        -1692,
+        -2406
+      ],
+      "location": "黄枫谷百药园",
+      "region": "yue"
+    },
+    {
+      "id": "qin_yao",
+      "name": "秦尧",
+      "modelKey": "Q_QinYao",
+      "positionXZ": [
+        3209,
+        3429
+      ],
+      "location": "阗天城 · 瓮城门外",
+      "region": "jiuguo"
+    },
+    {
+      "id": "yu_sanniang",
+      "name": "余三娘",
+      "modelKey": "Q_YuSanniang",
+      "positionXZ": [
+        3156,
+        3367
+      ],
+      "location": "阗天城 · 客舍堂前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "qian_boyong",
+      "name": "钱伯庸",
+      "modelKey": "Q_QianBoyong",
+      "positionXZ": [
+        3130,
+        3244
+      ],
+      "location": "阗天城内城 · 九国商会门前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "bai_su",
+      "name": "白素",
+      "modelKey": "Q_BaiSu",
+      "positionXZ": [
+        3314,
+        3328
+      ],
+      "location": "阗天城外城 · 丹阁药鼎旁",
+      "region": "jiuguo"
+    },
+    {
+      "id": "zou_heng",
+      "name": "邹衡",
+      "modelKey": "Q_ZouHeng",
+      "positionXZ": [
+        3270,
+        3242
+      ],
+      "location": "阗天城内城 · 盟军执事堂门前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "qi_furen",
+      "name": "戚夫人",
+      "modelKey": "Q_QiFuren",
+      "positionXZ": [
+        3200,
+        3052
+      ],
+      "location": "阗天城高台 · 议事大殿前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "zhong_lingdao_camp",
+      "name": "钟灵道",
+      "modelKey": "Q_ZhongLingdaoCamp",
+      "positionXZ": [
+        3200,
+        4278
+      ],
+      "location": "七派营 · 中军大帐前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "lin_xiaozhu",
+      "name": "林小竹",
+      "modelKey": "Q_LinXiaozhu",
+      "positionXZ": [
+        3230,
+        4312
+      ],
+      "location": "七派营 · 医帐",
+      "region": "jiuguo"
+    },
+    {
+      "id": "meng_tieshan",
+      "name": "孟铁山",
+      "modelKey": "Q_MengTieshan",
+      "positionXZ": [
+        3206,
+        5820
+      ],
+      "location": "边墙 · 天一城镇边堂前",
+      "region": "jiuguo"
+    },
+    {
+      "id": "a_guer",
+      "name": "阿古尔",
+      "modelKey": "Q_AGuer",
+      "positionXZ": [
+        3170,
+        5798
+      ],
+      "location": "边墙 · 天一城西南角",
+      "region": "jiuguo"
+    },
+    {
+      "id": "nanlong_hou",
+      "name": "南陇侯",
+      "modelKey": "Q_YfcNanlongHou",
+      "positionXZ": [
+        3173,
+        3374
+      ],
+      "location": "阗天客舍院内",
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_fellow",
+      "name": "同行修士",
+      "modelKey": "Q_YfcFellow",
+      "positionXZ": [
+        5685,
+        3118
+      ],
+      "location": "黄土荒野南行古道",
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_array_fellow",
+      "name": "脱阵的同行修士",
+      "modelKey": "Q_yfc_array_fellow",
+      "positionXZ": [
+        5870,
+        3170
+      ],
+      "location": "黄土荒野",
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_slope_fellow",
+      "name": "守候乱石坡的同行修士",
+      "modelKey": "Q_yfc_slope_fellow",
+      "positionXZ": [
+        6120,
+        3298
+      ],
+      "location": "黄土荒野",
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_driver",
+      "name": "照看飞车的同行修士",
+      "modelKey": "Q_yfc_driver",
+      "positionXZ": [
+        6316,
+        3224
+      ],
+      "location": "黄土荒野",
+      "region": "jiuguo"
+    },
+    {
+      "id": "wen_cheng",
+      "name": "温乘",
+      "modelKey": "Q_WenCheng",
+      "positionXZ": [
+        3217,
+        -3908
+      ],
+      "location": "云梦坊 · 传送台旁",
+      "region": "tiandao"
+    },
+    {
+      "id": "lu_zhanggui",
+      "name": "卢掌柜",
+      "modelKey": "Q_LuZhanggui",
+      "positionXZ": [
+        3192.5,
+        -3944
+      ],
+      "location": "云梦坊 · 云来客栈门前",
+      "region": "tiandao"
+    },
+    {
+      "id": "sun_danshi",
+      "name": "孙丹师",
+      "modelKey": "Q_SunDanshi",
+      "positionXZ": [
+        3192.5,
+        -3978
+      ],
+      "location": "云梦坊 · 回春堂门前",
+      "region": "tiandao"
+    },
+    {
+      "id": "miao_fushi",
+      "name": "苗符师",
+      "modelKey": "Q_MiaoFushi",
+      "positionXZ": [
+        3207.5,
+        -3952
+      ],
+      "location": "云梦坊 · 一纸斋门前",
+      "region": "tiandao"
+    },
+    {
+      "id": "lu_qingyan",
+      "name": "陆清言",
+      "modelKey": "Q_LuQingyan",
+      "positionXZ": [
+        3205,
+        -4066
+      ],
+      "location": "云梦山山门 · 石阶下",
+      "region": "tiandao"
+    },
+    {
+      "id": "zhou_zhishi",
+      "name": "周执事",
+      "modelKey": "Q_ZhouZhishi",
+      "positionXZ": [
+        3096.0,
+        -4376.0
+      ],
+      "location": "落云宗 · 执事堂石峰",
+      "region": "tiandao"
+    },
+    {
+      "id": "jiang_su",
+      "name": "姜素",
+      "modelKey": "Q_JiangSu",
+      "positionXZ": [
+        3366.0,
+        -4515.5
+      ],
+      "location": "落云宗 · 灵药园药庐前",
+      "region": "tiandao"
+    },
+    {
+      "id": "fang_zhanglao",
+      "name": "方长老",
+      "modelKey": "Q_FangZhanglao",
+      "positionXZ": [
+        3200.0,
+        -4472.0
+      ],
+      "location": "落云宗 · 大殿前集合圆坛",
+      "region": "tiandao"
+    },
+    {
+      "id": "lu_heng",
+      "name": "鲁衡",
+      "modelKey": "Q_LuHeng",
+      "positionXZ": [
+        4986.5,
+        -4102.0
+      ],
+      "location": "百巧院 · 门内外务房前",
+      "region": "tiandao"
+    },
+    {
+      "id": "gongshu_qing",
+      "name": "公输青",
+      "modelKey": "Q_GongshuQing",
+      "positionXZ": [
+        5004.0,
+        -4194.0
+      ],
+      "location": "百巧院 · 机关楼前",
+      "region": "tiandao"
+    },
+    {
+      "id": "qin_yue",
+      "name": "秦岳",
+      "modelKey": "Q_QinYue",
+      "positionXZ": [
+        6471.5,
+        -4134.0
+      ],
+      "location": "古剑门 · 迎剑堂前",
+      "region": "tiandao"
+    },
+    {
+      "id": "huolong_tongzi",
+      "name": "火龙童子",
+      "modelKey": "Q_HuolongTongzi",
+      "positionXZ": [
+        6504.0,
+        -4150.0
+      ],
+      "location": "古剑门 · 外院剑山石阶下",
+      "region": "tiandao"
+    }
+  ],
+  "quests": [
+    {
+      "id": "qx_q00",
+      "title": "初到青溪坊",
+      "kind": "主线",
+      "giver": "guard",
+      "receiver": "guard",
+      "prerequisites": [],
+      "objectives": [
+        {
+          "id": "registration",
+          "type": "talk",
+          "text": "向程执事登记入坊",
+          "required": 1,
+          "npc": "steward",
+          "button": "完成入坊登记",
+          "dialogue": "坊市规矩已记在回执上：坊内禁私斗，郊外须留心刀客与来历不明的修士。回去让顾守衡验看即可。"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 25,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q01",
+      "title": "送往驿馆的路引",
+      "kind": "主线",
+      "giver": "guard",
+      "receiver": "courier",
+      "prerequisites": [
+        "qx_q00"
+      ],
+      "objectives": [],
+      "rewards": {
+        "spiritStones": 30,
+        "items": [
+          {
+            "itemId": "mat_101",
+            "name": "凝血草",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "炼制低阶丹药",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q02",
+      "title": "桥边的药草",
+      "kind": "支线",
+      "giver": "herbalist",
+      "receiver": "herbalist",
+      "prerequisites": [
+        "qx_q00"
+      ],
+      "objectives": [
+        {
+          "id": "herbs",
+          "type": "collect",
+          "text": "采集新采凝血草",
+          "required": 6,
+          "itemId": "qxq_fresh_herb",
+          "button": "采集一株凝血草"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 40,
+        "items": [
+          {
+            "itemId": "elixir_001",
+            "name": "增元丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "炼气期修炼丹药",
+            "itemType": "elixir"
+          },
+          {
+            "itemId": "seed_103",
+            "name": "清灵草种子",
+            "quantity": 1,
+            "isMaterial": true,
+            "use": "洞府灵田种植清灵草",
+            "itemType": "seed"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q03",
+      "title": "炉火未稳",
+      "kind": "支线",
+      "giver": "smith",
+      "receiver": "smith",
+      "prerequisites": [
+        "qx_q00"
+      ],
+      "objectives": [
+        {
+          "id": "ore",
+          "type": "collect",
+          "text": "找回待验炉料",
+          "required": 4,
+          "itemId": "qxq_ore_bundle",
+          "button": "拾取一包炉料"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 35,
+        "items": [
+          {
+            "itemId": "mat_201",
+            "name": "百年铁木",
+            "quantity": 3,
+            "isMaterial": true,
+            "use": "木系法器炼制材料",
+            "itemType": "material"
+          },
+          {
+            "itemId": "mat_202",
+            "name": "金精矿",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "金系法器炼制材料",
+            "itemType": "material"
+          },
+          {
+            "itemId": "seed_101",
+            "name": "凝血草种子",
+            "quantity": 1,
+            "isMaterial": true,
+            "itemType": "seed",
+            "use": "洞府灵田种植凝血草"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q04",
+      "title": "麦浪里的刀光",
+      "kind": "主线",
+      "giver": "patrol",
+      "receiver": "patrol",
+      "prerequisites": [
+        "qx_q01"
+      ],
+      "objectives": [
+        {
+          "id": "bandits",
+          "type": "kill",
+          "text": "击败黑衣刀客",
+          "required": 20,
+          "enemyRole": "blade",
+          "arena": "longwind",
+          "button": "击败一名黑衣刀客"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q05",
+      "title": "失踪的货包",
+      "kind": "主线",
+      "giver": "courier",
+      "receiver": "courier",
+      "prerequisites": [
+        "qx_q01"
+      ],
+      "objectives": [
+        {
+          "id": "goods",
+          "type": "collect",
+          "text": "拾取失窃货包",
+          "required": 30,
+          "itemId": "qxq_lost_goods",
+          "sourceEnemyRole": "blade",
+          "arena": "longwind",
+          "button": "拾取一包失窃货物",
+          "dropChance": 0.65
+        }
+      ],
+      "rewards": {
+        "spiritStones": 45,
+        "items": [
+          {
+            "itemId": "mat_201",
+            "name": "百年铁木",
+            "quantity": 3,
+            "isMaterial": true,
+            "use": "木系法器炼制材料",
+            "itemType": "material"
+          },
+          {
+            "itemId": "seed_101",
+            "name": "凝血草种子",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "洞府灵田种植凝血草",
+            "itemType": "seed"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q06",
+      "title": "溪边一尾鲜鱼",
+      "kind": "支线",
+      "giver": "fisher",
+      "receiver": "fisher",
+      "prerequisites": [
+        "qx_q01"
+      ],
+      "objectives": [
+        {
+          "id": "fish",
+          "type": "catch",
+          "text": "在河岸钓台成功钓鱼",
+          "required": 1,
+          "venue": "qingxi-town",
+          "button": "成功钓上一尾鱼"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 40,
+        "items": [
+          {
+            "itemId": "mat_103",
+            "name": "清灵草",
+            "quantity": 3,
+            "isMaterial": true,
+            "use": "炼制清灵丹",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q07",
+      "title": "一纸平安",
+      "kind": "支线",
+      "giver": "talisman",
+      "receiver": "talisman",
+      "prerequisites": [
+        "qx_q05"
+      ],
+      "objectives": [
+        {
+          "id": "fiber",
+          "type": "collect",
+          "text": "收集干燥竹纤",
+          "required": 4,
+          "itemId": "qxq_bamboo_fiber",
+          "button": "拾取一束竹纤"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": [
+          {
+            "itemId": "mat_103",
+            "name": "清灵草",
+            "quantity": 4,
+            "isMaterial": true,
+            "use": "炼制清灵丹",
+            "itemType": "material"
+          },
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q08",
+      "title": "竹影里的埋伏",
+      "kind": "主线",
+      "giver": "bridge_guard",
+      "receiver": "bridge_guard",
+      "prerequisites": [
+        "qx_q04",
+        "qx_q05"
+      ],
+      "objectives": [
+        {
+          "id": "assassins",
+          "type": "kill",
+          "text": "击败鬼灵门暗修",
+          "required": 20,
+          "enemyRole": "assassin",
+          "arena": "bamboo",
+          "button": "击败一名鬼灵门暗修"
+        },
+        {
+          "id": "arraymaster",
+          "type": "kill",
+          "text": "击败布阵修士",
+          "required": 2,
+          "enemyRole": "arraymaster",
+          "arena": "bamboo",
+          "button": "击败一名布阵修士"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 70,
+        "items": [
+          {
+            "itemId": "mat_203",
+            "name": "阴魂丝",
+            "quantity": 3,
+            "isMaterial": true,
+            "use": "幡旗类法宝炼制材料",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q09",
+      "title": "血纹的来处",
+      "kind": "主线",
+      "giver": "appraiser",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q05"
+      ],
+      "objectives": [
+        {
+          "id": "bloodboss",
+          "type": "kill",
+          "text": "击败鬼灵门血影修士本体",
+          "required": 1,
+          "enemyRole": "bloodboss",
+          "arena": "bamboo",
+          "button": "击败血影修士本体"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 100,
+        "items": [
+          {
+            "itemId": "recipe_101",
+            "name": "玄铁剑图纸",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "学习玄铁剑炼制配方",
+            "itemType": "recipe"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q10",
+      "title": "坊市的一份人情",
+      "kind": "主线",
+      "giver": "steward",
+      "receiver": "steward",
+      "prerequisites": [
+        "qx_q04",
+        "qx_q05",
+        "qx_q08",
+        "qx_q09"
+      ],
+      "objectives": [
+        {
+          "id": "report",
+          "type": "interact",
+          "text": "核对执事堂的护路告示",
+          "required": 1,
+          "worldObject": "qxq_protection_board",
+          "button": "核对护路告示"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 80,
+        "items": [
+          {
+            "itemId": "elixir_001",
+            "name": "增元丹",
+            "quantity": 3,
+            "isMaterial": false,
+            "use": "炼气期修炼丹药",
+            "itemType": "elixir"
+          },
+          {
+            "itemId": "seed_103",
+            "name": "清灵草种子",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "洞府灵田种植清灵草",
+            "itemType": "seed"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q11",
+      "title": "冷箭上的私印",
+      "kind": "主线",
+      "chapter": 2,
+      "giver": "patrol",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q10"
+      ],
+      "objectives": [
+        {
+          "id": "arrows",
+          "type": "collect",
+          "text": "拾取带私印的箭簇",
+          "required": 10,
+          "itemId": "qxq_marked_arrow",
+          "sourceEnemyRole": "archer",
+          "arena": "longwind",
+          "button": "拾取带私印的箭簇",
+          "dropChance": 0.65
+        }
+      ],
+      "rewards": {
+        "spiritStones": 75,
+        "items": [
+          {
+            "itemId": "mat_202",
+            "name": "金精矿",
+            "quantity": 3,
+            "isMaterial": true,
+            "use": "金系法器炼制材料",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q12",
+      "title": "枪尾旧账",
+      "kind": "支线",
+      "chapter": 2,
+      "giver": "smith",
+      "receiver": "smith",
+      "prerequisites": [
+        "qx_q11"
+      ],
+      "objectives": [
+        {
+          "id": "ferrules",
+          "type": "collect",
+          "text": "拾取走私枪镦",
+          "required": 8,
+          "itemId": "qxq_spear_ferrule",
+          "sourceEnemyRole": "spear",
+          "arena": "lantern",
+          "button": "拾取走私枪镦",
+          "dropChance": 0.65
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": [
+          {
+            "itemId": "mat_201",
+            "name": "百年铁木",
+            "quantity": 4,
+            "isMaterial": true,
+            "use": "木系法器炼制材料",
+            "itemType": "material"
+          },
+          {
+            "itemId": "mat_202",
+            "name": "金精矿",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "金系法器炼制材料",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q13",
+      "title": "药匣与铜钥",
+      "kind": "支线",
+      "chapter": 2,
+      "giver": "herbalist",
+      "receiver": "herbalist",
+      "prerequisites": [
+        "qx_q11"
+      ],
+      "objectives": [
+        {
+          "id": "case",
+          "type": "collect",
+          "text": "拾取封存药匣",
+          "required": 1,
+          "itemId": "qxq_medicine_case",
+          "sourceEnemyRole": "heavy",
+          "arena": "lantern",
+          "button": "拾取封存药匣",
+          "dropChance": 0.85
+        },
+        {
+          "id": "key",
+          "type": "collect",
+          "text": "拾取药匣铜钥",
+          "required": 1,
+          "itemId": "qxq_copper_key",
+          "sourceEnemyRole": "boss",
+          "arena": "lantern",
+          "button": "拾取药匣铜钥",
+          "dropChance": 0.85
+        }
+      ],
+      "rewards": {
+        "spiritStones": 100,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          },
+          {
+            "itemId": "seed_103",
+            "name": "清灵草种子",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "洞府灵田种植清灵草",
+            "itemType": "seed"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q14",
+      "title": "符火未冷",
+      "kind": "主线",
+      "chapter": 2,
+      "giver": "talisman",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q11"
+      ],
+      "objectives": [
+        {
+          "id": "cores",
+          "type": "collect",
+          "text": "拾取未熄符芯",
+          "required": 15,
+          "itemId": "qxq_fire_core",
+          "sourceEnemyRole": "talisman",
+          "arena": "bamboo",
+          "button": "拾取未熄符芯",
+          "dropChance": 0.65
+        },
+        {
+          "id": "plate",
+          "type": "collect",
+          "text": "拾取血纹阵盘",
+          "required": 2,
+          "itemId": "qxq_array_plate",
+          "sourceEnemyRole": "arraymaster",
+          "arena": "bamboo",
+          "button": "拾取血纹阵盘",
+          "dropChance": 0.65
+        }
+      ],
+      "rewards": {
+        "spiritStones": 85,
+        "items": [
+          {
+            "itemId": "mat_103",
+            "name": "清灵草",
+            "quantity": 4,
+            "isMaterial": true,
+            "use": "炼制清灵丹",
+            "itemType": "material"
+          },
+          {
+            "itemId": "mat_203",
+            "name": "阴魂丝",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "幡旗类法宝炼制材料",
+            "itemType": "material"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q15",
+      "title": "灯尽契散",
+      "kind": "主线",
+      "chapter": 2,
+      "giver": "appraiser",
+      "receiver": "steward",
+      "prerequisites": [
+        "qx_q14"
+      ],
+      "objectives": [
+        {
+          "id": "seal",
+          "type": "collect",
+          "text": "拾取原契血印",
+          "required": 1,
+          "itemId": "qxq_original_seal",
+          "sourceEnemyRole": "boss",
+          "arena": "lantern",
+          "button": "拾取原契血印",
+          "dropChance": 0.85
+        }
+      ],
+      "rewards": {
+        "spiritStones": 140,
+        "items": [
+          {
+            "itemId": "elixir_001",
+            "name": "增元丹",
+            "quantity": 3,
+            "isMaterial": false,
+            "use": "炼气期修炼丹药",
+            "itemType": "elixir"
+          },
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q16",
+      "title": "残令传音",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "appraiser",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q15"
+      ],
+      "objectives": [
+        {
+          "id": "token",
+          "type": "interact",
+          "text": "察看案上微热的月殿残令",
+          "required": 1,
+          "worldObject": "qxq_warm_moon_token",
+          "button": "察看月殿残令"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 30,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q17",
+      "title": "顾鉴的判词",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "appraiser",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q16"
+      ],
+      "objectives": [
+        {
+          "id": "steward",
+          "type": "talk",
+          "text": "向程执事打听残令的来历",
+          "required": 1,
+          "npc": "steward",
+          "button": "问残令的来历"
+        },
+        {
+          "id": "herbalist",
+          "type": "talk",
+          "text": "请白药娘辨认令上的血气",
+          "required": 1,
+          "npc": "herbalist",
+          "button": "请她辨认血气"
+        },
+        {
+          "id": "courier",
+          "type": "talk",
+          "text": "向叶行舟打听月殿的消息",
+          "required": 1,
+          "npc": "courier",
+          "button": "打听月殿消息"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 40,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q18",
+      "title": "灯市里的化意门客",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "appraiser",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q17"
+      ],
+      "objectives": [
+        {
+          "id": "listen",
+          "type": "interact",
+          "text": "在灯市偷听化意门宾客的密谈",
+          "required": 3,
+          "worldObject": "qxq_huayi_whisper",
+          "button": "靠近偷听"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir",
+            "quantity": 1
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q19",
+      "title": "麦田的冰火剑痕",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "appraiser",
+      "receiver": "appraiser",
+      "prerequisites": [
+        "qx_q17"
+      ],
+      "objectives": [
+        {
+          "id": "marks",
+          "type": "interact",
+          "text": "拓印长风原上的冰火剑痕",
+          "required": 3,
+          "worldObject": "qxq_frost_fire_mark",
+          "button": "拓印剑痕"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 50,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q20",
+      "title": "阴阳剑丝",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "appraiser",
+      "receiver": "smith",
+      "prerequisites": [
+        "qx_q18",
+        "qx_q19"
+      ],
+      "objectives": [
+        {
+          "id": "threads",
+          "type": "collect",
+          "text": "从鬼灵门暗修身上收集剑丝",
+          "required": 6,
+          "itemId": "qxq_yinyang_thread",
+          "sourceEnemyRole": "assassin",
+          "arena": "bamboo",
+          "button": "拾取剑丝",
+          "dropChance": 0.65
+        }
+      ],
+      "rewards": {
+        "spiritStones": 70,
+        "items": [
+          {
+            "itemId": "mat_yanyue_yinyang_sword_thread",
+            "name": "阴阳剑丝",
+            "isMaterial": true,
+            "use": "阴阳冰火大剑相关材料",
+            "itemType": "material",
+            "quantity": 1
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q21",
+      "title": "南宫婉的旧簪",
+      "kind": "支线",
+      "chapter": 3,
+      "giver": "fisher",
+      "receiver": "fisher",
+      "prerequisites": [
+        "qx_q17"
+      ],
+      "objectives": [
+        {
+          "id": "hairpin",
+          "type": "interact",
+          "text": "拾起河岸边的旧玉簪",
+          "required": 1,
+          "worldObject": "qxq_old_hairpin",
+          "button": "拾起旧簪"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "items": [],
+        "choices": [
+          {
+            "id": "endure",
+            "label": "隐忍 · 此仇记下，不急一时",
+            "items": [
+              {
+                "itemId": "elixir_005",
+                "name": "回灵丹",
+                "isMaterial": false,
+                "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+                "itemType": "elixir",
+                "quantity": 2
+              }
+            ],
+            "monologue": "这是掩月宗女弟子入门时的玉簪。阙姐姐当年也有一支。她走的那天，把簪子折成了两截。那些旧账，我一笔都没忘，只是不必急在今日。"
+          },
+          {
+            "id": "resolve",
+            "label": "决绝 · 月殿一行，了断旧怨",
+            "items": [
+              {
+                "itemId": "mat_001",
+                "name": "灵石",
+                "isMaterial": true,
+                "use": "通用货币",
+                "itemType": "material",
+                "quantity": 40
+              }
+            ],
+            "monologue": "簪上的月纹还在。阙姐姐，你借月殿练血契，伤的是掩月宗的根。这一回，我不会再退。"
+          },
+          {
+            "id": "release",
+            "label": "释然 · 只当是故人来信",
+            "items": [
+              {
+                "itemId": "mat_yanyue_mirror_sand",
+                "name": "掩月镜砂",
+                "isMaterial": true,
+                "use": "血魔剑升阶与镇压材料",
+                "itemType": "material",
+                "quantity": 1
+              }
+            ],
+            "monologue": "当年同在月殿练剑，她总比我快一步。后来走到这一步，也许不全是她的错。这支簪子，就当是她托河水捎来的一封信。"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q22",
+      "title": "照煞镜",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "smith",
+      "receiver": "smith",
+      "prerequisites": [
+        "qx_q20"
+      ],
+      "objectives": [
+        {
+          "id": "rifts",
+          "type": "interact",
+          "text": "以照煞镜照住竹林中的血煞裂隙",
+          "required": 4,
+          "worldObject": "qxq_blood_rift",
+          "button": "照住裂隙"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q23",
+      "title": "血煞封瓶",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "herbalist",
+      "receiver": "herbalist",
+      "prerequisites": [
+        "qx_q22"
+      ],
+      "objectives": [
+        {
+          "id": "bottle",
+          "type": "interact",
+          "text": "在竹林血煞最浓处装满封煞瓶，五分钟内带回灵药铺",
+          "required": 1,
+          "worldObject": "qxq_sealing_bottle",
+          "button": "装满封煞瓶",
+          "timeLimit": 300
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir",
+            "quantity": 1
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q24",
+      "title": "驿馆车马",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "courier",
+      "receiver": "courier",
+      "prerequisites": [
+        "qx_q22"
+      ],
+      "objectives": [
+        {
+          "id": "ambush",
+          "type": "kill",
+          "text": "击退灯市的伏兵长枪手",
+          "required": 3,
+          "enemyRole": "spear",
+          "arena": "lantern",
+          "button": "击退伏兵"
+        },
+        {
+          "id": "map",
+          "type": "collect",
+          "text": "从劫车的首领身上夺回月殿图",
+          "required": 1,
+          "itemId": "qxq_moon_palace_map",
+          "sourceEnemyRole": "boss",
+          "arena": "lantern",
+          "button": "拾取月殿图",
+          "dropChance": 0.85
+        }
+      ],
+      "rewards": {
+        "spiritStones": 80,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q25",
+      "title": "月殿禁符",
+      "kind": "主线",
+      "chapter": 3,
+      "giver": "steward",
+      "receiver": "steward",
+      "prerequisites": [
+        "qx_q23",
+        "qx_q24"
+      ],
+      "objectives": [
+        {
+          "id": "seal",
+          "type": "interact",
+          "text": "在执事堂符台上合成月殿禁符",
+          "required": 1,
+          "worldObject": "qxq_seal_altar",
+          "button": "合成禁符"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "merit": 60,
+        "items": [
+          {
+            "itemId": "badge_moon_palace_walker",
+            "name": "月殿行者",
+            "isMaterial": false,
+            "use": "称号 · 持月殿禁符者，无数值效果",
+            "itemType": "badge",
+            "quantity": 1
+          }
+        ],
+        "choices": [
+          {
+            "id": "sand",
+            "label": "掩月镜砂 ×2",
+            "items": [
+              {
+                "itemId": "mat_yanyue_mirror_sand",
+                "name": "掩月镜砂",
+                "isMaterial": true,
+                "use": "血魔剑升阶与镇压材料",
+                "itemType": "material",
+                "quantity": 2
+              }
+            ]
+          },
+          {
+            "id": "iron",
+            "label": "血剑铁髓 ×1",
+            "items": [
+              {
+                "itemId": "mat_yanyue_blood_sword_iron",
+                "name": "血剑铁髓",
+                "isMaterial": true,
+                "use": "血魔剑升阶材料",
+                "itemType": "material",
+                "quantity": 1
+              }
+            ]
+          },
+          {
+            "id": "elixir",
+            "label": "回灵丹 ×3",
+            "items": [
+              {
+                "itemId": "elixir_005",
+                "name": "回灵丹",
+                "isMaterial": false,
+                "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+                "itemType": "elixir",
+                "quantity": 3
+              }
+            ]
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q26",
+      "title": "会盟请柬",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "steward",
+      "receiver": "zhong_lingdao",
+      "prerequisites": [
+        "qx_q25"
+      ],
+      "objectives": [
+        {
+          "id": "envoy",
+          "type": "talk",
+          "text": "前往黄枫谷（在清溪坊传送法阵选「前往黄枫谷」），过桥入山门，在议事殿阶前见钟灵道",
+          "required": 1,
+          "npc": "zhong_lingdao",
+          "button": "递上执事堂的帖子"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "cultivation": 300,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q27",
+      "title": "七派问心",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "zhong_lingdao",
+      "receiver": "zhong_lingdao",
+      "prerequisites": [
+        "qx_q26"
+      ],
+      "objectives": [
+        {
+          "id": "jujian",
+          "type": "talk",
+          "text": "在长风原北口见巨剑门弟子陆铮",
+          "required": 1,
+          "npc": "jujian_disciple",
+          "button": "转达会盟之意"
+        },
+        {
+          "id": "huadao",
+          "type": "talk",
+          "text": "在长街灯火北口见化刀坞弟子柳寒刀",
+          "required": 1,
+          "npc": "huadao_disciple",
+          "button": "转达会盟之意"
+        },
+        {
+          "id": "qingxu",
+          "type": "talk",
+          "text": "在听竹坳口见清虚门道士玄清子",
+          "required": 1,
+          "npc": "qingxu_daoist",
+          "button": "转达会盟之意"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 90,
+        "cultivation": 600,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q28",
+      "title": "麦田魔踪",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "jujian_disciple",
+      "receiver": "jujian_disciple",
+      "prerequisites": [
+        "qx_q27"
+      ],
+      "objectives": [
+        {
+          "id": "blades",
+          "type": "kill",
+          "text": "击退麦田里的黑衣刀客",
+          "required": 4,
+          "enemyRole": "blade",
+          "arena": "longwind"
+        },
+        {
+          "id": "token",
+          "type": "collect",
+          "text": "拾取魔焰令牌",
+          "required": 2,
+          "itemId": "qxq_demon_flame_token",
+          "sourceEnemyRole": "archer",
+          "arena": "longwind",
+          "button": "拾取魔焰令牌",
+          "dropChance": 0.7
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q29",
+      "title": "竹林阵痕",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "qingxu_daoist",
+      "receiver": "qingxu_daoist",
+      "prerequisites": [
+        "qx_q27"
+      ],
+      "objectives": [
+        {
+          "id": "letters",
+          "type": "collect",
+          "text": "拾取鬼灵门密信",
+          "required": 2,
+          "itemId": "qxq_ghost_letter",
+          "sourceEnemyRole": "assassin",
+          "arena": "bamboo",
+          "button": "拾取鬼灵门密信",
+          "dropChance": 0.7
+        },
+        {
+          "id": "traces",
+          "type": "gather",
+          "text": "拓下竹林中的可疑阵痕",
+          "required": 3,
+          "itemId": "qxq_array_trace",
+          "button": "拓下阵痕"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q30",
+      "title": "灯市暗桩",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "huadao_disciple",
+      "receiver": "huadao_disciple",
+      "prerequisites": [
+        "qx_q27"
+      ],
+      "objectives": [
+        {
+          "id": "spears",
+          "type": "kill",
+          "text": "击退灯市枪手",
+          "required": 3,
+          "enemyRole": "spear",
+          "arena": "lantern"
+        },
+        {
+          "id": "ledger",
+          "type": "collect",
+          "text": "拾取暗桩账册",
+          "required": 1,
+          "itemId": "qxq_lantern_ledger",
+          "sourceEnemyRole": "boss",
+          "arena": "lantern",
+          "button": "拾取暗桩账册",
+          "dropChance": 0.85
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q31",
+      "title": "七派之盟",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "zhong_lingdao",
+      "receiver": "zhong_lingdao",
+      "prerequisites": [
+        "qx_q28",
+        "qx_q29",
+        "qx_q30"
+      ],
+      "objectives": [
+        {
+          "id": "report",
+          "type": "talk",
+          "text": "向钟灵道禀报三处所见",
+          "required": 1,
+          "npc": "zhong_lingdao",
+          "button": "禀报三处所见"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 200,
+        "cultivation": 2000,
+        "merit": 40,
+        "items": [
+          {
+            "itemId": "badge_seven_sects_ally",
+            "name": "七派盟友",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "称号 · 越国七派会盟的见证者，无数值效果",
+            "itemType": "badge"
+          }
+        ],
+        "choicePrompt": "挂单宗门（选定后不可更改）",
+        "choices": [
+          {
+            "id": "huangfeng",
+            "label": "挂单黄枫谷",
+            "items": [
+              {
+                "itemId": "elixir_hfg_001",
+                "name": "九转解厄丹",
+                "quantity": 1,
+                "isMaterial": false,
+                "use": "黄枫谷秘制丹药",
+                "itemType": "elixir"
+              }
+            ],
+            "monologue": "黄枫谷以丹道立宗，这一粒解厄丹，是谷中长老亲手所炼。",
+            "sect": "黄枫谷"
+          },
+          {
+            "id": "jujian",
+            "label": "挂单巨剑门",
+            "items": [
+              {
+                "itemId": "mat_gengjin",
+                "name": "庚金",
+                "quantity": 3,
+                "isMaterial": true,
+                "use": "飞剑与剑阵的上品炼材",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "巨剑门只认剑。庚金三块，拿去炼你的剑。",
+            "sect": "巨剑门"
+          },
+          {
+            "id": "huadao",
+            "label": "挂单化刀坞",
+            "items": [
+              {
+                "itemId": "mat_dao_huo",
+                "name": "法则碎片·火",
+                "quantity": 2,
+                "isMaterial": true,
+                "use": "火系法则碎片",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "化刀坞刀走火意，这两枚火之碎片，是坞主赠给同道的。",
+            "sect": "化刀坞"
+          },
+          {
+            "id": "lingshou",
+            "label": "挂单灵兽山",
+            "items": [
+              {
+                "itemId": "mat_403",
+                "name": "一截灵眼之树",
+                "quantity": 1,
+                "isMaterial": true,
+                "use": "灵兽山珍藏的灵木",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "灵兽山与草木鸟兽为伍，这截灵眼之树，可养灵兽，也可入阵。",
+            "sect": "灵兽山"
+          },
+          {
+            "id": "qingxu",
+            "label": "挂单清虚门",
+            "items": [
+              {
+                "itemId": "mat_dao_mu",
+                "name": "法则碎片·木",
+                "quantity": 2,
+                "isMaterial": true,
+                "use": "木系法则碎片",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "清虚门修清静之道，木之碎片两枚，助你养气。",
+            "sect": "清虚门"
+          },
+          {
+            "id": "tianque",
+            "label": "挂单天阙堡",
+            "items": [
+              {
+                "itemId": "mat_dao_lei",
+                "name": "法则碎片·雷",
+                "quantity": 2,
+                "isMaterial": true,
+                "use": "雷系法则碎片",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "天阙堡守的是越国北门。雷之碎片两枚，愿你守得住自己的门。",
+            "sect": "天阙堡"
+          },
+          {
+            "id": "yanyue",
+            "label": "挂单掩月宗",
+            "items": [
+              {
+                "itemId": "mat_yanyue_mirror_sand",
+                "name": "掩月镜砂",
+                "quantity": 2,
+                "isMaterial": true,
+                "use": "血魔剑升阶与镇压材料",
+                "itemType": "material"
+              }
+            ],
+            "monologue": "掩月宗……南宫师叔听说你来过月殿。镜砂两份，是她让我转交的。",
+            "sect": "掩月宗"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q32",
+      "title": "血色禁地",
+      "kind": "主线",
+      "chapter": 4,
+      "giver": "zhong_lingdao",
+      "receiver": "zhong_lingdao",
+      "prerequisites": [
+        "qx_q31"
+      ],
+      "objectives": [
+        {
+          "id": "clear",
+          "type": "instance",
+          "instance": "bloodland",
+          "text": "进入血色禁地，采齐五株灵药并击败截道修士出谷",
+          "required": 1,
+          "button": "在传送法阵选择「血色禁地」"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 160,
+        "cultivation": 1600,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q33",
+      "title": "烽烟南来",
+      "kind": "主线",
+      "chapter": 5,
+      "giver": "zhong_lingdao",
+      "receiver": "guard",
+      "prerequisites": [
+        "qx_q32"
+      ],
+      "objectives": [
+        {
+          "id": "warn",
+          "type": "talk",
+          "text": "回清溪坊（在法阵选「返回清溪坊 · 传送法阵」），把魔道先锋过境的消息告诉南门守卫顾守衡",
+          "required": 1,
+          "npc": "guard",
+          "button": "转告钟执事的急报"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 70,
+        "cultivation": 400,
+        "items": []
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q34",
+      "title": "斩哨",
+      "kind": "主线",
+      "chapter": 5,
+      "giver": "guard",
+      "receiver": "guard",
+      "prerequisites": [
+        "qx_q33"
+      ],
+      "objectives": [
+        {
+          "id": "flame",
+          "type": "kill",
+          "text": "击退长风原的魔焰门巡哨",
+          "required": 4,
+          "enemyRole": "flameblade",
+          "arena": "longwind"
+        },
+        {
+          "id": "ghost",
+          "type": "kill",
+          "text": "击退听竹坳的鬼灵门巡哨",
+          "required": 3,
+          "enemyRole": "ghostscout",
+          "arena": "bamboo"
+        },
+        {
+          "id": "order",
+          "type": "collect",
+          "text": "从魔焰门火符手身上搜出魔焰军令",
+          "required": 1,
+          "itemId": "qxq_flame_order",
+          "sourceEnemyRole": "flamescout",
+          "arena": "longwind",
+          "button": "拾取魔焰军令",
+          "dropChance": 0.8
+        }
+      ],
+      "rewards": {
+        "spiritStones": 140,
+        "cultivation": 1100,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q35",
+      "title": "南门守城",
+      "kind": "主线",
+      "chapter": 5,
+      "giver": "guard",
+      "receiver": "guard",
+      "prerequisites": [
+        "qx_q34"
+      ],
+      "objectives": [
+        {
+          "id": "hold",
+          "type": "instance",
+          "instance": "southgate",
+          "text": "守住南门：击退四波魔修与魔焰门长老，城门不破",
+          "required": 1,
+          "button": "开始南门守城"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 220,
+        "cultivation": 2200,
+        "merit": 45,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q36",
+      "title": "护民出关",
+      "kind": "主线",
+      "chapter": 5,
+      "giver": "guard",
+      "receiver": "guard",
+      "prerequisites": [
+        "qx_q35"
+      ],
+      "objectives": [
+        {
+          "id": "escort",
+          "type": "instance",
+          "instance": "escort",
+          "text": "护送难民车队沿南山驿道出越国：击退四次追兵，车队不毁",
+          "required": 1,
+          "button": "开始护民出关"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 240,
+        "cultivation": 2400,
+        "merit": 50,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q37",
+      "title": "别了越国",
+      "kind": "主线",
+      "chapter": 5,
+      "giver": "guard",
+      "receiver": "zhong_lingdao",
+      "prerequisites": [
+        "qx_q36"
+      ],
+      "objectives": [
+        {
+          "id": "farewell",
+          "type": "talk",
+          "text": "前往黄枫谷，向钟灵道辞行",
+          "required": 1,
+          "npc": "zhong_lingdao",
+          "button": "辞行"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 300,
+        "cultivation": 3000,
+        "merit": 60,
+        "items": [
+          {
+            "itemId": "badge_yue_gate_warden",
+            "name": "越国守城人",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "称号 · 魔焰压境时守住清溪坊、护民出关的修士，无数值效果",
+            "itemType": "badge"
+          }
+        ]
+      },
+      "region": "yue"
+    },
+    {
+      "id": "qx_q38",
+      "title": "传送西来",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "zhong_lingdao",
+      "receiver": "qin_yao",
+      "prerequisites": [
+        "qx_q37"
+      ],
+      "objectives": [
+        {
+          "id": "arrive",
+          "type": "talk",
+          "text": "经传送阵前往阗天城，在瓮城门外向守门执事秦尧报上钟灵道的名字",
+          "required": 1,
+          "npc": "qin_yao",
+          "button": "出示七派路引"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 80,
+        "cultivation": 600,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q39",
+      "title": "客舍落脚",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "qin_yao",
+      "receiver": "yu_sanniang",
+      "prerequisites": [
+        "qx_q38"
+      ],
+      "objectives": [
+        {
+          "id": "register",
+          "type": "interact",
+          "text": "在阗天客舍堂前的名册上落名",
+          "required": 1,
+          "worldObject": "qxq_guest_register",
+          "button": "在名册上落名"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 60,
+        "cultivation": 500,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q40",
+      "title": "城中人脉",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "yu_sanniang",
+      "receiver": "zou_heng",
+      "prerequisites": [
+        "qx_q39"
+      ],
+      "objectives": [
+        {
+          "id": "merchant",
+          "type": "talk",
+          "text": "上内城，拜会九国商会管事钱伯庸",
+          "required": 1,
+          "npc": "qian_boyong",
+          "button": "递上客舍的引荐帖"
+        },
+        {
+          "id": "alchemist",
+          "type": "talk",
+          "text": "到外城东的丹阁，拜会炼丹师白素",
+          "required": 1,
+          "npc": "bai_su",
+          "button": "请教丹阁规矩"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 100,
+        "cultivation": 800,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q41",
+      "title": "坊市行情",
+      "kind": "支线",
+      "chapter": 6,
+      "giver": "qian_boyong",
+      "receiver": "qian_boyong",
+      "prerequisites": [
+        "qx_q40"
+      ],
+      "objectives": [
+        {
+          "id": "quotes",
+          "type": "gather",
+          "text": "抄下坊市四处摊位的价签",
+          "required": 4,
+          "itemId": "qxq_market_quote",
+          "button": "抄下价签"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q42",
+      "title": "丹阁试药",
+      "kind": "支线",
+      "chapter": 6,
+      "giver": "bai_su",
+      "receiver": "bai_su",
+      "prerequisites": [
+        "qx_q40"
+      ],
+      "objectives": [
+        {
+          "id": "thorn",
+          "type": "gather",
+          "text": "出南门，沿崖下山道采五株风棘草",
+          "required": 5,
+          "itemId": "qxq_wind_thorn",
+          "button": "采下风棘草"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 140,
+        "cultivation": 1000,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q43",
+      "title": "七派流寓",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "zou_heng",
+      "receiver": "zhong_lingdao_camp",
+      "prerequisites": [
+        "qx_q40"
+      ],
+      "objectives": [
+        {
+          "id": "camp",
+          "type": "talk",
+          "text": "出城沿山道南下，到七派营中军大帐见钟灵道",
+          "required": 1,
+          "npc": "zhong_lingdao_camp",
+          "button": "转达盟军执事堂的安置令"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 90,
+        "cultivation": 700,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q44",
+      "title": "营中疾苦",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "zhong_lingdao_camp",
+      "receiver": "zhong_lingdao_camp",
+      "prerequisites": [
+        "qx_q43"
+      ],
+      "objectives": [
+        {
+          "id": "bundles",
+          "type": "gather",
+          "text": "到北门库房领出四份赈济包",
+          "required": 4,
+          "itemId": "qxq_relief_bundle",
+          "button": "领出赈济包"
+        },
+        {
+          "id": "tents",
+          "type": "interact",
+          "text": "把赈济送到黄枫谷、灵兽山、化刀坞、清虚门四处营帐",
+          "required": 4,
+          "worldObject": "qxq_relief_tent",
+          "button": "送上赈济"
+        },
+        {
+          "id": "wounded",
+          "type": "talk",
+          "text": "去医帐看看南门那夜受伤的掩月宗弟子林小竹",
+          "required": 1,
+          "npc": "lin_xiaozhu",
+          "button": "探望伤者"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 160,
+        "cultivation": 1300,
+        "items": [],
+        "merit": 40
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q45",
+      "title": "客居他乡",
+      "kind": "主线",
+      "chapter": 6,
+      "giver": "zhong_lingdao_camp",
+      "receiver": "qi_furen",
+      "prerequisites": [
+        "qx_q44"
+      ],
+      "objectives": [
+        {
+          "id": "endorse",
+          "type": "talk",
+          "text": "先到内城盟军执事堂，请邹衡在陈情上署名",
+          "required": 1,
+          "npc": "zou_heng",
+          "button": "请邹执事署名"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 240,
+        "cultivation": 2000,
+        "items": [
+          {
+            "itemId": "badge_tiantian_guest",
+            "name": "阗天客卿",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "称号 · 越国七派流寓九国盟后，得议事大殿延为客卿的修士，无数值效果",
+            "itemType": "badge"
+          }
+        ],
+        "merit": 60
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q46",
+      "title": "烽火急报",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "qi_furen",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q45"
+      ],
+      "objectives": [
+        {
+          "id": "report",
+          "type": "talk",
+          "text": "出七派营往南，沿驿道到边墙天一城，向守将孟铁山报到",
+          "required": 1,
+          "npc": "meng_tieshan",
+          "button": "呈上议事大殿的调令"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 90,
+        "cultivation": 700,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q47",
+      "title": "巡墙",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q46"
+      ],
+      "objectives": [
+        {
+          "id": "check",
+          "type": "interact",
+          "text": "沿边墙验看西一、东一、东二三座烽燧的柴垛",
+          "required": 3,
+          "worldObject": "qxq_beacon_check",
+          "button": "验看柴垛"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 110,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q48",
+      "title": "斩探马",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q47"
+      ],
+      "objectives": [
+        {
+          "id": "riders",
+          "type": "kill",
+          "text": "出关门，击退草坡上的慕兰探马",
+          "required": 5,
+          "enemyRole": "mulanrider",
+          "arena": "mulanfront"
+        },
+        {
+          "id": "tally",
+          "type": "collect",
+          "text": "从随行的慕兰法士身上搜出军符",
+          "required": 1,
+          "itemId": "qxq_mulan_tally",
+          "sourceEnemyRole": "mulanshaman",
+          "arena": "mulanfront",
+          "button": "拾取慕兰军符",
+          "dropChance": 0.8
+        }
+      ],
+      "rewards": {
+        "spiritStones": 170,
+        "cultivation": 1500,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q49",
+      "title": "燃烽传警",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q48"
+      ],
+      "objectives": [
+        {
+          "id": "fire",
+          "type": "interact",
+          "text": "点燃东一、东二两座烽燧，把警讯传往东边各城",
+          "required": 2,
+          "worldObject": "qxq_beacon_fire",
+          "button": "点燃烽燧"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 1000,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q50",
+      "title": "探法士营",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q49"
+      ],
+      "objectives": [
+        {
+          "id": "totems",
+          "type": "interact",
+          "text": "潜入法士营，从营中图腾上拓下符纹",
+          "required": 3,
+          "worldObject": "qxq_mulan_totem",
+          "button": "拓下符纹"
+        },
+        {
+          "id": "shamans",
+          "type": "kill",
+          "text": "击败营中的慕兰法士",
+          "required": 4,
+          "enemyRole": "mulanshaman",
+          "arena": "mulancamp"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 180,
+        "cultivation": 1600,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q51",
+      "title": "神坛之秘",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q50"
+      ],
+      "objectives": [
+        {
+          "id": "question",
+          "type": "talk",
+          "text": "到天一城西南角，审问被俘的法士阿古尔",
+          "required": 1,
+          "npc": "a_guer",
+          "button": "拿出图腾拓纹审问"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 90,
+        "cultivation": 700,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q52",
+      "title": "血祭神坛",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "meng_tieshan",
+      "prerequisites": [
+        "qx_q51"
+      ],
+      "objectives": [
+        {
+          "id": "clear",
+          "type": "instance",
+          "instance": "mulanshrine",
+          "text": "进入草原神坛，击破四波慕兰法士，击败慕兰大法士",
+          "required": 1,
+          "button": "前往草原神坛"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 200,
+        "cultivation": 2000,
+        "items": [],
+        "merit": 30
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q53",
+      "title": "边墙烽火",
+      "kind": "主线",
+      "chapter": 7,
+      "giver": "meng_tieshan",
+      "receiver": "qi_furen",
+      "prerequisites": [
+        "qx_q52"
+      ],
+      "objectives": [
+        {
+          "id": "return",
+          "type": "talk",
+          "text": "回阗天城，上议事大殿向戚夫人复命",
+          "required": 1,
+          "npc": "qi_furen",
+          "button": "复命"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 320,
+        "cultivation": 3200,
+        "items": [
+          {
+            "itemId": "badge_border_beacon",
+            "name": "边墙烽燧使",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "称号 · 慕兰犯边时燃烽传警、打断草原神坛血祭的修士，无数值效果",
+            "itemType": "badge"
+          }
+        ],
+        "merit": 70
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q01",
+      "title": "南陇之邀",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "nanlong_hou",
+      "receiver": "nanlong_hou",
+      "prerequisites": [
+        "qx_q39"
+      ],
+      "objectives": [
+        {
+          "id": "itinerary",
+          "type": "interact",
+          "text": "查看南陇侯身旁的南行路线玉简",
+          "required": 1,
+          "worldObject": "yfc_itinerary",
+          "button": "查看南行路线"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q02",
+      "title": "荒地南行",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "nanlong_hou",
+      "receiver": "yfc_fellow",
+      "prerequisites": [
+        "yfc_q01"
+      ],
+      "objectives": [
+        {
+          "id": "road",
+          "type": "interact",
+          "text": "沿南行旧道查验地面痕迹",
+          "required": 1,
+          "worldObject": "yfc_old_road",
+          "button": "查验旧道"
+        },
+        {
+          "id": "sign",
+          "type": "interact",
+          "text": "在古道中段辨认残缺路标",
+          "required": 1,
+          "worldObject": "yfc_worn_sign",
+          "button": "辨认路标"
+        },
+        {
+          "id": "wind",
+          "type": "interact",
+          "text": "到荒地前方观察异常风迹",
+          "required": 1,
+          "worldObject": "yfc_wind_trace",
+          "button": "观察风迹"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q03",
+      "title": "法士初现",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_fellow",
+      "receiver": "yfc_fellow",
+      "prerequisites": [
+        "yfc_q02"
+      ],
+      "objectives": [
+        {
+          "id": "yfc_watch",
+          "type": "interact",
+          "text": "观察风柱后的法士",
+          "required": 1,
+          "worldObject": "yfc_watch",
+          "button": "观察风柱后的法士"
+        },
+        {
+          "id": "yfc_signal",
+          "type": "interact",
+          "text": "用传讯符报告风阵",
+          "required": 1,
+          "worldObject": "yfc_signal",
+          "button": "用传讯符报告风阵"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q04",
+      "title": "红尘万丈",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_fellow",
+      "receiver": "yfc_array_fellow",
+      "prerequisites": [
+        "yfc_q03"
+      ],
+      "objectives": [
+        {
+          "id": "keepers",
+          "type": "kill",
+          "text": "击败三名守阵法士",
+          "required": 3,
+          "arena": "yufeng_wind",
+          "enemyRole": "mulanshaman"
+        },
+        {
+          "id": "seal0",
+          "type": "interact",
+          "text": "依定星盘辨认第一处阵隙",
+          "required": 1,
+          "worldObject": "yfc_wind_seal0",
+          "button": "依定星盘辨认第一处阵隙"
+        },
+        {
+          "id": "seal1",
+          "type": "interact",
+          "text": "穿过第二处阵隙",
+          "required": 1,
+          "worldObject": "yfc_wind_seal1",
+          "button": "穿过第二处阵隙"
+        },
+        {
+          "id": "seal2",
+          "type": "interact",
+          "text": "打通风阵出口",
+          "required": 1,
+          "worldObject": "yfc_wind_seal2",
+          "button": "打通风阵出口"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q05",
+      "title": "白虹追至",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_array_fellow",
+      "receiver": "yfc_slope_fellow",
+      "prerequisites": [
+        "yfc_q04"
+      ],
+      "objectives": [
+        {
+          "id": "route",
+          "type": "route",
+          "text": "依次穿过四处引路光环，120秒内到乱石坡",
+          "required": 4,
+          "worldObject": "yfc_chase"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q06",
+      "title": "回身试锋",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_slope_fellow",
+      "receiver": "yfc_slope_fellow",
+      "prerequisites": [
+        "yfc_q05"
+      ],
+      "objectives": [
+        {
+          "id": "mu",
+          "type": "kill",
+          "text": "击败穆姓上师：冰晶、千重峰、打断登车",
+          "required": 1,
+          "arena": "yufeng_mu_arena",
+          "enemyRole": "yufeng_mu"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q07",
+      "title": "无主飞车",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_slope_fellow",
+      "receiver": "yfc_driver",
+      "prerequisites": [
+        "yfc_q06"
+      ],
+      "objectives": [
+        {
+          "id": "yfc_secure",
+          "type": "interact",
+          "text": "收取无主飞车的祭炼核心",
+          "required": 1,
+          "worldObject": "yfc_secure",
+          "button": "收取无主飞车的祭炼核心"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": []
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "yfc_q08",
+      "title": "御风初行",
+      "kind": "御风车支线",
+      "chapter": 6,
+      "giver": "yfc_driver",
+      "receiver": "yfc_driver",
+      "prerequisites": [
+        "yfc_q07"
+      ],
+      "objectives": [
+        {
+          "id": "route",
+          "type": "route",
+          "text": "御车正向穿过青黛回环的24道风环（180秒内）",
+          "required": 24,
+          "worldObject": "yfc_pilot"
+        },
+        {
+          "id": "yfc_dock",
+          "type": "interact",
+          "text": "落地收纳后确认停靠",
+          "required": 1,
+          "worldObject": "yfc_dock",
+          "button": "落地收纳后确认停靠"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 0,
+        "cultivation": 0,
+        "items": [
+          {
+            "itemId": "treasure_yufeng_chariot",
+            "name": "御风车",
+            "quantity": 1,
+            "itemType": "treasure",
+            "isMaterial": false
+          }
+        ]
+      },
+      "region": "jiuguo"
+    },
+    {
+      "id": "qx_q54",
+      "title": "北上天道盟",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "qi_furen",
+      "receiver": "wen_cheng",
+      "prerequisites": [
+        "qx_q53"
+      ],
+      "objectives": [
+        {
+          "id": "arrive",
+          "type": "talk",
+          "text": "经传送台北上天道盟，在云梦坊传送台旁向驿站执事温乘递上戚夫人的荐书",
+          "required": 1,
+          "npc": "wen_cheng",
+          "button": "递上荐书"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 100,
+        "cultivation": 900,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q55",
+      "title": "云梦山下",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "wen_cheng",
+      "receiver": "lu_qingyan",
+      "prerequisites": [
+        "qx_q54"
+      ],
+      "objectives": [
+        {
+          "id": "inn",
+          "type": "talk",
+          "text": "到云来客栈，向卢掌柜打听落云宗收人的规矩",
+          "required": 1,
+          "npc": "lu_zhanggui",
+          "button": "打听落云宗"
+        },
+        {
+          "id": "apothecary",
+          "type": "talk",
+          "text": "到回春堂，向孙丹师请教落云宗的灵药",
+          "required": 1,
+          "npc": "sun_danshi",
+          "button": "请教灵药"
+        },
+        {
+          "id": "talisman",
+          "type": "talk",
+          "text": "到一纸斋，向苗符师打听入宗考核",
+          "required": 1,
+          "npc": "miao_fushi",
+          "button": "打听考核"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 1000,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q56",
+      "title": "入宗三问",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "lu_qingyan",
+      "receiver": "zhou_zhishi",
+      "prerequisites": [
+        "qx_q55"
+      ],
+      "objectives": [
+        {
+          "id": "eyes",
+          "type": "interact",
+          "text": "往三座发蓝光的圆台上的阵眼依次注灵：集合圆坛左右各一座，喷泉圆坛东南一座",
+          "required": 3,
+          "worldObject": "qxq_ym_array_eye",
+          "button": "往阵眼注灵"
+        },
+        {
+          "id": "herbs",
+          "type": "gather",
+          "text": "到西边执事堂所在的石峰，在辨药台的九盆灵草里认出三盆金线莲",
+          "required": 3,
+          "itemId": "qxq_ym_jinxian",
+          "button": "认出金线莲"
+        },
+        {
+          "id": "register",
+          "type": "interact",
+          "text": "在执事堂前的名册上落名",
+          "required": 1,
+          "worldObject": "qxq_ym_register",
+          "button": "在名册上落名"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 220,
+        "cultivation": 1800,
+        "items": [],
+        "merit": 30
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q57",
+      "title": "灵药园地块",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "zhou_zhishi",
+      "receiver": "jiang_su",
+      "prerequisites": [
+        "qx_q56"
+      ],
+      "objectives": [
+        {
+          "id": "stake",
+          "type": "interact",
+          "text": "到灵药园石峰，在分给你的红栏地块田头立下地契木牌",
+          "required": 1,
+          "worldObject": "qxq_ym_stake",
+          "button": "立下木牌"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 140,
+        "cultivation": 1200,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q58",
+      "title": "初种落云",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "jiang_su",
+      "receiver": "jiang_su",
+      "prerequisites": [
+        "qx_q57"
+      ],
+      "objectives": [
+        {
+          "id": "water",
+          "type": "gather",
+          "text": "到药庐旁的灵泉打一瓢灵泉水",
+          "required": 1,
+          "itemId": "qxq_ym_spring_water",
+          "button": "打灵泉水"
+        },
+        {
+          "id": "sow",
+          "type": "interact",
+          "text": "回到自家地块，在三个穴里种下落云灵种",
+          "required": 3,
+          "worldObject": "qxq_ym_sow",
+          "button": "种下灵种"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 180,
+        "cultivation": 1500,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q59",
+      "title": "药园夜盗",
+      "kind": "支线",
+      "chapter": 8,
+      "giver": "jiang_su",
+      "receiver": "jiang_su",
+      "prerequisites": [
+        "qx_q58"
+      ],
+      "objectives": [
+        {
+          "id": "thieves",
+          "type": "kill",
+          "text": "在灵药园的药畦间击退盗药散修",
+          "required": 4,
+          "enemyRole": "ymthief",
+          "arena": "ymherb"
+        },
+        {
+          "id": "herbs",
+          "type": "collect",
+          "text": "从盗药散修身上夺回被盗灵药",
+          "required": 3,
+          "itemId": "qxq_ym_stolen_herb",
+          "sourceEnemyRole": "ymthief",
+          "arena": "ymherb",
+          "dropChance": 0.75
+        }
+      ],
+      "rewards": {
+        "spiritStones": 200,
+        "cultivation": 1600,
+        "items": [
+          {
+            "itemId": "elixir_005",
+            "name": "回灵丹",
+            "quantity": 2,
+            "isMaterial": false,
+            "use": "服用后斗法灵力上限 +6，持续 2 小时；也可在试炼中携带使用",
+            "itemType": "elixir"
+          }
+        ]
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q60",
+      "title": "圆坛听讲",
+      "kind": "支线",
+      "chapter": 8,
+      "giver": "fang_zhanglao",
+      "receiver": "fang_zhanglao",
+      "prerequisites": [
+        "qx_q56"
+      ],
+      "objectives": [
+        {
+          "id": "listen",
+          "type": "interact",
+          "text": "在集合圆坛的蒲团上静坐，听方长老讲道",
+          "required": 1,
+          "worldObject": "qxq_ym_lecture",
+          "button": "静坐听讲"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 1600,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q61",
+      "title": "落云挂单",
+      "kind": "主线",
+      "chapter": 8,
+      "giver": "jiang_su",
+      "receiver": "fang_zhanglao",
+      "prerequisites": [
+        "qx_q58"
+      ],
+      "objectives": [
+        {
+          "id": "report",
+          "type": "talk",
+          "text": "回执事堂，向周执事报上灵药园已经下种",
+          "required": 1,
+          "npc": "zhou_zhishi",
+          "button": "报上地块已种"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 260,
+        "cultivation": 2600,
+        "items": [
+          {
+            "itemId": "badge_luoyun_guest",
+            "name": "落云客卿",
+            "quantity": 1,
+            "isMaterial": false,
+            "use": "称号 · 在落云宗挂单、领了灵药园地块的越国客卿，无数值效果",
+            "itemType": "badge"
+          }
+        ],
+        "merit": 60
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q62",
+      "title": "百巧院的委托",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "zhou_zhishi",
+      "receiver": "lu_heng",
+      "prerequisites": [
+        "qx_q61"
+      ],
+      "objectives": [
+        {
+          "id": "arrive",
+          "type": "talk",
+          "text": "经云梦坊传送台去百巧院，在门内外务房前见外务执事鲁衡",
+          "required": 1,
+          "npc": "lu_heng",
+          "button": "递上周执事的信"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 120,
+        "cultivation": 1000,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q63",
+      "title": "散件",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "lu_heng",
+      "receiver": "lu_heng",
+      "prerequisites": [
+        "qx_q62"
+      ],
+      "objectives": [
+        {
+          "id": "parts",
+          "type": "gather",
+          "text": "在百巧院四周找回 6 个傀儡零件：废料场 2 个、水车边 2 个、齿轮塔檐上 2 个（要御空）",
+          "required": 6,
+          "itemId": "qxq_bq_part",
+          "button": "拾起零件"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 220,
+        "cultivation": 1800,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q64",
+      "title": "机关重组",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "lu_heng",
+      "receiver": "gongshu_qing",
+      "prerequisites": [
+        "qx_q63"
+      ],
+      "objectives": [
+        {
+          "id": "solve",
+          "type": "puzzle",
+          "puzzle": "bq-repair",
+          "worldObject": "qxq_bq_table",
+          "text": "在前院机关台上把灵力从入口引到傀儡核心，完成五关修复",
+          "required": 5,
+          "button": "打开机关台"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 300,
+        "cultivation": 2400,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q65",
+      "title": "失控的傀儡",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "gongshu_qing",
+      "receiver": "gongshu_qing",
+      "prerequisites": [
+        "qx_q64"
+      ],
+      "objectives": [
+        {
+          "id": "clear",
+          "type": "instance",
+          "instance": "bqpuppet",
+          "text": "在试傀场击败失控的战傀：它连出几招就会过热喷汽，过热之后的冷却窗口最好打",
+          "required": 1,
+          "button": "前往试傀场"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 360,
+        "cultivation": 2800,
+        "items": [
+          {
+            "itemId": "mat_puppet_frame",
+            "name": "机关骨架",
+            "quantity": 2,
+            "isMaterial": true,
+            "use": "炼制傀儡的骨架材料",
+            "itemType": "material"
+          }
+        ],
+        "merit": 40
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q66",
+      "title": "古剑门的来信",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "gongshu_qing",
+      "receiver": "lu_heng",
+      "prerequisites": [
+        "qx_q65"
+      ],
+      "objectives": [
+        {
+          "id": "letter",
+          "type": "talk",
+          "text": "把公输青写给古剑门的信交给外务执事鲁衡，请他转去古剑门",
+          "required": 1,
+          "npc": "lu_heng",
+          "button": "交上书信"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 200,
+        "cultivation": 1600,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q67",
+      "title": "剑意初试",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "lu_heng",
+      "receiver": "qin_yue",
+      "prerequisites": [
+        "qx_q66"
+      ],
+      "objectives": [
+        {
+          "id": "catch",
+          "type": "puzzle",
+          "puzzle": "jz-catch",
+          "worldObject": "qxq_jz_stone",
+          "text": "到古剑门外院的试剑石前，接住从四面飞来的剑气（八道接住六道）",
+          "required": 1,
+          "button": "触摸试剑石"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 260,
+        "cultivation": 2000,
+        "items": []
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q68",
+      "title": "登剑冢",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "qin_yue",
+      "receiver": "huolong_tongzi",
+      "prerequisites": [
+        "qx_q67"
+      ],
+      "objectives": [
+        {
+          "id": "clear",
+          "type": "instance",
+          "instance": "jianzhong",
+          "text": "登剑冢，击败疾剑台、重剑台、幻剑台三位剑灵。剑意满了会被弹回上一层：在剑碑旁调息、接住飞来的残剑都能压下剑意",
+          "required": 1,
+          "button": "登剑冢"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 380,
+        "cultivation": 3200,
+        "items": [],
+        "merit": 50
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q69",
+      "title": "剑择其主",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "huolong_tongzi",
+      "receiver": "huolong_tongzi",
+      "prerequisites": [
+        "qx_q68"
+      ],
+      "objectives": [
+        {
+          "id": "echo",
+          "type": "gather",
+          "text": "登上幻剑台，在剑台前以神识试三柄古剑",
+          "required": 1,
+          "itemId": "qxq_jz_echo",
+          "button": "以神识试剑"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 200,
+        "cultivation": 1600,
+        "items": [
+          {
+            "itemId": "treasure_chisi_sword",
+            "name": "赤丝剑",
+            "quantity": 1,
+            "isMaterial": false,
+            "itemType": "treasure",
+            "use": "火属性飞剑法宝：剑身化作赤红剑丝，短按一线切割，长按缠缚灼烧。只可自行获取和持有，不可流转。"
+          }
+        ]
+      },
+      "region": "tiandao"
+    },
+    {
+      "id": "qx_q70",
+      "title": "天道盟客",
+      "kind": "主线",
+      "chapter": 9,
+      "giver": "huolong_tongzi",
+      "receiver": "zhou_zhishi",
+      "prerequisites": [
+        "qx_q69"
+      ],
+      "objectives": [
+        {
+          "id": "report",
+          "type": "talk",
+          "text": "回落云宗执事堂，向周执事复命：百巧院的傀儡、古剑门的剑冢",
+          "required": 1,
+          "npc": "zhou_zhishi",
+          "button": "复命"
+        }
+      ],
+      "rewards": {
+        "spiritStones": 320,
+        "cultivation": 2600,
+        "items": [],
+        "merit": 60
+      },
+      "region": "tiandao"
+    }
+  ]
+}

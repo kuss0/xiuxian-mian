@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 TZ = timezone(timedelta(hours=8))
 LABELS = {"qipai": "七派密议", "tianlan": "天澜草原", "yuejing": "越京夜行", "yinming": "阴冥之地",
-          "xuangu": "玄骨遗府", "changfeng": "长风试炼", "zhengmo": "正魔大战"}
+          "xuangu": "玄骨遗府", "changfeng": "长风试炼", "qingxi_quests": "青溪坊任务", "zhengmo": "正魔大战"}
 
 
 def _dict(value):
@@ -39,7 +39,8 @@ def expedition_health(config, records, enabled_ids, now):
 
     collections = [("weekly", _dict(records.get("weekly")).get("runs", {})),
                    ("xuangu", _dict(records.get("xuangu_auto")).get("rosters", {})),
-                   ("changfeng", records.get("changfeng", {})), ("zhengmo", records.get("zhengmo", {}))]
+                   ("changfeng", records.get("changfeng", {})), ("qingxi_quests", records.get("qingxi_quests", {})),
+                   ("zhengmo", records.get("zhengmo", {}))]
     for module, runs in collections:
         for key, run in _dict(runs).items():
             if not isinstance(run, dict):
@@ -52,7 +53,7 @@ def expedition_health(config, records, enabled_ids, now):
             if not started or now - started < 900 or not (held or overdue):
                 continue
             ids = [m.get("identity_id") for m in run.get("members", run.get("my_members", [])) if isinstance(m, dict)]
-            if not ids and module in {"changfeng", "zhengmo"}:
+            if not ids and module in {"changfeng", "qingxi_quests", "zhengmo"}:
                 ids = [run.get("identity_id") or (int(key) if str(key).isdigit() else None)]
             reason = "原局待核对超过15分钟，可能持续占用账号" if held else "运行阶段已超过回执期限，检查调度与回包"
             alert(kind, key, ids, reason, age_sec=int(now - started))
