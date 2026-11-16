@@ -26,12 +26,13 @@ QUEST_COMBAT_ENTRY = """step('准备郊外战斗 · ' + objective.text);
       }, 90000, '郊外敌人模型与战斗入口', owner);"""
 
 
-def browser_script(player, choices=None, *, read_only=False):
+def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None):
     source = (VENDOR / 'trial-bot.user.js').read_bytes()
     provenance = json.loads((VENDOR / 'source.json').read_text())
     if hashlib.sha256(source).hexdigest() != provenance['sha256']:
         raise RuntimeError('qingxi_upstream_source_changed')
-    config = {'player': player, 'choices': choices or {}, 'readOnly': read_only}
+    config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
+              'reviewedCastPending': reviewed_cast_pending or []}
     script = source.decode()
     # Use upstream's own deferred-task path, while the fetch policy remains the
     # final guard. Missing choices/fishing must not prevent unrelated errands.
@@ -56,8 +57,9 @@ SNAPSHOT = r"""(() => {
  const q=window.__quests?.snapshot?.(),s=window.__fc?.stats?.(),r=window.__autobot?.report?.();
  return {player:window.__qx?.player,error:window.__qx?.error,stop_reason:window.__qx?.stopReason,
   requests:window.__qx?.requests,casts:window.__qx?.casts,status_error:window.__qx?.statusError,states:q?.states||{},
+  cast_error:window.__qx?.castError,
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
-  state:s?.state,overworld:s?.overworld,pending:(s?.fieldPending||0)+(window.__qx?.pending.size||0),hp:s?.hp,
+  state:s?.state,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
@@ -73,13 +75,13 @@ def write_result(path, payload):
     os.replace(temporary, path)
 
 
-def open_page(browser, cdp, url, player, choices, read_only):
+def open_page(browser, cdp, url, player, choices, read_only, reviewed_cast_pending=None):
     target = cdp.call('Target.createTarget', {'url': 'about:blank', 'newWindow': True})['targetId']
     session = cdp.attach(target)
     for method in ('Page.enable', 'Runtime.enable', 'Network.enable', 'Page.bringToFront'):
         cdp.call(method, session=session)
     cdp.call('Page.addScriptToEvaluateOnNewDocument',
-             {'source': browser_script(player, choices, read_only=read_only)}, session)
+             {'source': browser_script(player, choices, read_only=read_only, reviewed_cast_pending=reviewed_cast_pending)}, session)
     page = browser.Page(cdp, session, target)
     cdp.call('Page.navigate', {'url': url}, session)
     page.wait('window.__autobot && window.__qx?.player===' + str(player), 90, '任务身份校验', every=1)
@@ -119,7 +121,7 @@ def main():
                 port = next(int(arg.split('=')[1]) for arg in process.args if arg.startswith('--remote-debugging-port='))
                 cdp = browser.CDP(browser.cdp_version(port)['webSocketDebuggerUrl'])
                 page = open_page(browser, cdp, read_url_file(args.url_file), args.expected_player_id,
-                                 options.get('choices', {}), args.read_only)
+                                 options.get('choices', {}), args.read_only, options.get('reviewed_cast_pending'))
                 page.js('window.__autobot.inspectQuests("全部任务")', timeout=60)
                 if args.read_only:
                     result['phase'] = 'inspected'
@@ -151,7 +153,7 @@ def main():
                 if page:
                     try:
                         page.js('window.__autobot.stop();window.__fc?.stop()')
-                        page.wait('(window.__fc?.stats?.().fieldPending||0)===0 && window.__qx.pending.size===0',
+                        page.wait('(window.__fc?.stats?.().fieldPending||0)===0 && (window.__fc?.stats?.().castOutbox||0)===0 && window.__qx.pending.size===0',
                                   45, '真实战斗回执', every=1)
                         page.js('(async()=>{window.__qx.quiescing=true;await window.__qx.queue;window.__qx.statusCache.clear();return window.__quests.refresh()})()', timeout=30)
                         final = page.js(SNAPSHOT)

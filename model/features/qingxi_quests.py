@@ -276,13 +276,46 @@ async def review_browser_hold(call, record, identity_id):
         mana = flight.get('mana')
         if flight.get('ok') is True and isinstance(mana, dict) and mana.get('flightLocked') is False:
             reason = 'native_flight_session_closed'
+    elif orphan_cast_proof_only(record, identity_id):
+        # A proof upload alone cannot engage/defeat an enemy or grant rewards.
+        # Retain it as abandoned evidence; never reconstruct or replay the lost
+        # events. Fresh quest status has already been read by the caller.
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if flight.get('ok') is True and (flight.get('mana') or {}).get('flightLocked') is False:
+            reason = 'orphan_cast_no_engagement'
     elif browser.get('server_checked') is True and browser.get('error') in {
             'quest_progress_stalled', 'quest_movement_not_ready', 'KeyboardInterrupt'}:
         reason = 'server_checked_safe_stop'
     if reason:
         record.update(gameplay_uncertain=False, phase='waiting_gameplay', last_error='', next_at=time.time() + 1800)
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
+        if reason == 'orphan_cast_no_engagement':
+            record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
         save()
+
+
+def orphan_cast_proof_only(record, identity_id):
+    """Recognize the old first-upload failure, excluding every gameplay write."""
+    browser = record.get('browser') or {}
+    if browser.get('error') != 'quest_http_200_non_json':
+        return False
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+            or result.get('casts') != 1 or result.get('pending') != 1
+            or not isinstance(pending, list) or len(pending) != 1
+            or not isinstance(pending[0], dict) or pending[0].get('resource') != 'field-cast'
+            or pending[0].get('action') != 'events' or not pending[0].get('operation_id')
+            or not isinstance(receipts, list) or not all(isinstance(row, dict) for row in receipts)
+            or result.get('reward_receipts') or (result.get('report') or {}).get('fieldSettlements')):
+        return False
+    statuses = [row for row in receipts if row.get('resource') == 'quests' and row.get('action') == 'status']
+    casts = [row for row in receipts if row.get('resource') == 'field-cast']
+    return (bool(statuses) and result.get('requests') == len(statuses) and len(casts) == 1
+            and casts[0].get('operation_id') == pending[0]['operation_id']
+            and all(row in casts or (row in statuses and row.get('ok') is True) or (
+                row.get('resource') == 'flight' and (row.get('action') == 'status' or (
+                    row.get('action') == 'start' and row.get('ok') is True))) for row in receipts))
 
 
 def summarize(data, rules):
@@ -490,7 +523,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, choices=None):
         with os.fdopen(os.open(launch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
             stream.write(launch_url)
         with os.fdopen(os.open(options, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
-            json.dump({'choices': choices or {}}, stream)
+            review = record.get('browser_review') or {}
+            json.dump({'choices': choices or {}, 'reviewed_cast_pending':
+                       review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else []}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
         record.update(phase='running', deadline=time.time() + 1500, gameplay_uncertain=True,

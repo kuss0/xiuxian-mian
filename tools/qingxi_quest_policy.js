@@ -7,11 +7,14 @@
     player: 0, error: '', stopReason: null, requests: 0, casts: 0,
     pending: new Map(), rewards: new Map(), receipts: [], responses: new Map(), status: new Map(), statusCache: new Map(),
     queue: Promise.resolve(), last: -Infinity, serial: 0, starts: new Set(), quiescing: false,
+    castEvents: new Map(), castSending: false, castError: '',
   };
   const instances = {'moon-palace': 'moonPalace', 'blood-land': 'bloodLand',
     'south-gate': 'southGate', 'refugee-escort': 'escort', 'mulan-shrine': 'mulanShrine',
     'baiqiao-puppet': 'baiqiaoPuppet', 'jianzhong-trial': 'jianzhongTrial'};
   const journalKey = 'qingxi-local-pending:' + config.player;
+  const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   function stop(reason, questId) {
     q.stopReason = {reason, quest_id: questId || ''};
@@ -25,7 +28,10 @@
   const nativeCleanup = row => row?.resource === 'location' ||
     (row?.resource === 'flight' && ['tick', 'stop'].includes(row.action));
   const stored = JSON.parse(localStorage.getItem(journalKey) || '[]');
-  const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row)) : null;
+  const reviewed = config.reviewedCastPending || [];
+  const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row) &&
+    !(row?.resource === 'field-cast' && row.action === 'events' &&
+      reviewed.some(old => canonical(old) === canonical(row)))) : null;
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
   else if (stored.length) localStorage.setItem(journalKey, '[]');
   function check(resource, body) {
@@ -38,6 +44,9 @@
     if (readonly || resource === 'start') return;
     if (q.player !== config.player || q.error || q.quiescing) throw Error(q.error || 'quest_runner_guard');
     if (config.readOnly) stop('quest_runner_read_only');
+    if (resource !== 'field-cast' && q.castError) {
+      throw Error('quest_cast_pending');
+    }
     if (resource === 'fishing') stop('fishing_plan_required');
     if (resource === 'quests' && (typeof body.operationId !== 'string' || !body.operationId)) {
       stop('quest_operation_id_missing');
@@ -52,12 +61,16 @@
       }
     }
   }
-  function receipt(resource, body, response, data, key) {
+  function receipt(resource, body, response, data, key, parseError = '') {
     const code = typeof data?.error === 'string' && /^[a-zA-Z0-9_:-]{1,100}$/.test(data.error) ? data.error : '';
     const payload = instances[resource] ? data?.[instances[resource]] : data;
+    const castAck = resource !== 'field-cast' || data?.off === true ||
+      (Array.isArray(data?.acked) && body.events.every(event => data.acked.includes(event.k + ':' + event.s)));
     const row = {resource, action: body.action || 'events', operation_id: key,
-      quest_id: body.questId, enemy_id: body.enemyId, ok: response.ok && data?.ok === true,
-      http_status: response.status, error: code || (data ? '' : 'non_json'),
+      quest_id: body.questId, enemy_id: body.enemyId, ok: response.ok && data?.ok === true && castAck,
+      http_status: response.status, error: code || (data ? (castAck ? '' : 'field_cast_unacknowledged') : 'non_json'),
+      parse_error: parseError, content_type: (response.headers.get('content-type') || '').slice(0, 100),
+      attempt: q.pending.get(key)?.attempts,
       grants: Array.isArray(payload?.grants) ? payload.grants.map(g => ({name: g.name, quantity: g.quantity})) : [],
       cultivation: Number.isInteger(payload?.cultivation) && payload.cultivation > 0 ? payload.cultivation : 0,
       pickedItems: Array.isArray(data?.pickedItems) ? data.pickedItems.map(g => ({itemId: g.itemId, quantity: g.quantity})) : [],
@@ -72,11 +85,85 @@
     }
     if (q.receipts.length > 180) q.receipts.splice(0, 60);
     if (!row.ok) {
+      if (resource === 'field-cast') return false;
       const error = 'quest_http_' + response.status + '_' + (code || (data ? 'unconfirmed' : 'non_json'));
-      if (key || resource === 'field-cast') q.error = error;
+      if (key) q.error = error;
       else q.statusError = error;
     }
     return row.ok;
+  }
+  async function castRequest(input, options, body) {
+    // The native ordered transport retries up to three times. It may append
+    // newly queued events to the unresolved prefix, but cannot change that prefix.
+    const events = body.events;
+    if (!Array.isArray(events) || !events.length || events.length > 12 || events.some(event =>
+        !event || !['use', 'begin', 'done', 'cancel'].includes(event.k) ||
+        !Number.isSafeInteger(event.s) || event.s <= 0 ||
+        Object.keys(event).some(key => !['k', 's', 'key', 'pos', 'free', 'track'].includes(key))) ||
+        canonical(events).length > 64000) stop('quest_cast_events_invalid');
+    const ids = events.map(event => event.k + ':' + event.s), signature = canonical(events);
+    if (new Set(ids).size !== ids.length || events.some((event, i) =>
+        q.castEvents.has(ids[i]) && q.castEvents.get(ids[i]) !== canonical(event))) {
+      q.error = 'quest_cast_events_changed'; throw Error(q.error);
+    }
+    if (q.castSending) throw Error('quest_cast_inflight');
+    const pending = [...q.pending.values()].find(row => row.resource === 'field-cast');
+    if (pending && (!Array.isArray(pending.events) || pending.events.length > events.length ||
+        pending.events.some((event, i) => canonical(event) !== canonical(events[i])))) {
+      q.error = 'quest_cast_retry_changed'; throw Error(q.error);
+    }
+    const cacheKey = 'field-cast:' + signature;
+    if (!pending && q.responses.has(cacheKey)) return q.responses.get(cacheKey).clone();
+    if (pending?.attempts >= 3 || q.casts >= 1800) stop('quest_cast_budget');
+    if (options?.signal?.aborted) throw Error('quest_request_expired_before_send');
+    const key = pending?.operation_id || 'field-cast:' + ids[0];
+    const row = {resource: 'field-cast', action: 'events', operation_id: key,
+      events, attempts: (pending?.attempts || 0) + 1, at: Date.now() / 1000};
+    q.pending.set(key, row);
+    persist();
+    events.forEach((event, i) => q.castEvents.set(ids[i], canonical(event)));
+    q.statusCache.clear();
+    q.casts++;
+    q.castSending = true;
+    let recorded = false;
+    try {
+      const response = await original(input, options);
+      let data, parseError;
+      try { data = await response.json(); }
+      catch (error) { parseError = error?.name || 'Error'; }
+      const acknowledged = receipt('field-cast', body, response, data, key, parseError);
+      recorded = true;
+      // Consume the network body once. Return a buffered response so the
+      // native 8s controller cannot abort a second read after we verified ACKs.
+      const buffered = parseError ? null : new Response(JSON.stringify(data), {
+        status: response.status, statusText: response.statusText, headers: {'content-type': 'application/json'}});
+      if (acknowledged) {
+        q.pending.delete(key);
+        persist();
+        q.castError = '';
+        q.responses.set(cacheKey, buffered.clone());
+        if (q.responses.size > 120) q.responses.delete(q.responses.keys().next().value);
+      } else {
+        q.castError = parseError ? 'quest_cast_response_unreadable' : 'quest_cast_unacknowledged';
+        const fatal = response.status >= 400 && response.status < 500 && response.status !== 429 ||
+          (data && data.ok !== true && !data.retryable && response.status < 400);
+        if (fatal || row.attempts >= 3) q.error = q.castError;
+        // Surface a body-read abort as a transport failure. Returning HTTP 200
+        // here would make the native postJson classify it as non-retryable.
+        if (parseError) throw Object.assign(Error(q.castError), {name: parseError});
+      }
+      return buffered;
+    } catch (error) {
+      if (q.pending.has(key)) {
+        q.castError ||= 'quest_cast_transport_unconfirmed';
+        if (row.attempts >= 3) q.error ||= q.castError;
+        if (!recorded) {
+          q.receipts.push({resource: 'field-cast', action: 'events', operation_id: key, ok: false,
+            attempt: row.attempts, error: error?.name === 'AbortError' ? 'request_aborted' : 'transport_error', at: Date.now() / 1000});
+        }
+      }
+      throw error;
+    } finally { q.castSending = false; }
   }
   window.fetch = async function(input, options) {
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
@@ -97,9 +184,9 @@
       return original(input, options);
     }
     check(resource, body);
+    if (resource === 'field-cast') return castRequest(input, options, body);
     const control = resource === 'quests';
-    const cast = resource === 'field-cast';
-    const tracked = control || cast || (body.action && resource !== 'start');
+    const tracked = control || (body.action && resource !== 'start');
     const mutating = tracked && body.action !== 'status';
     const key = mutating && (body.operationId || resource + ':' + (++q.serial));
     const statusKey = body.action === 'status' ? JSON.stringify([resource, body.arena || '', body.instance || '']) : null;
@@ -134,9 +221,7 @@
         q.last = performance.now();
         q.requests++;
       }
-      if (cast && q.casts >= 1800) stop('quest_cast_budget');
       if (options?.signal?.aborted) stop('quest_request_expired_before_send');
-      if (cast) q.casts++;
       if (instances[resource] && body.action === 'start') q.starts.add(resource);
       if (key) {
         q.statusCache.clear();
@@ -149,7 +234,7 @@
         response = await original(input, options);
         data = await response.clone().json().catch(() => null);
       } catch (error) {
-        if (key || cast) q.error = 'quest_transport_unconfirmed';
+        if (key) q.error = 'quest_transport_unconfirmed';
         else q.statusError = 'quest_status_unavailable';
         q.receipts.push({resource, action: body.action || 'events', operation_id: key, ok: false,
           error: error?.name === 'AbortError' ? 'request_aborted' : 'transport_error', at: Date.now() / 1000});
@@ -159,7 +244,7 @@
         q.player = Number(data.account.playerId);
         if (q.player !== config.player) q.error = 'quest_player_mismatch';
       }
-      if (control || cast || key || instances[resource]) {
+      if (control || key || instances[resource]) {
         if (receipt(resource, body, response, data, key)) {
           if (statusKey) {
             q.statusError = '';

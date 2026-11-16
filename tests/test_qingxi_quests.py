@@ -417,3 +417,59 @@ def test_flight_hold_requires_fresh_explicit_server_closure(monkeypatch, flight_
     assert record['gameplay_uncertain'] is not closed
     assert (record['phase'] == 'waiting_gameplay') is closed
     assert save.call_count == int(closed)
+
+
+@pytest.fixture
+def orphan_cast_hold(tmp_path):
+    import json
+    result = {'player': 42, 'upstream_version': '2.0.53', 'casts': 1, 'requests': 1,
+              'pending': 1, 'pending_operations': [{'resource': 'field-cast', 'action': 'events',
+                                                  'operation_id': 'field-cast:4', 'at': 10}],
+              'receipts': [{'resource': 'quests', 'action': 'status', 'ok': True},
+                           {'resource': 'field-cast', 'action': 'events', 'ok': False,
+                            'operation_id': 'field-cast:4'}]}
+    path = tmp_path / 'result.json'
+    path.write_text(json.dumps(result))
+    return {'phase': 'held', 'gameplay_uncertain': True, 'browser': {
+        'error': 'quest_http_200_non_json', 'evidence_dir': str(tmp_path)}}, result, path
+
+
+@pytest.mark.parametrize('taint', ['engage', 'defeat', 'turn-in', 'request_gap', 'pending_gap',
+                                 'unknown_cast', 'identity', 'reward', 'settlement', 'version'])
+def test_orphan_proof_review_excludes_all_gameplay_uncertainty(orphan_cast_hold, taint):
+    import json
+    record, result, path = orphan_cast_hold
+    assert quests.orphan_cast_proof_only(record, 42)
+    if taint in {'engage', 'defeat', 'turn-in'}:
+        result['receipts'].append({'resource': 'quests', 'action': 'field-' + taint, 'ok': True})
+    elif taint == 'request_gap':
+        result['requests'] += 1
+    elif taint == 'pending_gap':
+        result['pending'] += 1
+    elif taint == 'unknown_cast':
+        result['casts'] += 1
+    elif taint == 'identity':
+        result['player'] = 43
+    elif taint == 'reward':
+        result['reward_receipts'] = [{'grants': [{'name': '灵石', 'quantity': 1}]}]
+    elif taint == 'settlement':
+        result['report'] = {'fieldSettlements': [{'enemyId': 'one'}]}
+    else:
+        result['upstream_version'] = 'other'
+    path.write_text(json.dumps(result))
+    assert not quests.orphan_cast_proof_only(record, 42)
+
+
+@pytest.mark.parametrize('locked', [True, False, None])
+def test_orphan_proof_abandonment_retains_exact_journal_and_requires_flight_closed(monkeypatch, orphan_cast_hold, locked):
+    record, result, path = orphan_cast_hold
+    original = path.read_bytes()
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': locked}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    assert record['gameplay_uncertain'] is (locked is not False)
+    assert path.read_bytes() == original
+    if locked is False:
+        assert record['browser_review']['abandoned_cast_pending'] == result['pending_operations']
+        assert record['browser_review']['reason'] == 'orphan_cast_no_engagement'

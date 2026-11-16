@@ -2,6 +2,7 @@
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,7 @@ function environment(config={},handler=null,stored=[]){
    const resource=new URL(input).pathname.split('/').at(-1),body=JSON.parse(options?.body||'{}');
    calls.push({resource,body,at:now,journal:storage.get('qingxi-local-pending:42')});
    const value=handler?await handler(resource,body):{ok:true,account:{playerId:42}};
-   return new Response(JSON.stringify(value));
+   return value instanceof Response ? value : new Response(JSON.stringify(value));
   }};
  c.window=c;vm.createContext(c);vm.runInContext(GUARD.replace('__CONFIG__',JSON.stringify({player:42,...config})),c);
  const send=(resource,body)=>c.fetch(prefix+resource,{body:JSON.stringify(body)});
@@ -58,7 +59,7 @@ async function check(scenario){
    if(r==='quests')await new Promise(resolve=>{release=resolve});return {ok:true,account:{playerId:42}};
   });
   const status=e.send('quests',{action:'status'});while(!release)await new Promise(resolve=>setImmediate(resolve));
-  await e.send('field-cast',{events:[]});assert.equal(e.c.__qx.casts,1);assert.equal(e.calls.length,3);
+  await e.send('field-cast',{events:[{k:'use',s:1,pos:[0,0]}]});assert.equal(e.c.__qx.casts,1);assert.equal(e.calls.length,3);
   release();await status;
  } else if(scenario==='daily_full'){
   const e=await ready({},r=>({ok:true,account:{playerId:42},moonPalace:{claimed:true,hasKey:true}}));
@@ -113,6 +114,78 @@ async function check(scenario){
   for(const row of [{resource:'flight',action:'start'},{resource:'quests',action:'turn-in'},{resource:'field-cast'}]){
    const a=environment({},null,[row]);assert.equal(a.c.__qx.error,'quest_browser_pending_requires_review');
   }
+ } else if(scenario==='proof_guards'){
+  const event={k:'use',s:100,pos:[0,0],key:'pierce'};
+  for(const mode of ['changed','prefix','quiescing','identity','readonly','other_unknown']){
+   const a=await ready({},(r,b)=>{if(r==='field-cast')throw Error('lost');return {ok:true,account:{playerId:42}}});
+   await assert.rejects(a.send('field-cast',{events:[event]}),/lost/);
+   const body={events:[event]};
+   if(mode==='changed')body.events=[{...event,pos:[1,0]}];
+   if(mode==='prefix')body.events=[{...event,s:101}];
+   if(mode==='quiescing')a.c.__qx.quiescing=true;
+   if(mode==='identity')body.playerId=43;
+   if(mode==='readonly')a.c.__qx.player=0;
+   if(mode==='other_unknown')a.c.__qx.error='other_unknown';
+   await assert.rejects(a.send('field-cast',body));
+   assert.equal(a.calls.length,2);assert.equal(a.c.__qx.pending.size,1);
+  }
+ } else if(scenario==='reviewed_journal'){
+  const cast={resource:'field-cast',action:'events',operation_id:'field-cast:4',at:10};
+  const e=environment({reviewedCastPending:[cast]},null,[cast]);
+  assert.equal(e.c.__qx.error,'');assert.equal(e.storage.get('qingxi-local-pending:42'),'[]');
+  for(const row of [{...cast,at:11},{...cast,resource:'quests'}, {...cast,action:'other'}]){
+   const e=environment({reviewedCastPending:[cast]},null,[row]);
+   assert.equal(e.c.__qx.error,'quest_browser_pending_requires_review');
+  }
+ } else if(scenario.startsWith('cast_')){
+  const event={k:'use',s:100,pos:[0,0],key:'pierce'},next={k:'use',s:101,pos:[1,0],key:'pierce'};
+  let attempts=0;const blocked=[];
+  const e=await ready({},async(r,b)=>{
+   if(r!=='field-cast')return {ok:true,account:{playerId:42}};
+   attempts++;
+   assert.match(e.storage.get('qingxi-local-pending:42'),/"events":\[/);
+   assert.match(e.storage.get('qingxi-local-pending:42'),new RegExp('"attempts":'+attempts));
+   if(scenario==='cast_exhausted'||attempts===1){
+    if(scenario==='cast_network'||scenario==='cast_exhausted')throw Error('network');
+    if(scenario==='cast_abort'){
+     const response=new Response('{}');response.json=async()=>{throw Object.assign(Error('deadline'),{name:'AbortError'})};return response;
+    }
+    if(scenario==='cast_bad_json')return new Response('<html>bad</html>',{headers:{'content-type':'text/html'}});
+    if(scenario==='cast_partial')return {ok:true,acked:[]};
+    if(scenario==='cast_429')return new Response(JSON.stringify({ok:false}),{status:429});
+    if(scenario==='cast_503')return new Response(JSON.stringify({ok:false}),{status:503});
+    if(scenario==='cast_fatal')return new Response(JSON.stringify({ok:false,error:'auth_required'}),{status:401});
+   }
+   return {ok:true,acked:b.events.map(event=>event.k+':'+event.s)};
+  });
+  vm.runInContext(CAST_TRANSPORT,e.c);
+  const transport=e.c.createDwellingCastTransport({
+   request:async events=>{
+    // Match official postJson/worldCastRequest, including loss of HTTP status
+    // on fetch rejection and non-retryable HTTP 200 body parse failures.
+    let response;try{response=await e.send('field-cast',{events,token:'secret',initData:'secret'})}
+    catch{throw Error('api_unreachable')}
+    const data=await response.json().catch(()=>({ok:false,error:'bad_response'}));
+    if(!response.ok||data.ok!==true)throw Object.assign(Error(data.error||'request_failed'),{status:response.status});
+    return data;
+   },sleep:async()=>{},onError:()=>{
+    blocked.push(assert.rejects(e.send('quests',{action:'field-defeat',operationId:'no'}),/quest_cast_pending|quest_cast_/));
+    if(attempts===1&&scenario==='cast_partial')transport.enqueue(next);
+   },
+  });
+  transport.enqueue(event);
+  const ok=await transport.flush();await Promise.all(blocked);
+  if(scenario==='cast_exhausted'||scenario==='cast_fatal'){
+   assert.equal(ok,false);assert.equal(attempts,scenario==='cast_fatal'?1:3);
+   assert.equal(e.c.__qx.pending.size,1);assert.ok(e.c.__qx.error);
+   await transport.retry();assert.equal(attempts,scenario==='cast_fatal'?1:3);
+  } else {
+   assert.equal(ok,true);assert.equal(attempts,2);assert.equal(e.c.__qx.pending.size,0);
+   assert.equal(e.c.__qx.error,'');assert.equal(e.c.__qx.castError,'');
+   if(scenario==='cast_partial')assert.equal(e.calls.at(-1).body.events.length,2);
+   if(scenario==='cast_abort')assert.equal(e.c.__qx.receipts.find(row=>row.resource==='field-cast').parse_error,'AbortError');
+   if(scenario==='cast_bad_json')assert.equal(e.c.__qx.receipts.find(row=>row.resource==='field-cast').content_type,'text/html');
+  }
  }
 }
 check(SCENARIO).catch(e=>{console.error(e);process.exitCode=1});
@@ -124,12 +197,17 @@ check(SCENARIO).catch(e=>{console.error(e);process.exitCode=1});
     'native_cast', 'daily_full', 'daily_retry', 'pacing', 'readonly',
     'identity', 'journal_failure', 'status_cache', 'status_failure', 'housekeeping',
     'flight_cleanup', 'flight_journal',
+    'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
+    'cast_503', 'cast_fatal', 'cast_exhausted',
+    'proof_guards', 'reviewed_journal',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:
         pytest.skip('Node is required to exercise real browser policy code')
     path = tmp_path / 'policy.cjs'
-    path.write_text('const GUARD=' + json.dumps(GUARD) + ';const SCENARIO=' + json.dumps(scenario) + ';\n' + HARNESS)
+    transport = (Path(__file__).parent / 'fixtures/dwelling-cast-transport.js').read_text()
+    path.write_text('const GUARD=' + json.dumps(GUARD) + ';const SCENARIO=' + json.dumps(scenario)
+                    + ';const CAST_TRANSPORT=' + json.dumps(transport) + ';\n' + HARNESS)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
 
 
