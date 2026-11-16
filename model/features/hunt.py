@@ -3,6 +3,8 @@ import asyncio
 import re
 import time
 
+from .dungeon_limits import rejection as opening_rejection
+
 ACTIONS = ("出手", "护船", "探路", "祭符")
 SEAS = ("近海", "暗礁", "外海")
 EVENT_ACTIONS = {
@@ -254,6 +256,11 @@ async def start(ctx, name):
         members, error = ctx.members(team["member_identity_ids"])
         if error:
             return False, error
+        leaders = [m for m in members if getattr(ctx, "opening_ready", lambda *_: True)(
+            m["identity_id"], chat_id, time.time())]
+        if not leaders:
+            return False, "群开局冷却或主魂发起次数已满，等待可用队长"
+        members = [leaders[0]] + [m for m in members if m != leaders[0]]
         for run in ctx.runs().values():
             if not (_active(run) or run.get("requires_reconciliation")):
                 continue
@@ -346,10 +353,14 @@ async def _sail(ctx, run):
 
 
 async def game_event(ctx, event, *, event_type="message"):
-    if getattr(event, "sender_id", 0) not in ctx.bot_ids():
+    if (getattr(event, "sender_id", 0) not in ctx.bot_ids()
+            or getattr(event, "forwarded", False) or getattr(event, "fwd_from", None)):
         return False
     text = (getattr(event, "raw_text", "") or "").strip()
-    candidates = [run for run in ctx.runs().values() if (_active(run) or run.get("requires_reconciliation")) and run["chat_id"] == event.chat_id]
+    refusal = opening_rejection(text, _event_time(event))
+    candidates = [run for run in ctx.runs().values() if (_active(run) or run.get("requires_reconciliation")
+        or refusal and run.get("phase") == "failed" and run.get("day") == 0)
+        and run["chat_id"] == event.chat_id]
     if len(candidates) != 1:
         return False
     run = candidates[0]
@@ -387,13 +398,24 @@ async def game_event(ctx, event, *, event_type="message"):
     # The command ID is registered after send returns. Read it after acquiring
     # the sender's team lock so an early reply sees the completed registration.
     async with _lock(run["name"]):
-        if not (_active(run) or run.get("requires_reconciliation")):
+        if not (_active(run) or run.get("requires_reconciliation") or refusal and run.get("phase") == "failed"):
             return False
         sent = run["sent_commands"].get(str(reply_id))
         if run["topic_id"] and not (top == run["topic_id"] or reply_id == run["topic_id"] or sent):
             return False
         if not relevant and not sent:
             return False
+        if (refusal and sent and sent["command"] == ".出海猎妖" and run.get("day") == 0
+                and not run.get("confirmed") and len(run.get("command_attempts", {})) == 1):
+            run.update(phase="cooldown", requires_reconciliation=False, last_error="",
+                       next_at=refusal["until"] if refusal["scope"] != "root" else time.time() + 15,
+                       result=text, opening_rejection={"command_id": reply_id, "message_id": getattr(event, "id", 0),
+                           "event_at": _event_time(event), "text": text})
+            weekly = getattr(ctx, "weekly", lambda: {})().get(run["name"], {})
+            if weekly.get("run_started_at") == run["started_at"]:
+                weekly.update(phase="idle", query=None, next_at=run["next_at"], last_error="")
+            ctx.save()
+            return True
         key = f"{getattr(event, 'id', 0)}:{event_type}:{text}"
         if key in run["seen_events"]:
             return True

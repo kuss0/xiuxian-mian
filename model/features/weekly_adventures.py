@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from .hunt_weekly import week_key
 from . import council
+from .dungeon_limits import rejection as opening_rejection
 
 KINDS = {
     "tianlan": {"label": "天澜草原", "open": ".天澜草原", "join": ".同行", "minimum": 3, "realm": "元婴初期"},
@@ -460,17 +461,38 @@ async def scheduler(ctx, now):
                           or int(progress[str(m["identity_id"])].get("used") or 0) < limit]
             key = getattr(ctx, "run_key", lambda k: k)(kind)
             old = records["runs"].get(key, {})
-            if float(old.get("next_at") or 0) > now or not unfinished:
+            old_next = float(old.get("next_at") or 0)
+            refused = old.get("opening_rejection") or {}
+            scope = opening_rejection(str(refused.get("text") or ""), float(refused.get("event_at") or now))
+            if scope and scope["scope"] == "root" and hasattr(ctx, "opening_ready"):
+                old_next = float(refused.get("event_at") or now) + 15
+            if old_next > now or not unfinished:
                 continue
             unfinished.sort(key=lambda m: int(progress.get(str(m["identity_id"]), {}).get("used") or 0)
                             if progress.get(str(m["identity_id"]), {}).get(field) == period(kind, now) else 0)
             maximum = 2 if kind == "yinming" else 8 if kind == "qipai" else 5
-            chosen = (unfinished + [m for m in eligible if m not in unfinished])[:maximum]
+            # Yuejing needs four fighters to cover all four guards. Other
+            # kinds only need helpers for their minimum party or a captain.
+            chat, topic = ctx.target()
+            opening_ready = getattr(ctx, "opening_ready", lambda *_: True)
+            chosen = unfinished[:maximum]
+            helpers = [m for m in eligible if m not in chosen]
+            helpers.sort(key=lambda m: not opening_ready(m["identity_id"], chat, now))
+            desired = 4 if kind == "yuejing" else spec["minimum"]
+            chosen += helpers[:max(0, desired - len(chosen))]
             if len(chosen) < spec["minimum"]:
                 continue
-            chat, topic = ctx.target()
             if not chat:
                 continue
+            leaders = [m for m in chosen if getattr(ctx, "opening_ready", lambda *_: True)(m["identity_id"], chat, now)]
+            if not leaders:
+                # A rewarded companion may be necessary to supply a captain
+                # even when the unrewarded members already meet party size.
+                leaders = [m for m in helpers if opening_ready(m["identity_id"], chat, now)]
+                if not leaders:
+                    continue
+                chosen = chosen[:maximum - 1] + [leaders[0]]
+            chosen = [leaders[0]] + [m for m in chosen if m != leaders[0]]
             if any(other.get("chat_id") == chat and float(other.get("cooldown_until") or 0) > now
                    and re.fullmatch(r"本群开局冷却中，还需\s*\d+\s*分钟。",
                                     str((other.get("opening_rejection") or {}).get("text") or ""))
@@ -504,19 +526,16 @@ async def game_event(ctx, event):
             attempts = run.get("attempts", {}).values()
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             party = departure(run, text)
-            cooldown = re.fullmatch(r"本群开局冷却中，还需\s*(\d+)\s*分钟。", text.strip())
-            daily_limit = re.fullmatch(r"主魂今日发起次数已满（共 [1-9]\d* 局），北京时间零点后再来。", text.strip())
-            if ((cooldown or daily_limit)
+            refusal = opening_rejection(text, ctx.event_time(event))
+            if (refusal
                     and owned and owned["command"] == KINDS[kind]["open"]
                     and not run.get("bound") and len(attempts) == 1):
                 # A direct rejection proves this opening created no room.
                 # Preserve its receipt and quotas; do not hold all party members.
                 before = dict(run)
-                if daily_limit:
-                    local = datetime.fromtimestamp(max(time.time(), ctx.event_time(event)), timezone(timedelta(hours=8)))
-                    retry_at = (local + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0).timestamp()
-                else:
-                    retry_at = max(time.time() + 60, ctx.event_time(event) + int(cooldown[1]) * 60 + 15)
+                retry_at = max(time.time() + 15, refusal["until"])
+                if refusal["scope"] == "root" and hasattr(ctx, "opening_ready"):
+                    retry_at = time.time() + 15
                 run.update(phase="cooldown", requires_reconciliation=False, next_at=retry_at, cooldown_until=retry_at,
                            last_error=None, result=text.strip(), opening_rejection={
                                "command_id": reply, "message_id": int(getattr(event, "id", 0)),

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from model.features import hunt, hunt_weekly
+from model.features.dungeon_limits import next_day
 
 
 @pytest.fixture
@@ -61,6 +62,44 @@ def test_missing_quota_never_opens_a_voyage(weekly_env):
     asyncio.run(run())
     assert [command for command, _ in env.sends] == [".船况"]
     assert not env.runs
+
+
+def test_shared_cooldown_skips_ship_queries_and_root_limit_rotates_captain(weekly_env):
+    env = weekly_env
+    env.ctx.opening_ready = lambda *_: False
+    asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0]))
+    assert not env.sends
+    env.ctx.opening_ready = lambda identity, _chat, _now: identity == 2
+    asyncio.run(check_quotas(env, [0, 0]))
+    assert env.runs["周常队"]["members"][0]["identity_id"] == 2
+    assert env.sends[-1][1]["send_as_id"] == 2
+    assert env.teams[0]["member_identity_ids"] == [1, 2]
+
+
+@pytest.mark.parametrize("scope,text", [
+    ("root", "主魂今日发起次数已满（共 2 局），北京时间零点后再来。"),
+    ("group", "本群今日发起次数已满（共 12 局），北京时间零点后再来。"),
+    ("cooldown", "本群开局冷却中，还需 9 分钟。"),
+])
+def test_confirmed_hunt_opening_refusal_recovers_failed_weekly_without_counting_rewards(weekly_env, scope, text):
+    env = weekly_env
+    async def run():
+        await check_quotas(env, [0, 0])
+        boat = env.runs["周常队"]
+        boat.update(phase="failed", requires_reconciliation=False)
+        env.weekly["周常队"].update(phase="held")
+        opener = next(a["msg_id"] for a in boat["command_attempts"].values())
+        incoming = SimpleNamespace(raw_text=text, id=1000, sender_id=99, chat_id=-100,
+            reply_to_msg_id=opener, reply_to=SimpleNamespace(reply_to_msg_id=opener, reply_to_top_id=300),
+            date=datetime.fromtimestamp(env.now[0], timezone.utc))
+        assert await hunt.game_event(env.ctx, incoming)
+        assert boat["phase"] == "cooldown" and not boat["requires_reconciliation"]
+        assert env.weekly["周常队"]["phase"] == "idle"
+        assert all(v["used"] == 0 for v in env.weekly["周常队"]["counters"].values())
+        assert boat["next_at"] == (env.now[0] + 15 if scope == "root" else
+            hunt_weekly.time.time() + 9 * 60 + 15 if scope == "cooldown" else
+            next_day(env.now[0]))
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("counts,expected", [([5, 5], "done"), ([2, 2], "running"), ([5, 3], "running")])
@@ -139,6 +178,30 @@ def test_uncertain_open_is_held_and_cannot_be_repeated(weekly_env):
     assert env.weekly["周常队"]["phase"] == "held"
     assert env.runs["周常队"]["requires_reconciliation"]
     assert sum(command == ".出海猎妖" for command, _ in env.sends) == 1
+
+
+def test_shared_gate_race_with_proven_unsent_opening_waits_without_holding_boat(weekly_env):
+    env = weekly_env
+    send = env.ctx.send
+    async def blocked(command, **kwargs):
+        if command == ".出海猎妖":
+            env.ctx.opening_ready = lambda *_: False
+            return None
+        return await send(command, **kwargs)
+    env.ctx.send = blocked
+    env.ctx.definitely_unsent = lambda *_: True
+    async def run():
+        await check_quotas(env, [0, 0])
+        assert env.weekly["周常队"]["phase"] == "idle"
+        assert not env.runs["周常队"]["requires_reconciliation"]
+        assert all(c["used"] == 0 for c in env.weekly["周常队"]["counters"].values())
+        env.now[0] += hunt_weekly.BETWEEN_VOYAGES + 1
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 2  # no ship queries during the shared block
+        env.ctx.opening_ready = lambda *_: True
+        await hunt_weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == 3 and env.sends[-1][0] == ".船况"
+    asyncio.run(run())
 
 
 def test_unknown_weekly_format_holds_without_guessing(weekly_env):

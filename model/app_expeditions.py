@@ -11,6 +11,7 @@ from .app_weekly_adventures import handle_weekly_game_event, reset_weekly_on_sta
 from .app_zhengmo import handle_zhengmo_game_event, reset_zhengmo_runtime_on_startup, run_zhengmo_scheduler
 from . import app_spirit_beast
 from . import avatar_soul
+from . import dungeon_openings
 from .features import changfeng_trial, hunt, paired_activities, zhengmo
 from .features.weekly_adventures import KINDS
 from .persistence import mark_dirty, save_state
@@ -465,6 +466,10 @@ def _manual_done(task):
 
 
 async def handle_expedition_game_event(event, *, event_type="message"):
+    try:
+        dungeon_openings.observe(event)
+    except Exception:
+        print(traceback.format_exc())
     # Feature locks serialize early replies without holding the shared listener pipeline.
     for handler in (handle_hunt_game_event, handle_xuangu_game_event, handle_weekly_game_event, handle_zhengmo_game_event, paired_activities.game_event, avatar_soul.game_event):
         if handler is handle_hunt_game_event and not get_hunt_run_state() and not any(team.get("auto_weekly") for team in get_hunt_teams()):
@@ -477,6 +482,7 @@ async def handle_expedition_game_event(event, *, event_type="message"):
 
 
 async def _run_tick(now):
+    await dungeon_openings.ensure_loaded()
     for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, run_zhengmo_scheduler, changfeng_trial.run_changfeng_scheduler, app_spirit_beast.scheduler, paired_activities.scheduler, avatar_soul.supervisor):
         name = f"{handler.__module__}.{handler.__name__}"
         previous = _SCHEDULER_TASKS.get(name)

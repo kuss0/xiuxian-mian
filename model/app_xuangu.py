@@ -12,7 +12,7 @@ from .app_message_log import (
     _send_replica_group_message, _get_group_event_listener_account_id,
 )
 from .features import xuangu
-from .features.hunt_weekly import week_key
+from .features.hunt_weekly import week_key, week_start
 from .config import MESSAGES_DIR, TZ_LOCAL
 from .features.expedition_store import FubenFlowStore
 from .features.xuangu_context import XuanguContext, XuanguCommands, XuanguIdentities, XuanguMessages
@@ -295,11 +295,10 @@ def _backfill_week_rewards():
     """Keep this week's real reward evidence after short-lived room cleanup."""
     from types import SimpleNamespace
     now = time.time()
-    local = datetime.fromtimestamp(now, TZ_LOCAL)
     chat, topic = _target()
     members = [{"identity_id": i, "username": str(get_send_as_profile(i).get("username") or "").lstrip("@")}
                for i in get_expedition_config().get("xuangu", {}).get("participant_identity_ids", [])]
-    for row in iter_message_log_rows(now - local.weekday() * 86400, now, messages_dir=MESSAGES_DIR,
+    for row in iter_message_log_rows(week_start(now), now, messages_dir=MESSAGES_DIR,
                                      line_predicate=lambda line: "玄骨遗府·" in line and "修为+" in line):
         text = str(row.get("text") or "")
         try:

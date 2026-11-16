@@ -13,6 +13,7 @@ from telethon.errors import PeerIdInvalidError, SendAsPeerInvalidError
 from .message_keys import find_message_key
 from .app_expeditions import handle_expedition_game_event, reset_expedition_runtime_on_startup, run_expedition_scheduler
 from .app_xuangu import handle_xuangu_group_command
+from .features.dungeon_limits import OPENERS as DUNGEON_OPENERS
 
 from .account_membership import (
     TargetGroupMembership,
@@ -3856,7 +3857,7 @@ async def on_message(event):
         print(traceback.format_exc())
     sender_is_game_bot = await _is_game_bot_event(event)
     record_game_group_message(event, now=now, event_type="message")
-    if sender_is_game_bot:
+    if sender_is_game_bot or str(event.raw_text or "").strip() in DUNGEON_OPENERS:
         await handle_expedition_game_event(event, event_type="message")
 
     # bot 健康监测：记录 . 开头指令的触发时间

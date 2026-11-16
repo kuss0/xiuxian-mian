@@ -10,6 +10,8 @@ from .activity_occupancy import get_activity_block_reason
 from .app_hunt import hunt_target
 from .config import MESSAGES_DIR, TZ_LOCAL, get_registered_client
 from .features import weekly_adventures as weekly
+from .features.hunt_weekly import week_start
+from . import dungeon_openings
 from .features.council_recovery import completed_manual_council
 from .features.xuangu import _event_topic_id
 from .persistence import mark_dirty, save_state
@@ -71,13 +73,15 @@ def _save():
 
 
 async def _send(command, *, send_as_id, send_guard, deadline, op_id, chain_id, reactive, team_name=""):
-    chat, _topic = hunt_target(_team_config(team_name).get("group_role", "secondary"))
-    return await send_game_command(
-        command, track=False, send_as_id=send_as_id, target_chat_id=chat,
-        operation_check=send_guard, max_retry=0, source_module="组队周常",
-        priority="urgent_reactive" if reactive else "chain",
-        queue_timeout=min(45, max(0.1, deadline - time.time())), op_id=op_id, chain_id=chain_id,
-    )
+    chat, topic = hunt_target(_team_config(team_name).get("group_role", "secondary"))
+    async def send(opening_guard):
+        return await send_game_command(
+            command, track=False, send_as_id=send_as_id, target_chat_id=chat,
+            operation_check=lambda: send_guard() and opening_guard(), max_retry=0, source_module="组队周常",
+            priority="urgent_reactive" if reactive else "chain",
+            queue_timeout=min(45, max(0.1, deadline - time.time())), op_id=op_id, chain_id=chain_id,
+        )
+    return await dungeon_openings.send(command, send_as_id, chat, topic, op_id, send)
 
 
 def _context(name=""):
@@ -94,6 +98,7 @@ def _context(name=""):
         run_key=lambda kind: f"{name}:{kind}" if name else kind,
         route=config.get("route"), use_talisman=config.get("use_talisman", True),
         qipai_daily_limit=config.get("qipai_daily_limit", 1),
+        opening_ready=dungeon_openings.ready,
         save=_save, send=send, bot_ids=get_game_bot_ids, topic=_event_topic_id,
         unsent=is_game_send_definitely_unsent,
         event_time=lambda event: event.date.timestamp(),
@@ -103,6 +108,7 @@ def _context(name=""):
 
 async def run_weekly_scheduler(now):
     global _RECOVERY_PENDING
+    await dungeon_openings.ensure_loaded()
     if _config().get("enabled") or get_expedition_run_state().get("weekly"):
         if _context().records().get("initialized_config") != _config():
             _backfill_weekly_receipts()
@@ -189,7 +195,6 @@ async def _recover_terminal_receipts(now):
 def _backfill_weekly_receipts():
     """Seed quotas from real reward rows in this week's existing local log."""
     now = time.time()
-    local = datetime.fromtimestamp(now, TZ_LOCAL)
     records = _context().records()
     evidence = records.setdefault("receipt_keys", [])
     seen = set(evidence)
@@ -204,7 +209,7 @@ def _backfill_weekly_receipts():
             name = str(scope.get("member_names", {}).get(str(identity)) or get_send_as_profile(identity).get("username") or "").lower().lstrip("@")
             if name:
                 members[name] = identity
-    for row in iter_message_log_rows(now - local.weekday() * 86400, now, messages_dir=MESSAGES_DIR,
+    for row in iter_message_log_rows(week_start(now), now, messages_dir=MESSAGES_DIR,
                                      line_predicate=lambda line: any(marker in line for marker in ("战果", "收兽而归", "败退而归", "走出阴冥", "困于阴冥"))):
         try:
             at = float(row.get("server_event_at") or 0)

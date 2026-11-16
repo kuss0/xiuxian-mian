@@ -179,6 +179,60 @@ def test_game_daohao_is_recognized_in_departure_and_reward(env):
     assert weekly.reward_line("玄平翁", "@玄平翁 修为+100 灵石+10")
 
 
+def test_full_reward_party_never_reopens_and_helpers_are_only_added_when_needed(env):
+    current = weekly.period("yuejing", env.now[0])
+    env.records["quotas"] = {"yuejing": {str(i): {"week": current, "used": 2} for i in range(2, 6)}}
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    run = env.records["runs"]["yuejing"]
+    assert len(run["members"]) == 4  # Cover all four guards, even with one unrewarded member.
+    assert run["members"][0]["identity_id"] == 1
+    run.update(phase="done", next_at=0)
+    env.records["quotas"]["yuejing"]["1"] = {"week": current, "used": 2}
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0] + 1000))
+    assert len(env.sends) == 1
+
+
+def test_root_daily_limit_rotates_captain_without_stopping_joins(env):
+    env.ctx.opening_ready = lambda identity, _chat, _now: identity != 1
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    run = env.records["runs"]["yuejing"]
+    assert run["members"][0]["identity_id"] == 2
+    assert 1 in {m["identity_id"] for m in run["members"]}
+    asyncio.run(weekly.game_event(env.ctx, event(env,
+        "【越京夜行】@member2 要夜探越国京城，.同往 加入。", reply=101)))
+    assert any(command == ".同往" and options["send_as_id"] == 1 for command, options in env.sends)
+
+
+def test_minimum_party_can_use_rewarded_captain_when_unrewarded_members_cannot_open(env):
+    env.records["quotas"] = {"yuejing": {str(i): {"week": weekly.period("yuejing", env.now[0]), "used": 2}
+                                       for i in (4, 5)}}
+    env.ctx.opening_ready = lambda identity, _chat, _now: identity == 5
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    run = env.records["runs"]["yuejing"]
+    assert run["members"][0]["identity_id"] == 5
+    assert {m["identity_id"] for m in run["members"]} == {1, 2, 3, 5}
+
+
+def test_confirmed_root_refusal_can_retry_with_another_captain_but_group_limit_cannot(env):
+    blocked = set()
+    env.ctx.opening_ready = lambda identity, _chat, _now: identity not in blocked
+    async def run():
+        await weekly.scheduler(env.ctx, env.now[0])
+        blocked.add(1)
+        await weekly.game_event(env.ctx, event(env,
+            "主魂今日发起次数已满（共 2 局），北京时间零点后再来。", reply=101))
+        env.now[0] += 16
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert env.records["runs"]["yuejing"]["members"][0]["identity_id"] == 2
+        await weekly.game_event(env.ctx, event(env,
+            "本群今日发起次数已满（共 12 局），北京时间零点后再来。", reply=102))
+        assert env.records["runs"]["yuejing"]["phase"] == "cooldown"
+        await weekly.scheduler(env.ctx, env.now[0] + 1000)
+        assert len(env.sends) == 2
+        assert not any(env.records.get("quotas", {}).values())
+    asyncio.run(run())
+
+
 def test_real_public_panels_use_only_documented_actions():
     rows = json.loads((Path(__file__).parent / "fixtures/weekly_adventures_live_20261113.json").read_text())
     members = [{"identity_id": i, "username": f"member{i}", "linggen": "金"} for i in range(1, 6)]
@@ -1225,6 +1279,29 @@ def test_new_participant_backfills_existing_receipt_without_recounting_old_membe
     assert record["quotas"]["yuejing"]["2"]["used"] == 1
 
 
+@pytest.mark.parametrize("days_after_monday", [0, 3, 6])
+def test_weekly_backfill_recovers_monday_morning_full_reward_receipt_before_scheduling(
+        env, monkeypatch, tmp_path, days_after_monday):
+    monday = datetime(2026, 11, 16, 0, tzinfo=app_weekly_adventures.TZ_LOCAL).timestamp()
+    env.now[0] = monday + days_after_monday * 86400 + 12 * 3600
+    config = {"participant_identity_ids": list(range(1, 6)), "group_role": "primary"}
+    row = {"chat_id": -100, "topic_id": 42, "message_id": 999, "sender_id": 99,
+           "server_event_at": monday + 3600, "text": "【越京夜行·战果】\n" + "\n".join(
+               f"@member{i}：本周有奖次数已满" for i in range(1, 6))}
+    (tmp_path / "2026-11-16.log").write_text(json.dumps(row, ensure_ascii=False) + "\n")
+    monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+    monkeypatch.setattr(app_weekly_adventures, "_config", lambda: config)
+    monkeypatch.setattr(app_weekly_adventures, "_context", lambda: env.ctx)
+    monkeypatch.setattr(app_weekly_adventures, "get_send_as_profile", lambda i: {"username": f"member{i}"})
+    monkeypatch.setattr(app_weekly_adventures, "get_game_bot_ids", lambda: [99])
+    monkeypatch.setattr(app_weekly_adventures, "hunt_target", lambda _: (-100, 42))
+    app_weekly_adventures._backfill_weekly_receipts()
+    app_weekly_adventures._backfill_weekly_receipts()
+    assert all(q["used"] == 2 for q in env.records["quotas"]["yuejing"].values())
+    asyncio.run(weekly.scheduler(env.ctx, env.now[0]))
+    assert not env.sends
+
+
 @pytest.fixture
 def daily_env(monkeypatch):
     records = {}
@@ -1309,6 +1386,24 @@ def test_daily_reward_receipt_does_not_count_other_names(daily_env):
     event = SimpleNamespace(raw_text="@member1：修为+6000\n@other：修为+6000", id=99)
     app_xuangu._record_daily_outcome(roster, event, "收拢遗宝", daily_env.now)
     assert set(daily_env.records["xuangu_daily"]["rewards"]) == {"1"}
+
+
+def test_xuangu_restart_recovers_earlier_monday_reward_and_does_not_repeat_daily_run(daily_env, monkeypatch, tmp_path):
+    e = daily_env
+    now = datetime(2026, 11, 16, 12, tzinfo=app_xuangu.TZ_LOCAL).timestamp()
+    monkeypatch.setattr(app_xuangu.time, "time", lambda: now)
+    monkeypatch.setattr(app_xuangu, "_target", lambda: (-100, 42))
+    monkeypatch.setattr(app_xuangu, "get_game_bot_ids", lambda: [99])
+    monkeypatch.setattr(app_xuangu, "MESSAGES_DIR", tmp_path)
+    row = {"chat_id": -100, "topic_id": 42, "message_id": 999, "sender_id": 99,
+           "server_event_at": now - 3600, "text": "【玄骨遗府·收拢遗宝】\n@member1：修为+6000"}
+    (tmp_path / "2026-11-16.log").write_text(json.dumps(row, ensure_ascii=False) + "\n")
+    app_xuangu._backfill_week_rewards()
+    app_xuangu._backfill_week_rewards()
+    assert app_xuangu._weekly_used(e.records["xuangu_daily"], now) == 1
+    asyncio.run(app_xuangu._run_daily(now))
+    e.opening.assert_not_awaited()
+    e.inventory.assert_not_awaited()
 
 
 @pytest.mark.parametrize("changes", [{}, {"sender_id": 2}, {"chain_id": "weekly:yuejing:1794538000:2"},

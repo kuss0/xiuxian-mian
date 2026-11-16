@@ -17,6 +17,11 @@ def week_key(now):
     return datetime.fromtimestamp(now, _TZ).strftime("%G-W%V")
 
 
+def week_start(now):
+    local = datetime.fromtimestamp(now, _TZ)
+    return (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
 def next_week_check(now):
     local = datetime.fromtimestamp(now, _TZ)
     monday = (local + timedelta(days=7 - local.weekday())).replace(hour=0, minute=10, second=0, microsecond=0)
@@ -112,6 +117,9 @@ async def scheduler(ctx, now):
                 record.update(last_error=error or "成员信息不完整", next_at=now + 300)
                 ctx.save()
                 continue
+            chat_id, _topic_id = ctx.target(team["group_role"])
+            if not any(getattr(ctx, "opening_ready", lambda *_: True)(m["identity_id"], chat_id, now) for m in members):
+                continue
             if record.get("checked_week") != week_key(now):
                 record["counters"] = {}
             counters = record.setdefault("counters", {})
@@ -150,7 +158,16 @@ async def scheduler(ctx, now):
                 record.update(phase="running", run_started_at=run["started_at"])
                 ctx.save()
             else:
-                await _hold(ctx, record, message)
+                attempts = list(run.get("command_attempts", {}).values())
+                if (run.get("phase") == "failed" and not run.get("requires_reconciliation")
+                        and len(attempts) == 1 and attempts[0].get("command") == ".出海猎妖"
+                        and attempts[0].get("status") == "unsent"):
+                    # Another dungeon may claim the shared group after the
+                    # quota checks. A proven-unsent opening created no boat.
+                    record.update(phase="idle", next_at=now + BETWEEN_VOYAGES, last_error=message)
+                    ctx.save()
+                else:
+                    await _hold(ctx, record, message)
             return
 
 

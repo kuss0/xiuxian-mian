@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from .activity_occupancy import get_activity_block_reason
 from .config import get_registered_client
 from .features import hunt, hunt_weekly
+from . import dungeon_openings
 from .persistence import mark_dirty, save_state
 from .runtime import is_game_send_definitely_unsent, send_audit_log, send_game_command
 from .state import (
@@ -45,17 +46,19 @@ def _members(identity_ids):
 
 
 async def _send_hunt_command(command, *, send_as_id, target_group_role, send_guard, deadline=0, op_id=None, chain_id=None, **_ignored):
-    chat_id, _topic_id = hunt_target(target_group_role)
+    chat_id, topic_id = hunt_target(target_group_role)
     if not chat_id or not send_guard() or (deadline and time.time() >= deadline):
         return None
     critical = command in {".登船", ".探路", ".出手", ".护船", ".祭符"} and deadline > 0
     queue_timeout = min(45.0, max(0.1, deadline - time.time())) if deadline else 45.0
-    return await send_game_command(
-        command, track=False, send_as_id=send_as_id, target_chat_id=chat_id,
-        operation_check=lambda: send_guard() and (not deadline or time.time() < deadline),
-        priority="urgent_reactive" if critical else "chain", max_retry=0,
-        source_module="出海猎妖", queue_timeout=queue_timeout, op_id=op_id, chain_id=chain_id,
-    )
+    async def send(opening_guard):
+        return await send_game_command(
+            command, track=False, send_as_id=send_as_id, target_chat_id=chat_id,
+            operation_check=lambda: send_guard() and opening_guard() and (not deadline or time.time() < deadline),
+            priority="urgent_reactive" if critical else "chain", max_retry=0,
+            source_module="出海猎妖", queue_timeout=queue_timeout, op_id=op_id, chain_id=chain_id,
+        )
+    return await dungeon_openings.send(command, send_as_id, chat_id, topic_id, op_id, send)
 
 
 def _context():
@@ -69,6 +72,7 @@ def _context():
         target=hunt_target, members=_members, enabled=get_global_enabled,
         bot_ids=get_game_bot_ids, send=_send_hunt_command,
         definitely_unsent=is_game_send_definitely_unsent,
+        opening_ready=dungeon_openings.ready,
         weekly=lambda: get_expedition_run_state().setdefault("hunt_weekly", {}),
         notice=lambda text: send_audit_log(text, scope="global", limit=1800),
     )
@@ -93,6 +97,9 @@ async def handle_hunt_game_event(event, *, event_type="message"):
 
 
 async def run_hunt_scheduler(now):
+    await dungeon_openings.ensure_loaded()
+    for event in dungeon_openings.hunt_rejections(get_hunt_run_state()):
+        await hunt.game_event(_context(), event)
     if get_hunt_run_state():
         await hunt.scheduler(_context(), now)
     if any(team.get("auto_weekly") for team in get_hunt_teams()):
