@@ -9,6 +9,7 @@ import pytest
 
 from model import app_expeditions, app_xuangu, state, ui
 from model.features import cave_treasure_runtime as cave, changfeng_trial as trial, storage_bag as bag
+from model.features.expedition_store import FubenFlowStore
 
 
 @pytest.fixture(autouse=True)
@@ -270,8 +271,10 @@ def test_xuangu_headerless_reply_requires_one_owned_command(monkeypatch):
     monkeypatch.setattr(app_xuangu, "_enabled", lambda *_: True)
     monkeypatch.setattr(app_xuangu, "hunt_target", lambda _: (-100, 300))
     monkeypatch.setattr(app_xuangu, "get_game_bot_ids", lambda: [99])
-    rows = [{"game_chat_id": -100, "game_topic_id": 300, "command_attempts": {"action": {"msg_id": 500}}}]
-    monkeypatch.setattr(app_xuangu, "_context", lambda: SimpleNamespace(flows=SimpleNamespace(active=lambda _: rows)))
+    rows = {"first": {"game_chat_id": -100, "game_topic_id": 300, "expires_at": time.time() + 300,
+                      "command_attempts": {"action": {"msg_id": 500}}}}
+    flows = FubenFlowStore(lambda: {"xuangu_auto": {"rosters": rows}}, lambda _: None).collection("xuangu_auto", "rosters")
+    monkeypatch.setattr(app_xuangu, "_context", lambda: SimpleNamespace(flows=flows))
     handler = AsyncMock(return_value=True)
     monkeypatch.setattr(app_xuangu.xuangu, "handle_xuangu_game_event", handler)
 
@@ -280,7 +283,7 @@ def test_xuangu_headerless_reply_requires_one_owned_command(monkeypatch):
         assert not await app_xuangu.handle_xuangu_game_event(event)
         event.reply_to_msg_id = 500
         assert await app_xuangu.handle_xuangu_game_event(event)
-        rows.append(copy.deepcopy(rows[0]))
+        rows["duplicate"] = copy.deepcopy(rows["first"])
         assert not await app_xuangu.handle_xuangu_game_event(event)
 
     asyncio.run(scenario())
