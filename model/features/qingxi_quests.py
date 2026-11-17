@@ -735,6 +735,8 @@ async def run_once(identity_id, *, status_only=False):
                 await review_browser_hold(call, record, identity_id)
                 record.update(last_status_error='', reviewed_at=time.time(), review_next_at=time.time() + 1800)
                 save()
+            else:
+                await notify_rewards(identity_id, record)
             if not status_only and browser_required(record.get('gaps', [])) and config.get('gameplay_enabled', False):
                 await run_gameplay(owner, token, url, record, allowed, choices=config.get('choices'),
                     verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))

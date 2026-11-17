@@ -182,6 +182,53 @@ def test_scheduler_does_not_run_without_explicit_configuration(monkeypatch):
     act.assert_not_awaited()
 
 
+@pytest.mark.parametrize('outcome', ['done', 'browser_failed', 'status_only'])
+def test_confirmed_protocol_rewards_are_queued_before_the_next_browser(monkeypatch, outcome):
+    from types import SimpleNamespace
+    from model.features import cave_treasure_runtime as cave
+    record, queued = {}, []
+    owner = SimpleNamespace(identity_id=42, is_current=lambda: True)
+    monkeypatch.setattr(quests.MiniAppIdentityOwner, 'capture', Mock(return_value=owner))
+    monkeypatch.setattr(quests, 'get_global_enabled', lambda: True)
+    monkeypatch.setattr(quests, 'is_cave_public_identity_available', lambda _: True)
+    monkeypatch.setattr(quests, 'get_activity_block_reason', lambda *a, **k: '')
+    monkeypatch.setattr(quests, '_entry_url', lambda: 'offline')
+    monkeypatch.setattr(quests, 'get_expedition_config', lambda: {'qingxi_quests': {'gameplay_enabled': True}})
+    monkeypatch.setattr(quests, 'records', lambda: {'42': record})
+    monkeypatch.setattr(quests, 'save', Mock())
+    monkeypatch.setattr(quests, 'build_cave_treasure_miniapp_adapter', Mock())
+    monkeypatch.setattr(quests, 'build_pooled_miniapp_transport', Mock())
+    monkeypatch.setattr(cave, '_public_entry_lock', lambda _: asyncio.Lock())
+    monkeypatch.setattr(cave, '_parse_public_cave_entry_url', lambda _: ('offline', 'offline', ''))
+    monkeypatch.setattr(cave, '_load_cave_public_identity_session', AsyncMock(return_value={
+        'ok': True, 'player_id': 42, 'init_data': 'offline'}))
+    monkeypatch.setattr(quests, 'review_browser_hold', AsyncMock())
+    calls = 0
+    async def protocol(*args, status_only=False, **kwargs):
+        nonlocal calls
+        calls += 1
+        record['gaps'] = [{'reason': 'gameplay_required', 'objective_type': 'kill'}]
+        if not status_only:
+            record.setdefault('receipts', []).append({'operation_id': 'claim-' + str(calls), 'action': 'turn-in',
+                'grants': [{'name': '灵石', 'quantity': 227 if calls == 1 else 3}]})
+    async def notice(message, **kwargs):
+        queued.append(message)
+        return True
+    async def gameplay(*args, **kwargs):
+        assert len(queued) == 1 and '灵石×227' in queued[0]
+        assert record['notice_attempted'] == ['claim-1']
+        if outcome == 'browser_failed':
+            raise RuntimeError('browser failed')
+    monkeypatch.setattr(quests, 'run_protocol', protocol)
+    monkeypatch.setattr(quests, 'run_gameplay', AsyncMock(side_effect=gameplay))
+    monkeypatch.setattr(quests, 'send_audit_log', notice)
+    ok, _ = asyncio.run(quests.run_once(42, status_only=outcome == 'status_only'))
+    assert ok is (outcome != 'browser_failed')
+    assert len(queued) == {'done': 2, 'browser_failed': 1, 'status_only': 0}[outcome]
+    if outcome == 'done':
+        assert '灵石×3' in queued[1] and '灵石×227' not in queued[1]
+
+
 def test_browser_handles_regions_and_puzzles_but_leaves_fishing_to_its_plan():
     assert quests.browser_required([{'reason': 'region_travel_required'}])
     assert quests.browser_required([{'reason': 'live_node_unavailable', 'objective_type': 'puzzle'}])
