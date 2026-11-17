@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from model import state as state_module
+from model import action_guard, state as state_module
 from model.features import wanxin
 from yinluo_native_support import BOT, CHAT, native_logs, native_reply
 
@@ -20,6 +20,7 @@ NOW = 1_800_000_000.0
 @pytest.fixture
 def env(monkeypatch):
     before = copy.deepcopy(state_module._meta_state)
+    closed_guards = copy.deepcopy(action_guard._recent_closed_command_guards)
     state_module._meta_state["identity_ids"] = []
     state_module._meta_state["identity_states"] = {}
     state_module._meta_state["identity_account_map"] = {}
@@ -50,6 +51,8 @@ def env(monkeypatch):
     yield SimpleNamespace(owner=owner, helper=state_module.get_identity_state(HELPER), monkeypatch=monkeypatch)
     state_module._meta_state.clear()
     state_module._meta_state.update(before)
+    action_guard._recent_closed_command_guards.clear()
+    action_guard._recent_closed_command_guards.update(closed_guards)
 
 
 def receipt(msg_id=100, now=NOW):
@@ -555,6 +558,115 @@ def test_native_log_recovery_closes_exact_known_or_unknown_operation(env, unknow
     sender.assert_not_awaited()
     assert not env.owner["wanxin_observation"]["pending"]
     assert env.owner["wanxin_observation"]["next_visit_time"] > NOW
+
+
+def accept_event():
+    return native_reply(
+        HELPER, ".接取解咒委托 5",
+        "【咒契协定已成】\n阴罗宗弟子 @helper 已接取 @owner 的解咒委托。\n"
+        "可回复对方消息使用 .辨认咒纹、.借幡镇魂、.剥离咒源。",
+        NOW + 1, root=100, command_at=NOW,
+    )
+
+
+def test_helper_native_log_recovery_closes_guard_on_helper(env):
+    prepare_accept(env)
+
+    async def send(command, **kwargs):
+        action_guard.note_sent(command, kwargs["send_as_id"], 100, sent_at=NOW + 18, chat_id=CHAT)
+        return receipt(now=NOW + 18)
+
+    env.monkeypatch.setattr(wanxin, "send_game_command", send)
+    env.monkeypatch.setattr(wanxin.time, "time", lambda: NOW + 20)
+    asyncio.run(schedule())
+    assert "wanxin_accept" in env.helper["action_guard_sessions"]
+    entries = native_logs(accept_event())
+    env.monkeypatch.setattr(wanxin, "_iter_message_log_entries_between", lambda *_args: iter((row, NOW + 5) for row in entries))
+    sender = AsyncMock()
+    env.monkeypatch.setattr(wanxin, "send_game_command", sender)
+    asyncio.run(schedule(NOW + 200))
+    sender.assert_not_awaited()
+    assert env.owner["wanxin_observation"]["commission"]["accepted"]
+    assert not env.owner["wanxin_observation"]["pending"]
+    assert "wanxin_accept" not in env.helper["action_guard_sessions"]
+
+
+def test_helper_early_result_closes_guard_before_send_returns(env):
+    prepare_accept(env)
+
+    async def send(command, **kwargs):
+        action_guard.note_sent(command, HELPER, 100, sent_at=NOW, chat_id=CHAT)
+        env.helper["pending_tasks"][(CHAT, 100)] = {
+            "cmd": command, "op_id": kwargs["op_id"], "account_id": HELPER,
+            "chat_id": CHAT, "sent_at": NOW,
+        }
+        assert await deliver(accept_event())
+        assert "wanxin_accept" not in env.helper["action_guard_sessions"]
+        return receipt()
+
+    env.monkeypatch.setattr(wanxin, "send_game_command", send)
+    asyncio.run(schedule())
+    assert env.owner["wanxin_observation"]["commission"]["accepted"]
+    assert not env.owner["wanxin_observation"]["pending"]
+    assert not env.helper["pending_tasks"]
+    assert "wanxin_accept" not in env.helper["action_guard_sessions"]
+
+
+def test_completed_guard_is_reconciled_after_commission_was_consumed(env):
+    prepare_accept(env)
+    assert asyncio.run(deliver(accept_event()))
+    env.owner["wanxin_observation"]["commission"] = wanxin._default_wanxin_commission()
+    expected = copy.deepcopy(env.owner["wanxin_observation"])
+    # Simulate a pre-fix receipt restored from SQLite after a process restart.
+    action_guard.note_sent(".接取解咒委托 5", HELPER, 100, sent_at=NOW, chat_id=CHAT)
+    action_guard.note_sent(".接取解咒委托 5", OWNER, 100, sent_at=NOW, chat_id=CHAT)
+    unrelated = copy.deepcopy(env.owner["action_guard_sessions"])
+    env.monkeypatch.setattr(wanxin, "send_game_command", AsyncMock())
+    asyncio.run(wanxin.run_wanxin_global_cleanup_scheduler(NOW + 200))
+    assert "wanxin_accept" not in env.helper["action_guard_sessions"]
+    assert env.owner["wanxin_observation"] == expected
+    assert env.owner["action_guard_sessions"] == unrelated
+    wanxin.send_game_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["new_send", "chat", "account", "identity", "command", "pending", "unhandled", "save_false", "save_error"])
+def test_completed_receipt_cannot_clear_unrelated_or_uncommitted_guard(env, mismatch):
+    prepare_accept(env)
+    assert asyncio.run(deliver(accept_event()))
+    action_guard.note_sent(".接取解咒委托 5", HELPER, 100, sent_at=NOW, chat_id=CHAT)
+    if mismatch == "new_send":
+        action_guard.note_sent(".接取解咒委托 6", HELPER, 200, sent_at=NOW + 2, chat_id=CHAT)
+    elif mismatch == "chat":
+        env.helper["action_guard_sessions"]["wanxin_accept"]["last_chat_id"] = CHAT - 1
+    elif mismatch == "account":
+        state_module.set_identity_account(HELPER, OWNER)
+    elif mismatch == "identity":
+        env.owner["wanxin_observation"]["assist"]["send_as_id"] = OWNER
+    elif mismatch == "command":
+        env.helper["action_guard_sessions"]["wanxin_accept"]["last_command"] = ".辨认咒纹 @owner"
+    elif mismatch == "pending":
+        env.helper["pending_tasks"][(CHAT, 100)] = {
+            "cmd": ".接取解咒委托 6", "account_id": HELPER, "chat_id": CHAT,
+        }
+    elif mismatch == "unhandled":
+        point = env.owner["wanxin_observation"]["reply_points"]["accept"]
+        env.owner["wanxin_observation"]["reply_points"]["accept"] = {
+            key: value for key, value in point.items()
+            if key in {"point", "command_point", "root", "fingerprint", "handled"}
+        }
+        env.owner["wanxin_observation"]["reply_points"]["accept"]["handled"] = False
+    elif mismatch == "save_false":
+        env.monkeypatch.setattr(wanxin, "save_state", Mock(return_value=False))
+    else:
+        env.monkeypatch.setattr(wanxin, "save_state", Mock(side_effect=OSError("disk full")))
+    expected = copy.deepcopy((env.owner["wanxin_observation"], env.helper["pending_tasks"], env.helper["action_guard_sessions"]))
+    with state_module.use_identity(OWNER):
+        if mismatch == "save_error":
+            with pytest.raises(OSError):
+                asyncio.run(wanxin._cleanup_wanxin_pending_only(NOW + 200))
+        else:
+            asyncio.run(wanxin._cleanup_wanxin_pending_only(NOW + 200))
+    assert (env.owner["wanxin_observation"], env.helper["pending_tasks"], env.helper["action_guard_sessions"]) == expected
 
 
 def test_unresolved_timeout_never_rearms_a_mutation_or_changes_its_cd(env):

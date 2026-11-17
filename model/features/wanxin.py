@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+from ..action_guard import close_by_family, get_action_guard_sessions
 from ..config import (
     CD_BUFFER_SEC,
     CMD_WANXIN_ACCEPT_COMMISSION,
@@ -729,8 +730,9 @@ def _commit_wanxin_observation(owner, before, observed, *, completed_source=None
     with use_identity(owner[0]):
         _set_observed(observed)
         owner[1].update(updates)
+        source_cleared = False
         if completed_source is not None:
-            _clear_wanxin_source_pending(completed_source)
+            source_cleared = _clear_wanxin_source_pending(completed_source)
         try:
             if save_state() is False:
                 rollback()
@@ -738,7 +740,59 @@ def _commit_wanxin_observation(owner, before, observed, *, completed_source=None
         except Exception:
             rollback()
             raise
+    # Log recovery calls this reducer without app.py's routed-reply epilogue.
+    # Commit the result first; cleanup can retry an interrupted guard close.
+    if source_cleared:
+        _close_wanxin_source_guard(completed_source)
     return True
+
+
+def _close_wanxin_source_guard(source):
+    actor_id = source["actor_id"]
+    family = WANXIN_ACTION_FAMILIES[source["action"]]
+    session = get_action_guard_sessions(actor_id).get(family)
+    if (not isinstance(session, dict) or source["account_id"] <= 0
+            or session.get("last_account_id") != source["account_id"]
+            or get_identity_account(actor_id) != source["account_id"]
+            or _parse_wanxin_command(session.get("last_command")) != _parse_wanxin_command(source["command"])):
+        return False
+    return close_by_family(
+        family, send_as_id=actor_id, reason="wanxin_native_reply",
+        expected_msg_id=source["msg_id"], expected_chat_id=source["chat_id"],
+    )
+
+
+def _reconcile_completed_wanxin_guards(owner, observed, now):
+    """Finish guard cleanup from committed native receipts, even after consumption."""
+    if observed.get("reply_points_invalid") or observed.get("unresolved_invalid"):
+        return
+    for action, receipt in observed["reply_points"].items():
+        if (not _valid_wanxin_reply_point(receipt) or not receipt["handled"]
+                or receipt["point"]["at"] > now + 1
+                or not _wanxin_reply_type_matches(action, {"type": receipt["type"]})):
+            continue
+        command_point = receipt["command_point"]
+        chat_id = command_point["evidence"]["chat_id"]
+        # Legacy receipts have no actor field; never guess a different helper.
+        actor_ids = [observed["assist"]["send_as_id"]] if action in {WANXIN_ACTION_ACCEPT, WANXIN_ACTION_IDENTIFY} else [owner[0]]
+        for actor_id in actor_ids:
+            session = get_action_guard_sessions(actor_id).get(WANXIN_ACTION_FAMILIES[action])
+            if (not isinstance(session, dict) or get_identity_account(actor_id) <= 0
+                    or session.get("last_msg_id") != receipt["root"]
+                    or session.get("last_chat_id") != chat_id
+                    or session.get("last_account_id") != get_identity_account(actor_id)):
+                continue
+            command = session.get("last_command", "")
+            parsed_command = _parse_wanxin_command(command)
+            if parsed_command is None or parsed_command[0] != action:
+                continue
+            source = {
+                "action": action, "actor_id": actor_id, "account_id": get_identity_account(actor_id),
+                "command": command, "chat_id": chat_id, "msg_id": receipt["root"],
+            }
+            before = copy.deepcopy(owner[1].get("wanxin_observation"))
+            if not _commit_wanxin_observation(owner, before, observed, completed_source=source):
+                return
 
 
 def _refresh_wanxin_observation(owner, observed):
@@ -2507,6 +2561,7 @@ async def _cleanup_wanxin_pending_only(now):
         return False
     before = copy.deepcopy(owner[1].get("wanxin_observation"))
     observed = normalize_wanxin_observation(state.get("wanxin_observation"))
+    _reconcile_completed_wanxin_guards(owner, observed, now)
     pending_before = dict(observed.get("pending") or {})
     if not _wanxin_pending_operations(observed):
         return False
@@ -2751,7 +2806,7 @@ def _project_assist_reply(observed, parsed, now, *, owner_id, action, result_msg
 
 def _clear_wanxin_source_pending(source):
     if not source["actor_id"]:
-        return
+        return False
     actor = get_identity_state(source["actor_id"])
     for key, pending in actor.get("pending_tasks", {}).items():
         if not isinstance(pending, dict):
@@ -2764,7 +2819,7 @@ def _clear_wanxin_source_pending(source):
             pending.get("account_id", source["account_id"]) != source["account_id"]
             or _parse_wanxin_command(get_pending_command(pending)) != _parse_wanxin_command(source["command"])
         ):
-            return
+            return False
     clear_pending_by_reply(
         send_as_id=source["actor_id"], reply_context={
             "send_as_id": source["actor_id"], "chat_id": source["chat_id"],
@@ -2772,6 +2827,7 @@ def _clear_wanxin_source_pending(source):
             "family": WANXIN_ACTION_FAMILIES[source["action"]],
         }, clear_family=False,
     )
+    return True
 
 
 async def handle_wanxin_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0, *, event=None):
