@@ -66,7 +66,7 @@ def make_context(now=None):
         messages=SimpleNamespace(game_command=AsyncMock(return_value=SimpleNamespace(id=700)),
                                  audit=AsyncMock(), notice_by_chat=AsyncMock()),
         identities=SimpleNamespace(participation_enabled=lambda *_: True),
-        commands=SimpleNamespace(act=".玄骨行动", finish=".玄骨收尾", disband=".解散玄骨"),
+        commands=SimpleNamespace(act=".玄骨行动", finish=".玄骨收尾", disband=".解散玄骨", enter=".进入玄骨"),
         finish_choice="收拢遗宝", sleep=AsyncMock(),
     )
     return ctx, roster
@@ -112,6 +112,55 @@ def test_expired_assembly_does_not_cancel_in_changed_group():
     asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, time.time()))
     ctx.messages.game_command.assert_not_called()
     assert roster["requires_reconciliation"]
+
+
+def test_expired_setup_with_transport_proof_entry_was_unsent_can_cancel():
+    now = time.time()
+    ctx, roster = make_context(now)
+    roster.update(phase='held', auto_daily=True, requires_reconciliation=True, expires_at=now-10,
+        command_attempts={'1:.进入玄骨': {'status': 'unsent', 'msg_id': 0}})
+    asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, now))
+    ctx.messages.game_command.assert_awaited_once()
+    assert ctx.messages.game_command.call_args.args[0] == '.解散玄骨'
+    assert roster['requires_reconciliation'] is True  # Wait for the real captain reply.
+    assert roster['command_attempts']['1:.进入玄骨']['status'] == 'unsent'
+
+
+@pytest.mark.parametrize('age,held', [(190, False), (601, True)])
+def test_xuangu_setup_budget_covers_the_serial_send_queue(monkeypatch, age, held):
+    now = time.time()
+    ctx, roster = make_context(now)
+    roster.update(phase='joining', room_seen_at=now-age, expires_at=now+900)
+    monkeypatch.setattr(xuangu, '_set_xuangu_confirmed_roles', AsyncMock())
+    monkeypatch.setattr(xuangu, '_retry_xuangu_joins', AsyncMock())
+    monkeypatch.setattr(xuangu, '_schedule_xuangu_enter', Mock())
+    asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, now))
+    assert (roster['phase'] == 'held') is held
+    ctx.messages.game_command.assert_not_called()
+
+
+@pytest.mark.parametrize('taint', ['', 'unconfirmed_roles', 'entry_unknown', 'expired'])
+def test_late_complete_roles_recover_only_a_never_entered_setup(monkeypatch, taint):
+    now = time.time()
+    ctx, roster = make_context(now)
+    roster.update(phase='held', room_seen_at=now-500, assembly_confirmed_at=now-60,
+        team_complete=True, requires_reconciliation=True,
+        last_error='未收到下一阶段或最终回执，保留房间待核对',
+        role_confirmed_map={name.lower(): role for name, role in xuangu.assign_xuangu_roles(roster).items()})
+    if taint == 'unconfirmed_roles':
+        roster['role_confirmed_map'] = {}
+    elif taint == 'entry_unknown':
+        roster['command_attempts'] = {'1:' + ctx.commands.enter: {'status': 'unknown'}}
+    elif taint == 'expired':
+        roster['expires_at'] = now-1
+    monkeypatch.setattr(xuangu, '_set_xuangu_confirmed_roles', AsyncMock())
+    monkeypatch.setattr(xuangu, '_retry_xuangu_joins', AsyncMock())
+    schedule = Mock()
+    monkeypatch.setattr(xuangu, '_schedule_xuangu_enter', schedule)
+    asyncio.run(xuangu.run_xuangu_auto_scheduler(ctx, now))
+    assert (roster['phase'] == 'joining') is (not taint)
+    assert schedule.call_count == int(not taint)
+    ctx.messages.game_command.assert_not_called()
 
 
 @pytest.mark.parametrize("sample", ROUNDS, ids=lambda sample: sample["source"])

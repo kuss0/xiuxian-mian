@@ -47,13 +47,14 @@ QUEST_COMBAT_LOOT = """async function fightEnemy(enemyId, owner) {
   async function fightEnemyCore(enemyId, owner) {"""
 
 
-def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None):
+def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None):
     source = (VENDOR / 'trial-bot.user.js').read_bytes()
     provenance = json.loads((VENDOR / 'source.json').read_text())
     if hashlib.sha256(source).hexdigest() != provenance['sha256']:
         raise RuntimeError('qingxi_upstream_source_changed')
     config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
-              'reviewedCastPending': reviewed_cast_pending or []}
+              'reviewedCastPending': reviewed_cast_pending or [],
+              'confirmedCastReceipts': confirmed_cast_receipts or []}
     script = source.decode()
     # Use upstream's own deferred-task path, while the fetch policy remains the
     # final guard. Missing choices/fishing must not prevent unrelated errands.
@@ -83,6 +84,8 @@ SNAPSHOT = r"""(() => {
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
   state:s?.state,combat_active:s?.active,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
+  stored_pending:(()=>{try{return JSON.parse(localStorage.getItem('qingxi-local-pending:'+window.__qx?.player)||'[]')}
+    catch{return null}})(),
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
@@ -109,23 +112,76 @@ def finished_phase(snapshot):
     return 'held'
 
 
-def open_page(browser, cdp, url, player, choices, read_only, reviewed_cast_pending=None):
+def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None):
     target = cdp.call('Target.createTarget', {'url': 'about:blank', 'newWindow': True})['targetId']
     session = cdp.attach(target)
     for method in ('Page.enable', 'Runtime.enable', 'Network.enable', 'Page.bringToFront'):
         cdp.call(method, session=session)
     cdp.call('Page.addScriptToEvaluateOnNewDocument',
-             {'source': browser_script(player, choices, read_only=read_only, reviewed_cast_pending=reviewed_cast_pending)}, session)
-    page = browser.Page(cdp, session, target)
-    cdp.call('Page.navigate', {'url': url}, session)
+             {'source': browser_script(player, choices, read_only=read_only, reviewed_cast_pending=reviewed_cast_pending,
+                                       confirmed_cast_receipts=confirmed_cast_receipts)}, session)
+    return browser.Page(cdp, session, target)
+
+
+def enter_page(page, cdp, url, player):
+    cdp.call('Page.navigate', {'url': url}, page.s)
     page.wait('window.__autobot && window.__qx?.player===' + str(player), 90, '任务身份校验', every=1)
     page.js('window.__qingxiEnter={done:false};window.__autobot.enter().then(value=>{window.__qingxiEnter={done:true,value}});void 0')
     page.wait('window.__qingxiEnter?.done', 650, '上游助手入坊', every=2)
     error = page.js('window.__autobot.report().error')
     if error:
-        raise RuntimeError('qingxi_enter_failed')
+        raise RuntimeError('qingxi_enter_failed: ' + str(error))
     page.loading = False
-    return page
+
+
+FINAL_REFRESH = """(async()=>{
+ window.__qx.quiescing=true;await window.__qx.queue;
+ window.__qx.statusCache.clear();
+ const before=window.__qx.questStatusRevision;
+ const response=await window.__quests.refresh();
+ return {response,player:window.__qx.player,
+  fresh:window.__qx.questStatusRevision>before};
+})()"""
+
+
+def final_status_verified(check, snapshot, player):
+    if not isinstance(check, dict):
+        return False
+    response = check.get('response')
+    return (check.get('fresh') is True and check.get('player') == player
+            and isinstance(response, dict) and response.get('ok') is True
+            and (response.get('playerId') is None or str(response['playerId']) == str(player))
+            and isinstance(response.get('quests'), dict)
+            and isinstance(response['quests'].get('states'), dict)
+            and snapshot.get('player') == player and snapshot.get('pending') == 0
+            and snapshot.get('stored_pending') == []
+            and not snapshot.get('error') and not snapshot.get('status_error'))
+
+
+def finish_page(page, result, player):
+    """Keep failure evidence even if stopping, draining or refreshing fails."""
+    result['server_checked'] = False
+    try:
+        result.update(page.js(SNAPSHOT))
+    except Exception as exc:
+        result['snapshot_error'] = type(exc).__name__
+    try:
+        page.js('window.__autobot.stop();window.__fc?.stop()')
+        page.wait('(window.__fc?.stats?.().fieldPending||0)===0 && (window.__fc?.stats?.().castOutbox||0)===0 && window.__qx.pending.size===0',
+                  45, '真实战斗回执', every=1)
+        check = page.js(FINAL_REFRESH, timeout=30)
+        result['final_status'] = {'fresh': isinstance(check, dict) and check.get('fresh') is True,
+                                'at': time.time()}
+    except Exception as exc:
+        check = None
+        result['cleanup_error'] = type(exc).__name__
+    try:
+        final = page.js(SNAPSHOT)
+        final['stop_reason'] = final.get('stop_reason') or result.get('stop_reason')
+        result.update(final)
+        result['server_checked'] = final_status_verified(check, final, player)
+    except Exception as exc:
+        result['snapshot_error'] = type(exc).__name__
 
 
 def main():
@@ -154,14 +210,23 @@ def main():
                 process = browser.launch_chrome(browser.find_chrome(None), args.profile_dir, browser.free_port(), headless=True, backend='mesa')
                 port = next(int(arg.split('=')[1]) for arg in process.args if arg.startswith('--remote-debugging-port='))
                 cdp = browser.CDP(browser.cdp_version(port)['webSocketDebuggerUrl'])
-                page = open_page(browser, cdp, read_url_file(args.url_file), args.expected_player_id,
-                                 options.get('choices', {}), args.read_only, options.get('reviewed_cast_pending'))
+                page = create_page(browser, cdp, args.expected_player_id, options.get('choices', {}),
+                                   args.read_only, options.get('reviewed_cast_pending'), options.get('confirmed_cast_receipts'))
+                result['entry_started_at'] = time.time()
+                write_result(args.result, result)
+                try:
+                    enter_page(page, cdp, read_url_file(args.url_file), args.expected_player_id)
+                except BaseException as exc:
+                    result['entry_error'] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+                    raise
                 page.js('window.__autobot.inspectQuests("全部任务")', timeout=60)
                 if args.read_only:
                     result['phase'] = 'inspected'
                 else:
                     opts = {'kind': '全部任务', 'maxMinutes': min(15, max(.5, args.max_seconds / 60)),
                             'maxTasks': 8, 'rewardChoices': options.get('choices', {})}
+                    result['mainline_started_at'] = time.time()
+                    write_result(args.result, result)
                     page.js('window.__qingxiRun={done:false};window.__autobot.mainline(' + json.dumps(opts)
                             + ').then(value=>{window.__qingxiRun={done:true,value}});void 0')
                     started = time.monotonic()
@@ -186,19 +251,17 @@ def main():
                         result['phase'] = 'bounded_stop'
             finally:
                 if page:
-                    try:
-                        page.js('window.__autobot.stop();window.__fc?.stop()')
-                        page.wait('(window.__fc?.stats?.().fieldPending||0)===0 && (window.__fc?.stats?.().castOutbox||0)===0 && window.__qx.pending.size===0',
-                                  45, '真实战斗回执', every=1)
-                        page.js('(async()=>{window.__qx.quiescing=true;await window.__qx.queue;window.__qx.statusCache.clear();return window.__quests.refresh()})()', timeout=30)
-                        final = page.js(SNAPSHOT)
-                        final['stop_reason'] = final.get('stop_reason') or result.get('stop_reason')
-                        result.update(final)
-                        result['server_checked'] = not result.get('error') and not result.get('pending')
-                    except Exception:
-                        result['server_checked'] = False
+                    finish_page(page, result, args.expected_player_id)
                 if cdp:
-                    cdp.close()
+                    try:
+                        cdp.call('Browser.close')
+                        process.wait(timeout=10)  # Let Chromium flush the localStorage journal.
+                    except Exception as exc:
+                        result['browser_shutdown_error'] = type(exc).__name__
+                    try:
+                        cdp.close()
+                    except Exception as exc:
+                        result['browser_close_error'] = type(exc).__name__
                 stop_browser(process)
     except BaseException as exc:
         result.update(phase='held', error=str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__)

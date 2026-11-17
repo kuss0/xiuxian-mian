@@ -65,7 +65,9 @@ _XUANGU_FINISH_RE = re.compile(r"队长\s*\.玄骨收尾\s*立即撤离/收拢�
 _XUANGU_ROOM_MATCH_LOOKBACK_SEC = 5.0
 
 _XUANGU_OPEN_TIMEOUT_SEC = 5 * 60
-_XUANGU_JOIN_WINDOW_SEC = 3 * 60
+# Four joins, five role assignments and entry share the paced send queue.
+# Allow their cumulative queue budget, bounded by the original roster expiry.
+_XUANGU_JOIN_WINDOW_SEC = 10 * 60
 _XUANGU_RUN_TTL_SEC = 30 * 60
 _XUANGU_ROSTER_TTL_SEC = 15 * 60
 _XUANGU_JOIN_DISPATCH_GAP_SEC = 2.0
@@ -305,7 +307,7 @@ async def _send_xuangu_command(ctx, command, *, track=False, send_as_id=None):
     deadline_key = "round_deadline" if action_command else "finish_deadline"
     deadline = float(roster.get(deadline_key) or 0) if critical else 0
     if not deadline and phase == "joining":
-        deadline = float(roster.get("room_seen_at") or time.time()) + _XUANGU_JOIN_WINDOW_SEC
+        deadline = _xuangu_join_deadline(roster)
 
     def allowed():
         return (ctx.flows.load().get(roster.get("flow_id")) is roster
@@ -372,7 +374,8 @@ async def handle_xuangu_roster_command(ctx: XuanguContext, event):
     return await start_xuangu_roster(ctx, roster_names, int(event.chat_id), sender_is_mine=sender_is_mine, event=event)
 
 
-async def start_xuangu_roster(ctx, roster_names, chat_id, *, sender_is_mine=True, event=None, auto_daily=False):
+async def start_xuangu_roster(ctx, roster_names, chat_id, *, sender_is_mine=True, event=None, auto_daily=False,
+                              reservation_id=None):
     """Share one opening chain between manual assembly and ticket-gated automation."""
     async def reply(text):
         if event is not None:
@@ -397,6 +400,7 @@ async def start_xuangu_roster(ctx, roster_names, chat_id, *, sender_is_mine=True
         "members": [str(name).lstrip("@") for name in roster_names],
         "phase": "waiting_open",
         "auto_daily": auto_daily,
+        "reservation_id": reservation_id,
         "room_id": "",
         "is_captain": captain_mine,
         "my_members": [],
@@ -676,6 +680,11 @@ async def _on_xuangu_assemble(ctx, event, assemble, now):
         if expected_roles.get(name) == role:
             role_confirmed[name] = role
     roster["role_confirmed_map"] = role_confirmed
+    if int(count) == 5 and _xuangu_roles_confirmed(roster):
+        stamp = getattr(event, "edit_date", None) or getattr(event, "date", None)
+        confirmed_at = stamp.timestamp() if stamp is not None else now
+        if 0 < confirmed_at <= now + 1:
+            roster["assembly_confirmed_at"] = max(float(roster.get("assembly_confirmed_at") or 0), confirmed_at)
     roster["updated_at"] = now
     _upsert_xuangu_roster(ctx, roster)
 
@@ -735,6 +744,11 @@ def _xuangu_roles_confirmed(roster):
     expected = {name.lower(): role for name, role in assign_xuangu_roles(roster).items()}
     confirmed = roster.get("role_confirmed_map") or {}
     return len(expected) == 5 and all(confirmed.get(name) == role for name, role in expected.items())
+
+
+def _xuangu_join_deadline(roster):
+    started = max(float(roster.get("room_seen_at") or 0), float(roster.get("assembly_confirmed_at") or 0))
+    return min(started + _XUANGU_JOIN_WINDOW_SEC, float(roster.get("expires_at") or started + _XUANGU_JOIN_WINDOW_SEC))
 
 
 def _schedule_xuangu_enter(ctx, roster):
@@ -999,6 +1013,7 @@ async def _on_xuangu_outcome(ctx, event, outcome, now):
     roster["requires_reconciliation"] = False
     roster["finished"] = True
     roster["outcome"] = outcome
+    roster["terminal_msg_id"] = int(getattr(event, "id", 0) or 0)
     roster["updated_at"] = now
     roster["expires_at"] = now + 300
     _upsert_xuangu_roster(ctx, roster)
@@ -1173,6 +1188,17 @@ async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
     now = float(now or time.time())
     for roster in list(ctx.flows.load().values()):
         phase = roster.get("phase")
+        # A late, complete role panel can resolve a setup timeout. Never resume
+        # an uncertain entry or round, or reconstruct membership from sends.
+        if (phase == "held" and roster.get("last_error") == "未收到下一阶段或最终回执，保留房间待核对"
+                and roster.get("team_complete") and _xuangu_roles_confirmed(roster)
+                and not roster.get("entered") and not roster.get("enter_requested_at")
+                and not roster.get("current_round") and not roster.get("disbanded")
+                and not any(key.endswith(":" + ctx.commands.enter) for key in roster.get("command_attempts", {}))
+                and now < _xuangu_join_deadline(roster)):
+            roster.update(phase="joining", requires_reconciliation=False, last_error="", updated_at=now)
+            _upsert_xuangu_roster(ctx, roster)
+            phase = "joining"
         # A lost join must not reserve five identities forever. Cancel only a
         # known captain's never-entered, expired assembly; retain ownership until
         # the captain's own cancellation/no-team reply confirms it is over.
@@ -1180,7 +1206,8 @@ async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
                 and roster.get("auto_daily") and roster.get("is_captain") and roster.get("room_id")
                 and not roster.get("entered") and not roster.get("enter_requested_at")
                 and not roster.get("current_round")
-                and not any(":.进入玄骨" in key for key in roster.get("command_attempts", {}))
+                and not any(":.进入玄骨" in key and (attempt.get("status") != "unsent" or attempt.get("msg_id"))
+                            for key, attempt in roster.get("command_attempts", {}).items())
                 and 0 < float(roster.get("expires_at") or 0) <= now
                 and not any(key.endswith(":" + ctx.commands.disband) for key in roster.get("command_attempts", {}))
                 and len([r for r in ctx.flows.load().values() if r.get("requires_reconciliation")
@@ -1189,7 +1216,7 @@ async def run_xuangu_auto_scheduler(ctx: XuanguContext, now):
             continue
         cutoff = 0
         if phase == "joining":
-            cutoff = float(roster.get("room_seen_at") or 0) + _XUANGU_JOIN_WINDOW_SEC
+            cutoff = _xuangu_join_deadline(roster)
         elif phase == "running" and roster.get("round_deadline"):
             cutoff = float(roster["round_deadline"]) + 45
         elif phase == "finishing" and roster.get("finish_deadline"):

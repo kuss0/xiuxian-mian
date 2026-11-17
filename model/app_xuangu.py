@@ -2,6 +2,7 @@
 import asyncio
 import re
 import time
+import uuid
 from datetime import datetime
 
 from .message_log_recovery import iter_message_log_rows
@@ -191,6 +192,11 @@ async def handle_xuangu_game_event(event, *, event_type="message"):
         if outcome_roster is not None and outcome_roster.get("phase") == "settled":
             _record_daily_outcome(outcome_roster, event, outcome, float(outcome_roster["updated_at"]))
             _save(get_expedition_run_state())
+        if handled:
+            for roster in ctx.flows.load().values():
+                if (roster.get("terminal_msg_id") == int(getattr(event, "id", 0) or 0)
+                        and _release_unused_daily_slot(roster, time.time())):
+                    _save(get_expedition_run_state())
         return handled
 
 
@@ -217,6 +223,30 @@ def _record_daily_outcome(roster, event, outcome, now):
 
 def _weekly_used(daily, now):
     return sum(value.get("week") == week_key(now) for value in daily.get("quota_days", {}).values())
+
+
+def _release_unused_daily_slot(roster, now):
+    """An owned terminal reply may release only its never-entered reservation."""
+    daily = get_expedition_run_state().get("xuangu_daily", {})
+    day = daily.get("attempt_day")
+    slot = daily.get("quota_days", {}).get(day, {})
+    reservation = roster.get("reservation_id")
+    if (not reservation or slot.get("reservation_id") != reservation or slot.get("reason") != "reserved"
+            or not roster.get("auto_daily") or roster.get("phase") != "settled"
+            or roster.get("outcome") not in {"无队伍", "集结取消"} or not roster.get("terminal_msg_id")
+            or roster.get("requires_reconciliation") or roster.get("entered") or roster.get("enter_requested_at")
+            or roster.get("enter_command_msg_id") or roster.get("observed_round")
+            or roster.get("current_round") or roster.get("round_actions")
+            or any(key.endswith(":.进入玄骨") and (attempt.get("status") != "unsent" or attempt.get("msg_id"))
+                   for key, attempt in roster.get("command_attempts", {}).items())
+            or any(value.get("day") == day for value in daily.get("rewards", {}).values())):
+        return False
+    daily["last_unused_reservation"] = {**slot, "day": day, "roster_id": roster.get("roster_id"),
+        "terminal_msg_id": roster["terminal_msg_id"], "outcome": roster["outcome"], "released_at": now}
+    daily["quota_days"].pop(day)
+    daily.pop("attempt_day", None)
+    daily.update(next_check=now + 300, last_error="")
+    return True
 
 
 async def _run_daily(now):
@@ -264,9 +294,11 @@ async def _run_daily(now):
         if any(not re.fullmatch(r"[A-Za-z0-9_]{3,32}", name) for name in names):
             return
         daily.update(attempt_day=_day(now), ticket_owner=identity, ticket_count=count, ticket_checked_at=time.time())
-        daily.setdefault("quota_days", {})[_day(now)] = {"week": week_key(now), "reason": "reserved"}
+        reservation = uuid.uuid4().hex
+        daily.setdefault("quota_days", {})[_day(now)] = {"week": week_key(now), "reason": "reserved",
+                                                        "reservation_id": reservation}
         _save(get_expedition_run_state())
-        await xuangu.start_xuangu_roster(_context(), names, groups[0], auto_daily=True)
+        await xuangu.start_xuangu_roster(_context(), names, groups[0], auto_daily=True, reservation_id=reservation)
         return
     daily["last_error"] = "未从新鲜完整背包确认古府寻踪珠，跳过；一小时后再检查"
     _save(get_expedition_run_state())
@@ -275,6 +307,9 @@ async def _run_daily(now):
 async def run_xuangu_scheduler(now):
     if _enabled():
         async with _LOCK:
+            for roster in get_expedition_run_state().get("xuangu_auto", {}).get("rosters", {}).values():
+                if _release_unused_daily_slot(roster, now):
+                    _save(get_expedition_run_state())
             await xuangu.run_xuangu_auto_scheduler(_context(), now)
             await _run_daily(now)
 

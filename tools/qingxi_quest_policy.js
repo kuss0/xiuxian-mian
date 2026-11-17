@@ -4,7 +4,7 @@
   const config = __CONFIG__;
   const original = window.fetch.bind(window);
   const q = window.__qx = {
-    player: 0, error: '', stopReason: null, requests: 0, casts: 0,
+    player: 0, error: '', stopReason: null, requests: 0, casts: 0, questStatusRevision: 0,
     pending: new Map(), rewards: new Map(), receipts: [], responses: new Map(), status: new Map(), statusCache: new Map(),
     queue: Promise.resolve(), last: -Infinity, serial: 0, starts: new Set(), quiescing: false,
     castEvents: new Map(), castSending: false, castError: '',
@@ -29,7 +29,12 @@
     (row?.resource === 'flight' && ['tick', 'stop'].includes(row.action));
   const stored = JSON.parse(localStorage.getItem(journalKey) || '[]');
   const reviewed = config.reviewedCastPending || [];
+  const confirmedCast = row => row?.resource === 'field-cast' && row.action === 'events' &&
+    typeof row.operation_id === 'string' && Number.isFinite(row.at) &&
+    (config.confirmedCastReceipts || []).some(receipt =>
+      receipt.operation_id === row.operation_id && Number.isFinite(receipt.at) && receipt.at >= row.at);
   const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row) &&
+    !confirmedCast(row) &&
     !(row?.resource === 'field-cast' && row.action === 'events' &&
       reviewed.some(old => canonical(old) === canonical(row)))) : null;
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
@@ -77,6 +82,7 @@
       shape: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [],
       at: Date.now() / 1000};
     q.receipts.push(row);
+    if (row.ok && resource === 'quests' && body.action === 'status') q.questStatusRevision++;
     if (row.ok && (row.grants.length || row.cultivation) && key) {
       const runId = payload?.run?.id || body.runId || payload?.runId;
       row.reward_id = resource === 'quests' && body.action === 'turn-in' ? 'quests:' + body.questId :

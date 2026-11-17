@@ -5926,11 +5926,21 @@ async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation
         current = current_send()
         if current is not None:
             expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
-            commit(_mark_tianxing_timeline_send_unknown(
-                current, current["active_step"], operation.current_time(), config,
-                reason="天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
-                event="send_cancelled",
-            ))
+            cancelled_at = operation.current_time()
+            block = get_last_game_send_block(operation.identity_id, plan["command"])
+            retry = _tianxing_timeline_unsent_block_retry(block, cancelled_at)
+            block_at, dirty = _parse_observation_float(block.get("at"))
+            if retry and not dirty and step["queued_at"] <= block_at <= cancelled_at:
+                commit(_defer_tianxing_timeline_blocked_send(
+                    current, current["active_step"], cancelled_at,
+                    reason=retry["reason"], retry_at=retry["retry_at"], event=retry["event"],
+                ))
+            else:
+                commit(_mark_tianxing_timeline_send_unknown(
+                    current, current["active_step"], cancelled_at, config,
+                    reason="天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
+                    event="send_cancelled",
+                ))
         raise
     except Exception as exc:
         msg = None

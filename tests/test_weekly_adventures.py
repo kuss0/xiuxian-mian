@@ -1366,9 +1366,53 @@ def test_daily_uses_fresh_ticket_owner_and_persists_one_attempt(daily_env):
         assert e.opening.await_count == 1
         assert e.opening.call_args.args[1][0] == "member2"
         assert e.opening.call_args.kwargs["auto_daily"]
+        assert e.opening.call_args.kwargs["reservation_id"] == e.records["xuangu_daily"]["quota_days"][app_xuangu._day(e.now)]["reservation_id"]
         await app_xuangu._run_daily(e.now + 7200)
         assert e.opening.await_count == 1
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('taint', ['', 'other_reservation', 'no_receipt', 'unsettled', 'entered', 'entry_sent',
+                                  'entry_unknown', 'entry_msg_id', 'round_seen', 'already_rewarded', 'manual'])
+def test_xuangu_only_owned_never_entered_terminal_releases_reservation(daily_env, taint):
+    e = daily_env
+    day = app_xuangu._day(e.now)
+    daily = e.records['xuangu_daily'] = {'attempt_day': day, 'quota_days': {
+        day: {'week': weekly.week_key(e.now), 'reason': 'reserved', 'reservation_id': 'owned'}}, 'rewards': {}}
+    roster = {'auto_daily': True, 'phase': 'settled', 'outcome': '无队伍', 'terminal_msg_id': 99,
+              'reservation_id': 'owned', 'roster_id': 'old-room',
+              'command_attempts': {'2:.进入玄骨': {'status': 'unsent', 'msg_id': 0}}}
+    if taint == 'other_reservation':
+        roster['reservation_id'] = 'old'
+    elif taint == 'no_receipt':
+        roster['terminal_msg_id'] = 0
+    elif taint == 'unsettled':
+        roster['phase'] = 'held'
+    elif taint == 'entered':
+        roster['entered'] = True
+    elif taint in {'entry_sent', 'entry_unknown'}:
+        roster['command_attempts']['2:.进入玄骨'].update(status='unknown' if taint == 'entry_unknown' else 'sent', msg_id=0)
+    elif taint == 'entry_msg_id':
+        roster['enter_command_msg_id'] = 33
+    elif taint == 'round_seen':
+        roster['observed_round'] = 1
+    elif taint == 'already_rewarded':
+        daily['rewards']['1'] = {'day': day}
+    elif taint == 'manual':
+        roster['auto_daily'] = False
+    assert app_xuangu._release_unused_daily_slot(roster, e.now) is (not taint)
+    assert app_xuangu._weekly_used(daily, e.now) == bool(taint)
+    if not taint:
+        assert 'attempt_day' not in daily
+        assert daily['last_unused_reservation']['terminal_msg_id'] == 99
+        assert not app_xuangu._release_unused_daily_slot(roster, e.now + 1)
+        asyncio.run(app_xuangu._run_daily(e.now + 1))
+        e.opening.assert_not_awaited()
+        asyncio.run(app_xuangu._run_daily(e.now + 301))
+        e.opening.assert_awaited_once()
+        assert e.opening.call_args.kwargs['reservation_id'] != 'owned'
+        assert not app_xuangu._release_unused_daily_slot(roster, e.now + 302)
+        assert app_xuangu._weekly_used(daily, e.now) == 1
 
 
 def test_xuangu_weekly_cap_counts_rewards_and_uncertain_reserved_days(daily_env):

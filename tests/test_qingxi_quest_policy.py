@@ -29,7 +29,17 @@ function environment(config={},handler=null,stored=[]){
 }
 async function ready(config={},handler=null){const env=environment(config,handler);await env.send('start',{});return env;}
 async function check(scenario){
- if(scenario==='choices'){
+ if(scenario==='acknowledged_disk_journal'){
+  const row={resource:'field-cast',action:'events',operation_id:'field-cast:begin:123',at:10,
+   events:[{k:'begin',s:123,key:'a:火弹',pos:[1,2]}]};
+  for(const receipt of [null,{operation_id:'other',at:11},{operation_id:row.operation_id,at:9},
+    {operation_id:row.operation_id,at:11}]){
+   const e=environment({confirmedCastReceipts:receipt?[receipt]:[]},null,[row]);
+   const confirmed=receipt?.operation_id===row.operation_id&&receipt.at>=row.at;
+   assert.equal(e.c.__qx.error==='',confirmed);
+   assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),confirmed?[]:[row]);
+  }
+ } else if(scenario==='choices'){
   const e=await ready();e.c.__autobot={quests:()=>[{id:'q1',choices:[{id:'release'}]}]};
   await assert.rejects(e.send('quests',{action:'turn-in',questId:'q1',choice:'release',operationId:'one'}),/reward_choice_required/);
   assert.equal(e.calls.length,1);
@@ -237,7 +247,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'flight_cleanup', 'flight_journal',
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
-    'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once',
+    'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:

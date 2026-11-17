@@ -60,8 +60,9 @@ def fishing_task_site(identity_id, now=None):
 
 def observe_town_catch(identity_id):
     record = records().get(str(identity_id))
-    if record is not None and record.get('phase') == 'waiting_gameplay':
-        record['next_at'] = time.time() + 60
+    if record is not None and record.get('phase') in {'waiting_gameplay', 'held'}:
+        key = 'review_next_at' if record.get('phase') == 'held' else 'next_at'
+        record[key] = min(record.get(key) or float('inf'), time.time() + 60)
         try:
             save()  # A task wake-up must not invalidate a confirmed fish receipt.
         except RuntimeError:
@@ -266,13 +267,58 @@ def server_flight_closed(response):
             and isinstance(response.get('mana'), dict) and response['mana'].get('flightLocked') is False)
 
 
+def confirmed_cast_receipts(record, identity_id):
+    """Only exact acknowledged uploads may clear a stale Chromium disk journal."""
+    receipts = []
+    for browser in (record.get('browser'), record.get('previous_browser')):
+        result = _browser_evidence({'browser': browser or {}})
+        if (result.get('player') != identity_id or result.get('server_checked') is not True
+                or result.get('pending') != 0 or result.get('error')):
+            continue
+        receipts.extend({'operation_id': row['operation_id'], 'at': row['at']}
+                        for row in result.get('receipts') or [] if isinstance(row, dict)
+                        and row.get('resource') == 'field-cast' and row.get('action') == 'events'
+                        and row.get('ok') is True and isinstance(row.get('operation_id'), str)
+                        and type(row.get('at')) in (int, float) and math.isfinite(row['at']))
+    return receipts
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
         return
     browser = record.get('browser') or {}
     reason = ''
-    if legacy_cast_only(record, identity_id):
+    result = _browser_evidence(record)
+    if (result.get('player') == identity_id and result.get('entry_error')
+            and not result.get('mainline_started_at') and result.get('server_checked') is True
+            and (result.get('final_status') or {}).get('fresh') is True
+            and result.get('pending') == 0 and result.get('stored_pending') == []
+            and result.get('casts') == 0 and result.get('combat_active') is False):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'verified_entry_failure'
+    elif (result.get('player') == identity_id and result.get('phase') in {'done', 'bounded_stop'}
+          and result.get('server_checked') is False and not result.get('error')
+          and (result.get('final_status') or {}).get('fresh') is False
+          and result.get('pending') == 0 and result.get('stored_pending') == []
+          and (result.get('combat_active') is False or result.get('overworld') is True)
+          and (result.get('report') or {}).get('error', '') in {'', '主线运行达到设置的时限'}):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'fresh_status_after_drained_browser_stop'
+    elif (result.get('player') == identity_id and result.get('server_checked') is True
+          and (result.get('final_status') or {}).get('fresh') is True and not result.get('error')
+          and result.get('pending') == 0 and result.get('stored_pending') == []
+          and result.get('combat_active') is False
+          and (result.get('report') or {}).get('error') == '采集中发生位移，已中断'):
+        gathers = [row for row in result.get('receipts', []) if row.get('resource') == 'quests'
+                   and row.get('action') in {'gather-start', 'gather-cancel', 'gather-finish'}]
+        if gathers and gathers[-1].get('action') == 'gather-cancel' and gathers[-1].get('ok') is True:
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'confirmed_gather_cancel_after_movement'
+    elif legacy_cast_only(record, identity_id):
         reason = 'legacy_cast_only_no_quest_mutations'
     elif read_only_browser_failure(record, identity_id):
         reason = 'read_only_failure_no_mutations'
@@ -296,7 +342,8 @@ async def review_browser_hold(call, record, identity_id):
             'quest_progress_stalled', 'quest_movement_not_ready', 'KeyboardInterrupt'}:
         reason = 'server_checked_safe_stop'
     if reason:
-        record.update(gameplay_uncertain=False, phase='waiting_gameplay', last_error='', next_at=time.time() + 1800)
+        record.update(gameplay_uncertain=False, phase='held' if record.get('pending') or record.get('gather')
+                      else 'waiting_gameplay', last_error='', next_at=time.time() + 60)
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
         if reason == 'orphan_cast_no_engagement':
             record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
@@ -358,7 +405,7 @@ async def run_protocol(call, record, persist, *, rules=None, choices=None, statu
             'action': pending['action'], 'quest_id': pending['questId'], 'at': time.time(),
             'reconciled_from_status': True, 'grants': []})
         record.pop('pending')
-        record.update(phase='idle', last_error='')
+        record.update(phase='held' if record.get('gameplay_uncertain') or record.get('gather') else 'idle', last_error='')
         persist()
     if status_only:
         return record
@@ -473,6 +520,8 @@ async def run_once(identity_id, *, status_only=False):
             await run_protocol(call, record, save, choices=config.get('choices'), status_only=status_only)
             if status_only:
                 await review_browser_hold(call, record, identity_id)
+                record.update(last_status_error='', reviewed_at=time.time(), review_next_at=time.time() + 1800)
+                save()
             if not status_only and browser_required(record.get('gaps', [])) and config.get('gameplay_enabled', False):
                 await run_gameplay(owner, token, url, record, allowed, choices=config.get('choices'),
                     verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))
@@ -535,7 +584,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         with os.fdopen(os.open(options, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
             review = record.get('browser_review') or {}
             json.dump({'choices': choices or {}, 'reviewed_cast_pending':
-                       review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else []}, stream)
+                       review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else [],
+                       'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
         record.update(phase='running', deadline=time.time() + 1500, gameplay_uncertain=True,
@@ -559,7 +609,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                     pass
         result = json.loads((directory / 'result.json').read_text())
         record['browser'].update({k: result.get(k) for k in (
-            'phase', 'server_checked', 'error', 'requests', 'casts', 'site', 'stop_reason', 'report')})
+            'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
+            'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report')})
         existing = {row.get('reward_id', row['operation_id']) for row in record.get('receipts', [])}
         for row in result.get('reward_receipts', []):
             reward_id = row.get('reward_id', row.get('operation_id'))
@@ -612,8 +663,24 @@ async def scheduler(now):
         return
     for identity_id in config.get('participant_identity_ids', []):
         record = records().get(str(identity_id), {})
-        if record.get('phase') in {'held', 'running', 'loading'} or record.get('pending'):
+        if record.get('phase') in {'running', 'loading'}:
             continue
+        review = record.get('phase') == 'held' or any(record.get(key) for key in (
+            'pending', 'gather', 'gameplay_uncertain'))
+        if review:
+            due = record.get('review_next_at', record.get('next_at', 0))
+            if type(due) not in (int, float) or not math.isfinite(due) or due > now:
+                continue
+            if (not is_cave_public_identity_available(identity_id)
+                    or get_activity_block_reason(identity_id, include_qingxi=False)):
+                continue
+            from . import cave_treasure_runtime as cave
+            if cave._public_entry_lock(identity_id).locked():
+                continue
+            record['review_next_at'] = now + 1800
+            save()  # Bound failed/blocked reviews too; never retry on each scheduler tick.
+            await action({'action': 'refresh', 'send_as_id': identity_id})
+            return
         due = record.get('next_at', 0)
         choices_changed = record.get('choices_seen') != (config.get('choices') or {})
         if type(due) not in (int, float) or not math.isfinite(due) or (due > now and not choices_changed):

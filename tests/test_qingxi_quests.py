@@ -214,6 +214,145 @@ def test_optional_task_wakeup_does_not_turn_a_confirmed_fish_into_an_error(monke
     assert record['next_at'] > 0
 
 
+def test_town_catch_wakes_only_review_when_gameplay_is_uncertain(monkeypatch):
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'review_next_at': 9999}
+    monkeypatch.setattr(quests, 'records', lambda: {'42': record})
+    monkeypatch.setattr(quests, 'save', Mock())
+    monkeypatch.setattr(quests.time, 'time', lambda: 100)
+    assert quests.observe_town_catch(42)
+    assert record['review_next_at'] == 160
+    assert record['phase'] == 'held' and record['gameplay_uncertain'] is True
+    assert 'next_at' not in record
+
+
+@pytest.mark.parametrize('taint', ['', 'wrong_player', 'unconfirmed', 'pending', 'error', 'negative_receipt'])
+def test_recovered_disk_journal_requires_exact_successful_cast_evidence(tmp_path, taint):
+    import json
+    result = {'player': 42, 'server_checked': True, 'pending': 0, 'error': '',
+              'receipts': [{'resource': 'field-cast', 'action': 'events', 'ok': True,
+                            'operation_id': 'field-cast:begin:123', 'at': 11}]}
+    if taint == 'wrong_player':
+        result['player'] = 43
+    elif taint == 'unconfirmed':
+        result['server_checked'] = False
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'error':
+        result['error'] = 'unknown'
+    elif taint == 'negative_receipt':
+        result['receipts'][0]['ok'] = False
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'browser': {}, 'previous_browser': {'evidence_dir': str(tmp_path)}}
+    assert quests.confirmed_cast_receipts(record, 42) == (
+        [] if taint else [{'operation_id': 'field-cast:begin:123', 'at': 11}])
+
+
+@pytest.mark.parametrize('taint', ['', 'mainline_started', 'no_fresh_receipt', 'pending', 'active_combat', 'flight_locked'])
+def test_verified_entry_failure_needs_new_status_and_no_unresolved_gameplay(monkeypatch, tmp_path, taint):
+    import json
+    result = {'player': 42, 'entry_error': 'qingxi_enter_failed: 资源加载失败', 'server_checked': True,
+              'final_status': {'fresh': True}, 'pending': 0, 'stored_pending': [], 'casts': 0, 'combat_active': False}
+    if taint == 'mainline_started':
+        result['mainline_started_at'] = 10
+    elif taint == 'no_fresh_receipt':
+        result['final_status']['fresh'] = False
+    elif taint == 'pending':
+        result['stored_pending'] = [{'operation_id': 'unknown'}]
+    elif taint == 'active_combat':
+        result['combat_active'] = True
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'verified_entry_failure'
+
+
+@pytest.mark.parametrize('taint', ['', 'pending', 'missing_final', 'unknown_write', 'active_instance', 'unknown_report', 'held', 'flight_locked'])
+def test_lost_final_status_recovers_only_drained_safe_stops(monkeypatch, tmp_path, taint):
+    import json
+    result = {'player': 42, 'phase': 'bounded_stop', 'server_checked': False, 'error': '',
+              'final_status': {'fresh': False}, 'pending': 0, 'stored_pending': [],
+              'overworld': True, 'combat_active': False, 'report': {'error': '主线运行达到设置的时限'}}
+    if taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'missing_final':
+        result.pop('final_status')
+    elif taint == 'unknown_write':
+        result['error'] = 'quest_transport_unconfirmed'
+    elif taint == 'active_instance':
+        result.update(overworld=False, combat_active=True)
+    elif taint == 'unknown_report':
+        result['report']['error'] = '击杀结算未确认'
+    elif taint == 'held':
+        result['phase'] = 'held'
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'fresh_status_after_drained_browser_stop'
+
+
+@pytest.mark.parametrize('uncertainty', [{'phase': 'held'}, {'pending': {'operationId': 'old'}},
+                                      {'gameplay_uncertain': True}, {'gather': {'gatherId': 'old'}}])
+def test_scheduler_periodically_reviews_uncertainty_without_mutating(monkeypatch, uncertainty):
+    from model.features import cave_treasure_runtime as cave
+    record = {'next_at': 0, **uncertainty}
+    monkeypatch.setattr(quests, 'get_expedition_config', lambda: {
+        'qingxi_quests': {'enabled': True, 'participant_identity_ids': [42]}})
+    monkeypatch.setattr(quests, 'get_global_enabled', lambda: True)
+    monkeypatch.setattr(quests, 'records', lambda: {'42': record})
+    monkeypatch.setattr(quests, 'save', Mock())
+    monkeypatch.setattr(quests, 'is_cave_public_identity_available', lambda _: True)
+    monkeypatch.setattr(quests, 'get_activity_block_reason', lambda _, **kw: not kw.get('include_qingxi') is False)
+    monkeypatch.setattr(cave, '_public_entry_lock', lambda _: Mock(locked=lambda: False))
+    act = AsyncMock()
+    monkeypatch.setattr(quests, 'action', act)
+    asyncio.run(quests.scheduler(100))
+    act.assert_awaited_once_with({'action': 'refresh', 'send_as_id': 42})
+    assert record['review_next_at'] == 1900
+    act.reset_mock()
+    asyncio.run(quests.scheduler(101))
+    act.assert_not_awaited()
+
+
+@pytest.mark.parametrize('taint', ['', 'missing_cancel', 'failed_cancel', 'new_start', 'pending',
+                                  'stale_status', 'active_combat', 'flight_locked'])
+def test_confirmed_movement_gather_cancel_recovers_without_replaying_it(monkeypatch, tmp_path, taint):
+    import json
+    result = {'player': 42, 'phase': 'held', 'server_checked': True, 'error': '',
+              'final_status': {'fresh': True}, 'pending': 0, 'stored_pending': [], 'combat_active': False,
+              'report': {'error': '采集中发生位移，已中断'},
+              'receipts': [{'resource': 'quests', 'action': 'gather-start', 'ok': True},
+                           {'resource': 'quests', 'action': 'gather-cancel', 'ok': True}]}
+    if taint == 'missing_cancel':
+        result['receipts'].pop()
+    elif taint == 'failed_cancel':
+        result['receipts'][-1]['ok'] = False
+    elif taint == 'new_start':
+        result['receipts'].append(result['receipts'][0])
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'stale_status':
+        result['final_status']['fresh'] = False
+    elif taint == 'active_combat':
+        result['combat_active'] = True
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'confirmed_gather_cancel_after_movement'
+        assert call.await_args.kwargs['_api_path'].endswith('/flight')
+
+
 def test_browser_guard_refuses_trial_starts_and_unverified_mutations(tmp_path):
     import shutil
     import subprocess

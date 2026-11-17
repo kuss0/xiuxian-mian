@@ -412,6 +412,30 @@ def test_real_send_receipt_replays_early_result_without_guessing_or_resending(en
     env.send.assert_awaited_once()
 
 
+@pytest.mark.parametrize('evidence', ['unsent', 'stale', 'after_rpc', 'missing'])
+def test_cancelled_send_uses_fresh_transport_proof_before_marking_unknown(env, monkeypatch, evidence):
+    step = seed(env, 'predict', status='pending', send_msg_id=0, send_chat_id=0)
+    env.identity['tianxing_observation'].update(current_prediction='', current_prediction_until=0, current_prediction_set_at=0)
+    monkeypatch.setattr(tianxing._TianxingOperation, 'current_time', lambda _self: NOW + 3)
+    block = ({'code': 'send_cancelled_unsent', 'definitely_unsent': True, 'at': NOW + 2}
+             if evidence != 'missing' else {})
+    if evidence == 'stale':
+        block['at'] = NOW - 1
+    elif evidence == 'after_rpc':
+        block.update(code='send_timeout', definitely_unsent=False)
+    monkeypatch.setattr(tianxing, 'get_last_game_send_block', Mock(return_value=block))
+    env.send.side_effect = asyncio.CancelledError
+    with state_module.use_identity(IDENTITY_ID):
+        operation = tianxing._TianxingOperation.capture(NOW)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(tianxing._send_tianxing_timeline_step(
+                env.identity['tianxing_timeline_state'], step, NOW, operation.config, operation=operation))
+    current = env.identity['tianxing_timeline_state']['active_step']
+    assert current['status'] == ('pending' if evidence == 'unsent' else 'ack_timeout')
+    assert current['send_msg_id'] == 0
+    env.send.assert_awaited_once()
+
+
 def test_timeline_receipt_survives_sqlite_reload_and_rejects_rebound_account(env, monkeypatch, tmp_path):
     from model import persistence
 
