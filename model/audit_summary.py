@@ -73,6 +73,16 @@ def _wild_summary(rows):
     return heading, details
 
 
+def _other_detail_order(row):
+    # Preserve existing queued receipts too. This is display priority only;
+    # it does not infer game completion, regroup rewards or replay a send.
+    body = str(row.get("plain") or "")
+    if body.startswith("[") and "] " in body:
+        body = body.partition("] ")[2]
+    settlement = body.startswith(("🪦 玄骨遗府结算：", "青溪坊任务｜本轮确认交付 "))
+    return (not settlement, str(row.get("identity_id", "")), int(row.get("seq") or 0))
+
+
 def format_grouped_summary(rows, *, now_text, max_details=20):
     groups = defaultdict(list)
     for row in rows:
@@ -109,7 +119,8 @@ def format_grouped_summary(rows, *, now_text, max_details=20):
             if key not in latest or float(row.get("last_at") or 0) >= float(latest[key].get("last_at") or 0):
                 latest[key] = row
         group_details = []
-        for row in sorted(latest.values(), key=lambda r: (str(r.get("identity_id", "")), int(r.get("seq") or 0))):
+        order = _other_detail_order if kind == "other" else lambda r: (str(r.get("identity_id", "")), int(r.get("seq") or 0))
+        for row in sorted(latest.values(), key=order):
             body = row.get("html") or str(row.get("plain") or "-")
             count = int(row.get("count") or 0)
             repeated = f" x{count}" if count > 1 else ""

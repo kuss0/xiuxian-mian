@@ -164,6 +164,29 @@ def test_bounded_fair_details_and_escaped_html(count):
     assert any(getattr(e, "collapsed", False) for e in entities)
 
 
+def test_queued_xuangu_and_each_qingxi_receipt_survive_busy_summary_budget():
+    # Reproduce the live backlog: stable numeric identities sort before the
+    # global Xuangu result, so twenty ordinary details used to hide it.
+    rows = [{"summary_kind": "deep_retreat", "identity_id": i, "count": 1,
+             "html": "闭关已开始", "seq": i} for i in range(24)]
+    rows += [{"identity_id": i, "count": 1, "plain": "例行状态已核对", "html": "例行状态已核对",
+              "seq": i} for i in range(30)]
+    notices = ["🪦 玄骨遗府结算：争取全收｜队长 @WalterWA2000",
+               "[jfdffdddd] 青溪坊任务｜本轮确认交付 2 项｜灵石×326、清灵草×3",
+               "[jfdffdddd] 青溪坊任务｜本轮确认交付 1 项｜灵石×170"]
+    rows += [{"identity_id": None if i == 0 else 301299112, "count": 2 if i == 0 else 1,
+              "plain": body, "html": body, "seq": 40+i} for i, body in enumerate(notices)]
+    before = deepcopy(rows)
+    output = format_grouped_summary(rows, now_text="10:08", max_details=20)
+    plain, entities = telegram_html.parse(output)
+    assert all(body in plain for body in notices)
+    assert " x2 🪦 玄骨遗府结算：" in plain
+    assert "灵石×652" not in plain and "清灵草×6" not in plain
+    assert "另 " in plain and text_units(plain) < 3500
+    assert "闭关 /" in plain and not any(isinstance(e, MessageEntityMention) for e in entities)
+    assert rows == before
+
+
 class RuntimeStructuredSummaryTests(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         directory = TemporaryDirectory()
