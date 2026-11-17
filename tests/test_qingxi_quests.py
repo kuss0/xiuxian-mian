@@ -772,6 +772,89 @@ def test_flight_hold_requires_fresh_explicit_server_closure(monkeypatch, flight_
     assert save.call_count == int(closed)
 
 
+@pytest.mark.parametrize('taint', ['', 'new_transport', 'identity', 'running', 'shutdown', 'cast_count',
+                                 'pending_count', 'stored_changed', 'request_gap', 'settlement', 'reward',
+                                 'defeat', 'turn-in', 'cast_done', 'receipt_missing', 'receipt_success',
+                                 'receipt_wrong_enemy', 'receipt_stale', 'receipt_other_error',
+                                 'wrong_action', 'fresh_failure', 'fresh_wrong_identity', 'fresh_missing_enemy',
+                                 'fresh_corpses', 'flight_locked'])
+def test_old_unconfirmed_preparation_upgrade_excludes_kills_and_rewards(monkeypatch, tmp_path, taint):
+    import copy
+    import json
+    pending = [dict(resource='quests', action='field-engage', operation_id='engage', enemy_id='lantern:083', at=10),
+               dict(resource='field-cast', action='events', operation_id='cast', at=10, attempts=1,
+                    events=[dict(k='use', s=100, key='pierce', pos=[0, 0])])]
+    receipts = [dict(resource='quests', action='status', ok=True)] + [
+        {k: v for k, v in row.items() if k not in {'events', 'attempts'}} | dict(
+            ok=False, http_status=200, error='non_json', parse_error='AbortError', content_type='application/json', at=11)
+        for row in pending]
+    result = dict(player=42, upstream_version='2.0.53', navigation_policy=4, phase='held',
+                  error='quest_http_200_non_json', casts=1, requests=2, pending=4,
+                  pending_operations=pending, stored_pending=copy.deepcopy(pending), receipts=receipts,
+                  report={'fieldSettlements': []}, reward_receipts=[])
+    fresh = {'ok': True, 'quests': {'states': {}, 'corpses': [], 'field': {
+        'enemies': [{'id': 'lantern:083', 'generation': 5, 'hp': 13869}]}}}
+    flight = {'ok': True, 'mana': {'flightLocked': False}}
+    if taint == 'new_transport':
+        result['transport_policy'] = 1
+    elif taint == 'identity':
+        result['player'] = 43
+    elif taint == 'running':
+        result['phase'] = 'running'
+    elif taint == 'shutdown':
+        result['browser_shutdown_error'] = 'TimeoutError'
+    elif taint in {'cast_count', 'pending_count', 'request_gap'}:
+        result[{'cast_count': 'casts', 'pending_count': 'pending', 'request_gap': 'requests'}[taint]] += 1
+    elif taint == 'stored_changed':
+        result['stored_pending'][0]['at'] += 1
+    elif taint == 'settlement':
+        result['report']['fieldSettlements'].append({'ok': False})
+    elif taint == 'reward':
+        receipts[1]['grants'] = [{'name': '灵石', 'quantity': 1}]
+    elif taint in {'defeat', 'turn-in'}:
+        receipts.append(dict(resource='quests', action='field-defeat' if taint == 'defeat' else taint, ok=False))
+    elif taint == 'cast_done':
+        pending[1]['events'][0]['k'] = 'done'
+        result['stored_pending'] = copy.deepcopy(pending)
+    elif taint == 'receipt_missing':
+        receipts.pop()
+    elif taint == 'receipt_success':
+        receipts[1]['ok'] = True
+    elif taint == 'receipt_wrong_enemy':
+        receipts[1]['enemy_id'] = 'other'
+    elif taint == 'receipt_stale':
+        receipts[1]['at'] = 9
+    elif taint == 'receipt_other_error':
+        receipts[1]['error'] = 'unknown'
+    elif taint == 'wrong_action':
+        pending[0]['action'] = 'field-defeat'
+        result['stored_pending'] = copy.deepcopy(pending)
+    elif taint == 'fresh_failure':
+        fresh['ok'] = False
+    elif taint == 'fresh_wrong_identity':
+        fresh['playerId'] = 43
+    elif taint == 'fresh_missing_enemy':
+        fresh['quests']['field']['enemies'] = []
+    elif taint == 'fresh_corpses':
+        fresh['quests']['corpses'] = [{'id': 'unknown'}]
+    elif taint == 'flight_locked':
+        flight['mana']['flightLocked'] = True
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    call, save = AsyncMock(side_effect=[fresh, flight]), Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert (record['phase'] == 'waiting_gameplay') is (not taint)
+    assert save.call_count == int(not taint)
+    if not taint:
+        assert call.await_count == 2
+        assert call.await_args_list[0].args == ('status',)
+        assert call.await_args_list[1].kwargs == {'_api_path': '/api/miniapp/xianxia-dwelling/flight'}
+        assert record['browser_review']['reason'] == 'unconfirmed_field_preparation_upgrade'
+        assert record['browser_review']['abandoned_preparation_pending'] == pending
+
+
 @pytest.fixture
 def orphan_cast_hold(tmp_path):
     import json

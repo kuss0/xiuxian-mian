@@ -352,6 +352,60 @@ def rejected_field_release_only(record, identity_id):
                     for row in pending))
 
 
+def old_unconfirmed_field_preparation(record, identity_id):
+    """Recognize the old body-read failure before any kill or reward request.
+
+    Native recoverFieldDeaths synchronizes the spawn and discards a local death
+    without an engagement token. These uploads may be abandoned, never replayed.
+    The upgraded transport cannot use this one-time migration again.
+    """
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    report = result.get('report') or {}
+    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+            or result.get('transport_policy', 0) != 0 or result.get('navigation_policy') != 4
+            or result.get('phase') != 'held' or result.get('error') != 'quest_http_200_non_json'
+            or result.get('entry_error') or result.get('browser_shutdown_error') or result.get('browser_close_error')
+            or type(result.get('casts')) is not int or result.get('casts') != 1
+            or type(result.get('pending')) is not int or result.get('pending') != 4
+            or not isinstance(pending, list) or len(pending) != 2 or result.get('stored_pending') != pending
+            or not isinstance(receipts, list) or not all(isinstance(row, dict) for row in pending + receipts)
+            or result.get('reward_receipts') or not isinstance(report, dict) or report.get('fieldSettlements') != []
+            or not all(isinstance(r.get('resource'), str) and isinstance(r.get('action'), str) for r in pending)):
+        return False
+    statuses = [r for r in receipts if r.get('resource') == 'quests' and r.get('action') == 'status']
+    if not statuses or result.get('requests') != len(statuses) + 1:
+        return False
+    expected = {('quests', 'field-engage'), ('field-cast', 'events')}
+    if {(r.get('resource'), r.get('action')) for r in pending} != expected:
+        return False
+    for row in pending:
+        if (not isinstance(row.get('operation_id'), str) or not row['operation_id']
+                or type(row.get('at')) not in (int, float) or not math.isfinite(row['at'])):
+            return False
+        if row['resource'] == 'field-cast':
+            events = row.get('events')
+            if (row.get('attempts') != 1 or not isinstance(events, list) or len(events) != 1
+                    or not isinstance(events[0], dict) or events[0].get('k') != 'use'):
+                return False
+        elif not isinstance(row.get('enemy_id'), str) or not row['enemy_id']:
+            return False
+        matched = [r for r in receipts if r.get('operation_id') == row['operation_id']]
+        if (len(matched) != 1 or matched[0].get('resource') != row['resource']
+                or matched[0].get('action') != row['action'] or matched[0].get('ok') is not False
+                or matched[0].get('http_status') != 200 or matched[0].get('error') != 'non_json'
+                or not str(matched[0].get('content_type', '')).startswith('application/json')
+                or matched[0].get('parse_error', '') not in {'', 'AbortError'}
+                or matched[0].get('enemy_id') != row.get('enemy_id')
+                or type(matched[0].get('at')) not in (int, float)
+                or not 0 <= matched[0]['at'] - row['at'] < 30):
+            return False
+    return all(not r.get('grants') and not r.get('pickedItems') and not r.get('cultivation') and (
+        (r in statuses and r.get('ok') is True) or
+        (r.get('resource') == 'flight' and r.get('action') == 'start' and r.get('ok') is True) or
+        any(r.get('operation_id') == row['operation_id'] for row in pending)) for r in receipts)
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
@@ -418,6 +472,21 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'confirmed_field_release_rejection'
+    elif old_unconfirmed_field_preparation(record, identity_id):
+        fresh = await call('status')
+        state = fresh.get('quests') or {}
+        field = state.get('field') if isinstance(state, dict) else None
+        enemies = field.get('enemies') if isinstance(field, dict) else None
+        enemy_id = next(r['enemy_id'] for r in result['pending_operations'] if r['resource'] == 'quests')
+        if (fresh.get('ok') is True and str(fresh.get('playerId', identity_id)) == str(identity_id)
+                and isinstance(state, dict) and isinstance(state.get('states'), dict)
+                and state.get('corpses') == [] and isinstance(enemies, list)
+                and any(r.get('id') == enemy_id and type(r.get('generation')) is int
+                        and type(r.get('hp')) in (int, float) and r['hp'] > 0
+                        for r in enemies if isinstance(r, dict))):
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'unconfirmed_field_preparation_upgrade'
     elif legacy_cast_only(record, identity_id):
         reason = 'legacy_cast_only_no_quest_mutations'
     elif read_only_browser_failure(record, identity_id):
@@ -449,6 +518,8 @@ async def review_browser_hold(call, record, identity_id):
             record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
         if reason == 'confirmed_field_release_rejection':
             record['browser_review']['rejected_release_pending'] = result['pending_operations']
+        if reason == 'unconfirmed_field_preparation_upgrade':
+            record['browser_review']['abandoned_preparation_pending'] = result['pending_operations']
         save()
 
 
@@ -689,6 +760,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else [],
                        'reviewed_release_pending': review.get('rejected_release_pending', [])
                        if review.get('reason') == 'confirmed_field_release_rejection' else [],
+                       'reviewed_preparation_pending': review.get('abandoned_preparation_pending', [])
+                       if review.get('reason') == 'unconfirmed_field_preparation_upgrade' else [],
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])

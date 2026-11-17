@@ -25,6 +25,16 @@
     try { localStorage.setItem(journalKey, JSON.stringify([...q.pending.values()])); }
     catch { q.error = 'quest_journal_failed'; throw Error(q.error); }
   }
+  async function readResponse(response) {
+    let data, parseError = '';
+    try { data = await response.json(); }
+    catch (error) { parseError = error?.name || 'Error'; }
+    // The native deadline covers fetch and body consumption. Once verified,
+    // return a buffered body so that deadline cannot abort a second read.
+    const buffered = parseError ? null : new Response(JSON.stringify(data), {
+      status: response.status, statusText: response.statusText, headers: response.headers});
+    return {data, parseError, buffered};
+  }
   const nativeCleanup = row => row?.resource === 'location' ||
     (row?.resource === 'flight' && ['tick', 'stop'].includes(row.action));
   const stored = JSON.parse(localStorage.getItem(journalKey) || '[]');
@@ -36,8 +46,11 @@
   const reviewedRelease = row => row?.resource === 'quests' && row.action === 'field-release' &&
     typeof row.operation_id === 'string' && Number.isFinite(row.at) &&
     (config.reviewedReleasePending || []).some(old => canonical(old) === canonical(row));
+  const reviewedPreparation = row => ((row?.resource === 'quests' && row.action === 'field-engage') ||
+    (row?.resource === 'field-cast' && row.action === 'events')) &&
+    (config.reviewedPreparationPending || []).some(old => canonical(old) === canonical(row));
   const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row) &&
-    !confirmedCast(row) && !reviewedRelease(row) &&
+    !confirmedCast(row) && !reviewedRelease(row) && !reviewedPreparation(row) &&
     !(row?.resource === 'field-cast' && row.action === 'events' &&
       reviewed.some(old => canonical(old) === canonical(row)))) : null;
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
@@ -148,15 +161,9 @@
     let recorded = false;
     try {
       const response = await original(input, options);
-      let data, parseError;
-      try { data = await response.json(); }
-      catch (error) { parseError = error?.name || 'Error'; }
+      const {data, parseError, buffered} = await readResponse(response);
       const acknowledged = receipt('field-cast', body, response, data, key, parseError);
       recorded = true;
-      // Consume the network body once. Return a buffered response so the
-      // native 8s controller cannot abort a second read after we verified ACKs.
-      const buffered = parseError ? null : new Response(JSON.stringify(data), {
-        status: response.status, statusText: response.statusText, headers: {'content-type': 'application/json'}});
       if (acknowledged) {
         q.pending.delete(key);
         persist();
@@ -249,10 +256,10 @@
           quest_id: body.questId, enemy_id: body.enemyId, at: Date.now() / 1000});
         persist();
       }
-      let response, data;
+      let response, decoded;
       try {
         response = await original(input, options);
-        data = await response.clone().json().catch(() => null);
+        decoded = await readResponse(response);
       } catch (error) {
         if (key) q.error = 'quest_transport_unconfirmed';
         else q.statusError = 'quest_status_unavailable';
@@ -260,25 +267,27 @@
           error: error?.name === 'AbortError' ? 'request_aborted' : 'transport_error', at: Date.now() / 1000});
         throw error;
       }
+      const {data, parseError, buffered} = decoded;
       if (resource === 'start' && data?.ok === true && data.account?.playerId) {
         q.player = Number(data.account.playerId);
         if (q.player !== config.player) q.error = 'quest_player_mismatch';
       }
       if (control || key || instances[resource]) {
-        if (receipt(resource, body, response, data, key)) {
+        if (receipt(resource, body, response, data, key, parseError)) {
           if (statusKey) {
             q.statusError = '';
-            q.statusCache.set(statusKey, {at: performance.now(), response: response.clone()});
+            q.statusCache.set(statusKey, {at: performance.now(), response: buffered.clone()});
           }
           if (key) {
             q.pending.delete(key);
             persist();
-            q.responses.set(key, response.clone());
+            q.responses.set(key, buffered.clone());
             if (q.responses.size > 120) q.responses.delete(q.responses.keys().next().value);
           }
         }
       }
-      return response;
+      if (parseError) throw Object.assign(Error('quest_response_unreadable'), {name: parseError});
+      return buffered;
     };
     // Native cast proof is already batched with an 8s timeout. Do not delay it
     // behind task queries; keep its native pacing and separate bounded budget.

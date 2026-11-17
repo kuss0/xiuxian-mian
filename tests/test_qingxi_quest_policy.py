@@ -61,6 +61,20 @@ async function check(scenario){
    const same=old===row;assert.equal(e.c.__qx.error==='',same);
    assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),same?[]:[row]);
   }
+ } else if(scenario==='preparation_journal'){
+  const engage={resource:'quests',action:'field-engage',operation_id:'engage',enemy_id:'lantern:083',at:10};
+  const cast={resource:'field-cast',action:'events',operation_id:'cast',at:10,events:[{k:'use',s:100,pos:[0,0]}]};
+  const stored=[engage,cast];
+  const e=environment({reviewedPreparationPending:stored},null,stored);
+  assert.equal(e.c.__qx.error,'');assert.equal(e.storage.get('qingxi-local-pending:42'),'[]');
+  for(const row of [{...engage,operation_id:'other'},{...engage,at:11},
+    {...cast,events:[{k:'use',s:101,pos:[0,0]}]}, {...engage,action:'field-defeat'},
+    {...engage,action:'turn-in'},{...engage,resource:'trial',action:'start'}]){
+   const reviewed=[row.action==='field-engage'||row.resource==='field-cast'?engage:row,cast];
+   const a=environment({reviewedPreparationPending:reviewed},null,[row]);
+   assert.equal(a.c.__qx.error,'quest_browser_pending_requires_review');
+   assert.deepEqual(JSON.parse(a.storage.get('qingxi-local-pending:42')),[row]);
+  }
  } else if(scenario==='choices'){
   const e=await ready();e.c.__autobot={quests:()=>[{id:'q1',choices:[{id:'release'}]}]};
   await assert.rejects(e.send('quests',{action:'turn-in',questId:'q1',choice:'release',operationId:'one'}),/reward_choice_required/);
@@ -170,6 +184,48 @@ async function check(scenario){
   const cached=await e.send('field-cast',{events:[event]});
   assert.equal((await cached.json()).off,true);assert.equal(e.calls.length,2);
   assert.equal(e.c.__qx.pending.size,0);
+ } else if(scenario==='quest_body_once'){
+  let reads=0;
+  const e=await ready({},(r,b)=>{
+   if(r!=='quests')return {ok:true,account:{playerId:42}};
+   const response=new Response('{}');
+   response.json=async()=>{reads++;return {ok:true,quests:{states:{}},engagement:'fixture-receipt'}};
+   response.clone=()=>{throw Error('second network body read')};return response;
+  });
+  const body={action:'field-engage',operationId:'engage-one',enemyId:'lantern:083'};
+  const response=await e.send('quests',body);
+  assert.equal((await response.json()).engagement,'fixture-receipt');
+  const duplicate=await e.send('quests',body);
+  assert.equal((await duplicate.json()).engagement,'fixture-receipt');
+  assert.equal(reads,1);assert.equal(e.calls.length,2);assert.equal(e.c.__qx.pending.size,0);
+  await e.send('quests',{action:'status'});await e.send('quests',{action:'status'});
+  assert.equal(reads,2);assert.equal(e.calls.length,3);
+ } else if(scenario==='quest_body_abort'||scenario==='quest_bad_json'||scenario==='status_body_abort'){
+  let fail=true;
+  const e=await ready({},(r,b)=>{
+   if(r!=='quests'||!fail)return {ok:true,account:{playerId:42}};
+   if(scenario==='quest_bad_json')return new Response('<html>bad</html>',{headers:{'content-type':'text/html'}});
+   const response=new Response('{}',{headers:{'content-type':'application/json'}});
+   const abort=async()=>{throw Object.assign(Error('deadline'),{name:'AbortError'})};
+   response.json=abort;response.clone=()=>({json:abort});return response;
+  });
+  const status=scenario==='status_body_abort',body={action:status?'status':'field-engage',operationId:'engage-one'};
+  await assert.rejects(e.send('quests',body),error=>error.name===(scenario==='quest_bad_json'?'SyntaxError':'AbortError'));
+  const receipt=e.c.__qx.receipts.at(-1);
+  assert.equal(receipt.http_status,200);assert.equal(receipt.ok,false);
+  assert.equal(receipt.parse_error,scenario==='quest_bad_json'?'SyntaxError':'AbortError');
+  assert.equal(receipt.content_type,scenario==='quest_bad_json'?'text/html':'application/json');
+  assert.equal(e.c.__qx.pending.size,status?0:1);
+  fail=false;
+  if(status){
+   assert.equal(e.c.__qx.error,'');assert.ok(e.c.__qx.statusError);
+   assert.equal((await (await e.send('quests',{action:'status'})).json()).ok,true);
+   assert.equal(e.c.__qx.statusError,'');
+  }else{
+   await assert.rejects(e.send('quests',{...body,operationId:'other'}),/non_json/);
+   assert.equal(e.calls.length,2);
+   assert.match(e.storage.get('qingxi-local-pending:42'),/engage-one/);
+  }
  } else if(scenario==='proof_initial_inflight'){
   let release;const event={k:'use',s:100,pos:[0,0]};
   const e=await ready({},async(r,b)=>{
@@ -282,7 +338,8 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
-    'release_rejection', 'release_journal',
+    'release_rejection', 'release_journal', 'preparation_journal',
+    'quest_body_once', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:
