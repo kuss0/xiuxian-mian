@@ -1,0 +1,14 @@
+{
+  "source": "official dwelling-3d.js beginFlightNow and read-only navigation-inspection-1794891784439458916.json",
+  "module": "qingxi_quests",
+  "family": "navigation",
+  "event_type": "collision_probe",
+  "text": "Live stuck point is not walkable at radius 0.4 but canFly at the actor height is true. Native beginFlightNow checks canFly here; landing walkability is not a takeoff requirement.",
+  "observed_at": 1794892127.9842334,
+  "actor": [-24.9712485271809, 0.035, -405.8339331158054],
+  "goal": [-37.35055063720039, 0, -440.529781319485],
+  "ground": 0.035,
+  "can_walk": false,
+  "can_fly": true,
+  "native_point_allows_takeoff": true
+}

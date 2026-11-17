@@ -63,6 +63,16 @@ QUEST_WALK_DEFENCE = """const defenceStartedAt = Date.now();
           deadline += Date.now() - defenceStartedAt;
           path = null; movedAt = Date.now(); continue;
         }"""
+QUEST_NATIVE_TAKEOFF = """  function takeoffGround(point) {
+    // beginFlightNow checks canFly at the actor's current height. Landing needs
+    // walkable support; takeoff must not inherit the landing-only restriction.
+    const env = fieldEnvironment;
+    if (!position3(point) || !env?.groundHeight || !env?.canFly) return null;
+    const y = env.groundHeight(point[0], point[2], point[1]);
+    return Number.isFinite(y) && Math.abs(y - point[1]) <= .43 &&
+      env.canFly(point[0], point[2], .4, point[1]) ? [point[0], y, point[2]] : null;
+  }
+"""
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None,
@@ -79,6 +89,8 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
     # Use upstream's own deferred-task path, while the fetch policy remains the
     # final guard. Missing choices/fishing must not prevent unrelated errands.
     patches = {
+        script[script.index('  function takeoffGround('):script.index('  function flightCombatBlocked(')]:
+            QUEST_NATIVE_TAKEOFF,
         'const wanted = state.story.options.rewardChoices?.[q.id];':
             "const wanted = state.story.options.rewardChoices?.[q.id];\n"
             "        if (!wanted) throw Object.assign(new Error('任务奖励保留待选'), {code:'unsupported_quest_objective'});",
@@ -239,7 +251,7 @@ def main():
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
-    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 3}
+    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 4}
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)

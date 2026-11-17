@@ -324,16 +324,20 @@ def test_scheduler_periodically_reviews_uncertainty_without_mutating(monkeypatch
 @pytest.mark.parametrize('taint', ['', 'wrong_player', 'new_policy', 'unknown_write', 'pending', 'disk_pending',
                                   'stale', 'active_combat', 'flight_locked', 'outside_town', 'other_region',
                                   'bad_position', 'missing_position', 'other_error'])
-def test_navigation_upgrade_recovers_only_once_after_verified_safe_return(monkeypatch, tmp_path, taint):
+@pytest.mark.parametrize('navigation_policy', [0, 3])
+def test_navigation_upgrade_recovers_only_once_after_verified_safe_return(monkeypatch, tmp_path, taint,
+                                                                         navigation_policy):
     import json
     result = {'player': 42, 'upstream_version': '2.0.53', 'phase': 'held', 'server_checked': True,
               'final_status': {'fresh': True}, 'error': '', 'pending': 0, 'stored_pending': [],
               'combat_active': False, 'position': [0, .076, 108], 'world': {'current': 'yue'},
-              'report': {'error': '找不到可步行路线：[-35,0,-410] · 先步行到可起飞的室外空地'}}
+              'report': {'error': '找不到可步行路线：[-35,0,-410] · 先步行到可起飞的室外空地'},
+              'navigation_policy': navigation_policy,
+              'navigation_failure': {'obstaclesReviewed': True, 'recovery': {'needsTakeoffWalk': True}}}
     if taint == 'wrong_player':
         result['player'] = 43
     elif taint == 'new_policy':
-        result['navigation_policy'] = 1
+        result['navigation_policy'] = 4 if navigation_policy == 3 else 1
     elif taint == 'unknown_write':
         result['error'] = 'quest_transport_unconfirmed'
     elif taint == 'pending':
@@ -361,7 +365,8 @@ def test_navigation_upgrade_recovers_only_once_after_verified_safe_return(monkey
     asyncio.run(quests.review_browser_hold(call, record, 42))
     assert record['gameplay_uncertain'] is bool(taint)
     if not taint:
-        assert record['browser_review']['reason'] == 'legacy_navigation_safe_return'
+        assert record['browser_review']['reason'] == (
+            'native_takeoff_navigation_upgrade' if navigation_policy == 3 else 'legacy_navigation_safe_return')
         call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
     elif taint != 'flight_locked':
         call.assert_not_awaited()

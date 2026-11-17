@@ -368,7 +368,12 @@ async def review_browser_hold(call, record, identity_id):
         if server_flight_closed(flight):
             reason = 'verified_entry_failure'
     elif (result.get('player') == identity_id and result.get('upstream_version') == '2.0.53'
-          and result.get('navigation_policy', 0) == 0
+          and result.get('navigation_policy', 0) in {0, 3}
+          and (result.get('navigation_policy', 0) == 0 or (
+              isinstance(result.get('navigation_failure'), dict)
+              and result['navigation_failure'].get('obstaclesReviewed') is True
+              and isinstance(result['navigation_failure'].get('recovery'), dict)
+              and result['navigation_failure']['recovery'].get('needsTakeoffWalk') is True))
           and result.get('phase') == 'held' and result.get('server_checked') is True
           and (result.get('final_status') or {}).get('fresh') is True and not result.get('error')
           and result.get('pending') == 0 and result.get('stored_pending') == []
@@ -380,10 +385,11 @@ async def review_browser_hold(call, record, identity_id):
           and all(type(v) in (int, float) and math.isfinite(v) for v in result['position'])
           and math.hypot(result['position'][0], result['position'][2]) < 300):
         # A single upgrade retry of the old navigator, after a proven safe return.
-        # Policy 1 failures need the separate combat-time review below.
+        # Only the fixed old policies may retry once after verified safe return.
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
-            reason = 'legacy_navigation_safe_return'
+            reason = ('native_takeoff_navigation_upgrade' if result.get('navigation_policy') == 3
+                      else 'legacy_navigation_safe_return')
     elif combat_interrupted_navigation_stop(record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):

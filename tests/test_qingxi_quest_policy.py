@@ -443,3 +443,37 @@ assert.equal(choose(s,f.requested),expected);
     path = tmp_path / 'field-target.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['native_point', 'indoors', 'wrong_realm', 'flight_locked', 'low_mana',
+                                     'combat', 'flight_disabled', 'unknown_runtime', 'no_flight_api',
+                                     'unsupported_height', 'normal_short_walk'])
+def test_takeoff_matches_native_point_gate_and_preserves_server_and_combat_gates(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to replay the native takeoff gate')
+    source = browser_script(42)
+    rules = source[source.index('  function takeoffGround('):source.index('  function canTravelFly(')]
+    fixture = (Path(__file__).parent / 'fixtures/qingxi-native-takeoff.json').read_text()
+    script = """const assert=require('node:assert/strict'),f=FIXTURE;
+const runtime={toggleFlight(){},dropFlight(){},setFlightVerticalInput(){}};
+const window={__rt:runtime},state={story:{options:{}}},CFG={flightMinDistance:40},Date={now:()=>100000};
+const position3=p=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite);
+const dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+const fieldEnvironment={groundHeight:()=>SCENARIO==='unsupported_height'?f.ground+1:f.ground,
+ canWalk:()=>f.can_walk,canFly:()=>SCENARIO==='indoors'?false:f.can_fly};
+const flightRuntime={runtime,access:{ready:true,eligible:true,locked:false,current:50},info:{enabled:true}};
+const readCombat=()=>({active:SCENARIO==='combat',overworld:true,enemies:[{engaged:true}]}),livingEnemies=s=>s.enemies;
+if(SCENARIO==='wrong_realm')flightRuntime.access.eligible=false;
+if(SCENARIO==='flight_locked')flightRuntime.access.locked=true;
+if(SCENARIO==='low_mana')flightRuntime.access.current=7;
+if(SCENARIO==='flight_disabled')flightRuntime.info.enabled=false;
+if(SCENARIO==='unknown_runtime')flightRuntime.runtime={};
+if(SCENARIO==='no_flight_api')delete runtime.toggleFlight;
+RULES
+const decision=travelFlightDecision({actorPosition:f.actor},f.goal,2.2,{recovery:SCENARIO!=='normal_short_walk'});
+assert.equal(decision.allowed,SCENARIO==='native_point'&&f.native_point_allows_takeoff);
+if(SCENARIO==='native_point'){assert.equal(f.can_walk,false);assert.deepEqual(takeoffGround(f.actor),f.actor)}
+""".replace('FIXTURE', fixture).replace('RULES', rules).replace('SCENARIO', json.dumps(scenario))
+    path = tmp_path / 'native-takeoff.cjs'
+    path.write_text(script)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
