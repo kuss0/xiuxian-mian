@@ -40,7 +40,13 @@
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
   else if (stored.length) localStorage.setItem(journalKey, '[]');
   function check(resource, body) {
-    const readonly = body.action === 'status';
+    // The official profile route also saves skillSlots without an action.
+    // Only its known read envelope is safe during a read-only inspection.
+    const profileRead = resource === 'battle/doufa-profile' && body.action == null &&
+      Object.keys(body).every(key => ['token', 'initData', 'playerId', 'includeInventory'].includes(key));
+    const readonly = resource === 'battle/doufa-profile' ? profileRead :
+      body.action === 'status' || (body.action == null &&
+        ['overview', 'details', 'section', 'town/review'].includes(resource));
     if (resource === 'trial' && !readonly) stop('quest_runner_trial_forbidden');
     if (body.playerId != null && String(body.playerId) !== String(config.player)) {
       q.error = 'quest_player_mismatch';

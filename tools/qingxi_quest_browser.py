@@ -45,6 +45,17 @@ QUEST_COMBAT_LOOT = """async function fightEnemy(enemyId, owner) {
     finally { if (owner === state.generation && state.story) state.story.collectingFieldLoot = false; }
   }
   async function fightEnemyCore(enemyId, owner) {"""
+QUEST_NAVIGATION_REVIEW = """if (!path && obstacles.length && !obstaclesReviewed) {
+            // Inferred obstacles can close the only exit beside real scenery.
+            // Review them once; the game's collision/height checks still apply.
+            const verified = findPath(p, goal, radius, fieldEnvironment, []);
+            if (verified) {
+              path = verified; obstacles.length = 0; obstaclesReviewed = true;
+              log('疑似障碍挡住出口，按真实碰撞重新规划');
+            }
+          }
+          if (!path) {
+            walkRecovery = true;"""
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None):
@@ -68,6 +79,15 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         "if (!window.__rt.startQuestCombat?.(objective.arena)) throw new Error('游戏未接受郊外战斗入口，请确认人物已进入区域');":
             QUEST_COMBAT_ENTRY,
         'async function fightEnemy(enemyId, owner) {': QUEST_COMBAT_LOOT,
+        'let flightAttempt = null, walkRecovery = false;':
+            'let flightAttempt = null, walkRecovery = false, obstaclesReviewed = false;',
+        'if (!path) {\n            walkRecovery = true;': QUEST_NAVIGATION_REVIEW,
+        "if (!path) throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' + recovery.reason);":
+            "if (!path) {\n"
+            "              window.__qx.navigationFailure = {position:p.slice(), goal:goal.slice(), radius,\n"
+            "                obstacles:obstacles.map(o=>o.slice()), obstaclesReviewed, recovery, at:Date.now()/1000};\n"
+            "              throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' + recovery.reason);\n"
+            "            }",
     }
     for before, after in patches.items():
         if script.count(before) != 1:
@@ -81,6 +101,7 @@ SNAPSHOT = r"""(() => {
  return {player:window.__qx?.player,error:window.__qx?.error,stop_reason:window.__qx?.stopReason,
   requests:window.__qx?.requests,casts:window.__qx?.casts,status_error:window.__qx?.statusError,states:q?.states||{},
   cast_error:window.__qx?.castError,
+  navigation_failure:window.__qx?.navigationFailure,
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
   state:s?.state,combat_active:s?.active,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
@@ -200,7 +221,7 @@ def main():
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
-    result = {'phase': 'preparing', 'upstream_version': '2.0.53'}
+    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 1}
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)

@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.qingxi_quest_browser import GUARD, QUEST_COMBAT_ENTRY, QUEST_COMBAT_LOOT, finished_phase
+from tools.qingxi_quest_browser import (GUARD, QUEST_COMBAT_ENTRY, QUEST_COMBAT_LOOT,
+                                      QUEST_NAVIGATION_REVIEW, VENDOR, finished_phase)
 
 
 HARNESS = r"""
@@ -95,8 +96,20 @@ async function check(scenario){
   fail=false;await e.send('quests',{action:'status'});assert.equal(e.c.__qx.statusError,'');
  } else if(scenario==='readonly'){
   const e=await ready({readOnly:true});await e.send('quests',{action:'status'});
+  for(const resource of ['overview','details','section','town/review']){
+   await e.send(resource,resource==='section'?{section:'inventory'}:{});
+   await assert.rejects(e.send(resource,{action:'claim'}),/read_only/);
+  }
+  await e.send('battle/doufa-profile',{token:'test',initData:'test',playerId:42,includeInventory:true});
+  for(const body of [{skillSlots:[]},{unknown:true},{action:'save'},{action:'status',skillSlots:[]}]){
+   await assert.rejects(e.send('battle/doufa-profile',body),/read_only/);
+  }
   await assert.rejects(e.send('quests',{action:'accept',operationId:'one'}),/read_only/);
-  assert.equal(e.calls.length,2);
+  await assert.rejects(e.send('field-cast',{events:[]}),/read_only/);
+  await assert.rejects(e.send('flight',{action:'start'}),/read_only/);
+  await assert.rejects(e.send('battle/doufa-profile',{playerId:43}),/player_mismatch/);
+  await assert.rejects(e.send('details',{playerId:43}),/player_mismatch/);
+  assert.equal(e.calls.length,7);assert.equal(e.c.__qx.pending.size,0);
  } else if(scenario==='identity'){
   const e=await ready();await assert.rejects(e.send('quests',{action:'status',playerId:43}),/player_mismatch/);
   assert.equal(e.calls.length,1);
@@ -310,5 +323,42 @@ async function entry(){ BODY }
 })().catch(e=>{console.error(e);process.exitCode=1});
 """.replace('SCENARIO', json.dumps(scenario)).replace('BODY', QUEST_COMBAT_ENTRY)
     path = tmp_path / 'entry.cjs'
+    path.write_text(script)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['inferred_blocker', 'already_reviewed', 'real_wall', 'real_cliff'])
+def test_navigation_review_replays_live_collision_without_disabling_geometry(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to exercise the actual upstream planner')
+    source = (VENDOR / 'trial-bot.user.js').read_text()
+    planner = source[source.index('  class MinHeap {'):source.index('  function chooseWalkInput(')]
+    surfaces = source[source.index('  function raisedSurface('):source.index('  function landingGround(')]
+    fixture = Path(__file__).parent / 'fixtures/qingxi-lantern-collision.json'
+    script = """const assert=require('node:assert/strict'),f=FIXTURE;
+const p=f.origin,goal=[p[0]+1.2,p[1],p[2]],radius=0;
+const dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+const fieldEnvironment={
+ groundHeight(x){return SCENARIO==='real_cliff'&&x>p[0]+.5?4:f.ground},
+ canWalk(x,z){if(SCENARIO==='real_wall')return false;
+  const xi=Math.round((x-p[0])/f.step)-f.x_min,zi=Math.round((z-p[2])/f.step)-f.z_min;
+  return f.walkable[zi]?.[xi]==='1';}
+};
+PLANNER
+SURFACES
+const obstacles=[[p[0]+.6,p[1],p[2]]],log=()=>{};
+let path=findPath(p,goal,radius,fieldEnvironment,obstacles),walkRecovery=false,
+ obstaclesReviewed=SCENARIO==='already_reviewed';
+assert.equal(path,null);
+REVIEW
+}
+if(SCENARIO==='inferred_blocker'){
+ assert.ok(path?.length);assert.equal(obstacles.length,0);assert.equal(obstaclesReviewed,true);
+ let previous=p;for(const next of path){assert.ok(walkSegment(previous,next));previous=next}
+ assert.ok(walkGoalReached(previous,goal,radius));
+}else{assert.equal(path,null);assert.equal(obstacles.length,1);assert.equal(walkRecovery,true)}
+""".replace('FIXTURE', fixture.read_text()).replace('SCENARIO', json.dumps(scenario))
+    script = script.replace('PLANNER', planner).replace('SURFACES', surfaces).replace('REVIEW', QUEST_NAVIGATION_REVIEW)
+    path = tmp_path / 'navigation.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)

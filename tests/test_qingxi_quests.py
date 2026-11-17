@@ -321,6 +321,52 @@ def test_scheduler_periodically_reviews_uncertainty_without_mutating(monkeypatch
     act.assert_not_awaited()
 
 
+@pytest.mark.parametrize('taint', ['', 'wrong_player', 'new_policy', 'unknown_write', 'pending', 'disk_pending',
+                                  'stale', 'active_combat', 'flight_locked', 'outside_town', 'other_region',
+                                  'bad_position', 'missing_position', 'other_error'])
+def test_navigation_upgrade_recovers_only_once_after_verified_safe_return(monkeypatch, tmp_path, taint):
+    import json
+    result = {'player': 42, 'upstream_version': '2.0.53', 'phase': 'held', 'server_checked': True,
+              'final_status': {'fresh': True}, 'error': '', 'pending': 0, 'stored_pending': [],
+              'combat_active': False, 'position': [0, .076, 108], 'world': {'current': 'yue'},
+              'report': {'error': '找不到可步行路线：[-35,0,-410] · 先步行到可起飞的室外空地'}}
+    if taint == 'wrong_player':
+        result['player'] = 43
+    elif taint == 'new_policy':
+        result['navigation_policy'] = 1
+    elif taint == 'unknown_write':
+        result['error'] = 'quest_transport_unconfirmed'
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'disk_pending':
+        result['stored_pending'] = [{'operation_id': 'unknown'}]
+    elif taint == 'stale':
+        result['final_status']['fresh'] = False
+    elif taint == 'active_combat':
+        result['combat_active'] = True
+    elif taint == 'outside_town':
+        result['position'][2] = -379
+    elif taint == 'other_region':
+        result['world']['current'] = 'jiuguo'
+    elif taint == 'bad_position':
+        result['position'][0] = None
+    elif taint == 'missing_position':
+        result.pop('position')
+    elif taint == 'other_error':
+        result['report']['error'] = '击杀结算未确认'
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'legacy_navigation_safe_return'
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    elif taint != 'flight_locked':
+        call.assert_not_awaited()
+
+
 @pytest.mark.parametrize('taint', ['', 'missing_cancel', 'failed_cancel', 'new_start', 'pending',
                                   'stale_status', 'active_combat', 'flight_locked'])
 def test_confirmed_movement_gather_cancel_recovers_without_replaying_it(monkeypatch, tmp_path, taint):
