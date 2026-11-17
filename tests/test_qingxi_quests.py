@@ -892,7 +892,7 @@ def test_ready_npc_navigation_returns_to_existing_protocol_only_after_safe_revie
         call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
 
 
-@pytest.mark.parametrize('failure', ['', 'unknown_defeat', 'flight_locked'])
+@pytest.mark.parametrize('failure', ['', 'unknown_defeat', 'flight_locked', 'low_health', 'low_health_stale'])
 def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
         monkeypatch, tmp_path, ready_npc_stop_result, failure):
     import json
@@ -904,6 +904,9 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     result = ready_npc_stop_result
+    if failure.startswith('low_health'):
+        result.update(phase='held', hp=1656.48, server_checked=failure == 'low_health',
+                      report={'error': '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'})
     if failure == 'unknown_defeat':
         result.update(pending=1, pending_operations=[{'action': 'field-defeat'}])
     process = SimpleNamespace(returncode=1, wait=AsyncMock(return_value=1))
@@ -919,8 +922,8 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
     record = {}
     operation = quests.run_gameplay(SimpleNamespace(identity_id=42), 'offline', 'offline', record,
                                    lambda: True, verify_flight=flight)
-    if failure:
-        with pytest.raises(RuntimeError, match='qingxi_browser_requires_review' if failure == 'unknown_defeat'
+    if failure and failure != 'low_health':
+        with pytest.raises(RuntimeError, match='qingxi_browser_requires_review' if failure in {'unknown_defeat', 'low_health_stale'}
                            else 'qingxi_flight_requires_review'):
             asyncio.run(operation)
         assert record['gameplay_uncertain'] is True
@@ -928,9 +931,82 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
         asyncio.run(operation)
         assert record['gameplay_uncertain'] is False
         assert record['browser']['flight_checked'] is True
-        assert record['browser']['phase'] == 'waiting'
+        assert record['browser']['phase'] == result['phase']
         assert record['browser']['report']['error'] == result['report']['error']
         flight.assert_awaited_once()
+
+
+@pytest.mark.parametrize('taint', ['', 'identity', 'running', 'pending', 'pending_gap', 'stored', 'combat',
+                                 'world', 'position', 'nan_position', 'dead', 'nan_hp', 'unknown_error',
+                                 'query_error', 'cast_error', 'entry_error', 'snapshot_error', 'cleanup_error',
+                                 'browser_shutdown_error', 'browser_close_error', 'unknown_stop',
+                                 'unknown_report', 'missing_final', 'bad_final', 'stale_status',
+                                 'status_before_stop', 'flight_locked', 'flight_error'])
+def test_low_health_safe_return_recovers_only_after_fresh_status_and_flight_proof(
+        monkeypatch, tmp_path, ready_npc_stop_result, taint):
+    import json
+    result = ready_npc_stop_result
+    result.update(phase='held', server_checked=False, hp=1656.48, final_status={'fresh': False, 'at': 100},
+                  report={'error': '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'})
+    observed_at = 101
+    if taint == 'identity':
+        result['player'] = 43
+    elif taint == 'running':
+        result['phase'] = 'running'
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'pending_gap':
+        result['pending_operations'] = [{'action': 'field-defeat'}]
+    elif taint == 'stored':
+        result['stored_pending'] = [{'action': 'turn-in'}]
+    elif taint == 'combat':
+        result['combat_active'] = True
+    elif taint == 'world':
+        result['world']['current'] = 'jiuguo'
+    elif taint == 'position':
+        result['position'] = [-39, 0, -492]
+    elif taint == 'nan_position':
+        result['position'][0] = float('nan')
+    elif taint in {'dead', 'nan_hp'}:
+        result['hp'] = 0 if taint == 'dead' else float('nan')
+    elif taint == 'unknown_error':
+        result['error'] = 'quest_transport_unconfirmed'
+    elif taint in {'query_error', 'cast_error', 'entry_error', 'snapshot_error', 'cleanup_error',
+                   'browser_shutdown_error', 'browser_close_error'}:
+        result['status_error' if taint == 'query_error' else taint] = 'unconfirmed'
+    elif taint == 'unknown_stop':
+        result['stop_reason']['reason'] = 'unknown'
+    elif taint == 'unknown_report':
+        result['report']['error'] = '击杀结算未确认'
+    elif taint == 'missing_final':
+        result.pop('final_status')
+    elif taint == 'bad_final':
+        result['final_status'] = 'unknown'
+    elif taint == 'stale_status':
+        observed_at = 0
+    elif taint == 'status_before_stop':
+        observed_at = 99
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'observed_at': observed_at,
+              'browser': {'evidence_dir': str(tmp_path)}}
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    if taint == 'flight_error':
+        call.side_effect = RuntimeError('flight unavailable')
+    monkeypatch.setattr(quests.time, 'time', lambda: 102)
+    save = Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    if taint == 'flight_error':
+        with pytest.raises(RuntimeError, match='flight unavailable'):
+            asyncio.run(quests.review_browser_hold(call, record, 42))
+    else:
+        asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert save.call_count == int(not taint)
+    if not taint:
+        assert record['phase'] == 'waiting_gameplay'
+        assert record['browser_review']['reason'] == 'verified_low_health_safe_return'
+        assert json.loads((tmp_path / 'result.json').read_text()) == result
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
 
 
 @pytest.mark.parametrize('taint', ['', 'new_transport', 'identity', 'running', 'shutdown', 'cast_count',

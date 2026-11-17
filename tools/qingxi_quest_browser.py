@@ -191,7 +191,14 @@ FINAL_REFRESH = """(async()=>{
  window.__qx.quiescing=true;await window.__qx.queue;
  window.__qx.statusCache.clear();
  const before=window.__qx.questStatusRevision;
- const response=await window.__quests.refresh();
+ let response=await window.__quests.refresh();
+ // The native refresh can join an older request whose response was already
+ // counted before the queue drained. Only that successful, stale join gets
+ // one new read; failed requests and unknown writes are never retried here.
+ if(response?.ok===true && window.__qx.questStatusRevision===before){
+  await window.__qx.queue;window.__qx.statusCache.clear();
+  response=await window.__quests.refresh();
+ }
  return {response,player:window.__qx.player,
   fresh:window.__qx.questStatusRevision>before};
 })()"""

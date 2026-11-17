@@ -2,6 +2,8 @@
 import contextlib
 import copy
 import json
+import shutil
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -9,6 +11,32 @@ from unittest.mock import Mock
 import pytest
 
 from tools import qingxi_quest_browser as worker
+
+
+@pytest.mark.parametrize('mode', ['new', 'joined', 'failed', 'still_stale'])
+def test_final_refresh_requeries_only_a_successful_stale_native_join(tmp_path, mode):
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for browser JavaScript')
+    script = """
+const assert=require('node:assert/strict');
+let calls=0,clears=0;
+global.window={__qx:{player:42,questStatusRevision:7,queue:Promise.resolve(),statusCache:{clear(){clears++}}},
+ __quests:{async refresh(){calls++;
+  if(mode==='failed')return null;
+  if(mode==='new'||mode==='joined'&&calls===2)window.__qx.questStatusRevision++;
+  return {ok:true,quests:{states:{qx_q13:{status:'active'}}}};
+ }}};
+(async()=>{const result=await eval(refresh);
+ assert.equal(calls,mode==='joined'||mode==='still_stale'?2:1);
+ assert.equal(clears,calls);assert.equal(window.__qx.quiescing,true);
+ assert.equal(result.fresh,mode==='new'||mode==='joined');
+ assert.equal(result.player,42);assert.equal(result.response?.ok,mode==='failed'?undefined:true);
+})().catch(e=>{console.error(e);process.exitCode=1});
+"""
+    path = tmp_path / 'final-refresh.cjs'
+    path.write_text('const mode=' + json.dumps(mode) + ',refresh=' + json.dumps(worker.FINAL_REFRESH) + ';\n' + script)
+    subprocess.run([node, str(path)], check=True, capture_output=True, text=True, timeout=10)
 
 
 @pytest.mark.parametrize('failure', ['', 'entry', 'drain', 'refresh_null', 'stale', 'wrong_player', 'pending'])

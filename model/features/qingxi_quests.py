@@ -406,13 +406,12 @@ def old_unconfirmed_field_preparation(record, identity_id):
         any(r.get('operation_id') == row['operation_id'] for row in pending)) for r in receipts)
 
 
-def ready_npc_navigation_handoff(result, identity_id):
-    """Hand a drained NPC approach back to the existing status-first protocol."""
-    report, failure = result.get('report') or {}, result.get('navigation_failure') or {}
-    world, states = result.get('world') or {}, result.get('states') or {}
+def safe_browser_town_stop(result, identity_id):
+    """A stopped worker in town, with no unresolved writes or cleanup errors."""
+    report, world = result.get('report') or {}, result.get('world') or {}
     stop_reason = result.get('stop_reason') or {}
-    if not all(isinstance(value, dict) for value in (report, failure, world, states, stop_reason)):
-        return None
+    if not all(isinstance(value, dict) for value in (report, world, stop_reason, result.get('final_status') or {})):
+        return False
     if (result.get('player') != identity_id or result.get('phase') not in {'held', 'waiting'}
             or result.get('upstream_version') != '2.0.53' or result.get('error') or result.get('status_error')
             or result.get('cast_error') or result.get('pending') != 0 or result.get('stored_pending') != []
@@ -421,13 +420,32 @@ def ready_npc_navigation_handoff(result, identity_id):
             or result.get('entry_error') or result.get('snapshot_error') or result.get('browser_shutdown_error')
             or result.get('browser_close_error') or result.get('cleanup_error')
             or stop_reason.get('reason') not in {None, 'quest_request_expired_before_send'}
-            or not isinstance(report.get('error'), str)
-            or re.fullmatch(r'找不到可步行路线：\[[^\]\n]+\] · 可御空', report.get('error', '')) is None):
+            or not isinstance(report.get('error'), str)):
+        return False
+    position = result.get('position')
+    return (isinstance(position, list) and len(position) == 3
+            and all(type(v) in (int, float) and math.isfinite(v) for v in position)
+            and math.hypot(position[0], position[2]) < 300)
+
+
+def safe_low_health_return(result, identity_id):
+    return (safe_browser_town_stop(result, identity_id)
+            and (result.get('report') or {}).get('error') ==
+            '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'
+            and type(result.get('hp')) in (int, float) and math.isfinite(result['hp']) and result['hp'] > 0)
+
+
+def ready_npc_navigation_handoff(result, identity_id):
+    """Hand a drained NPC approach back to the existing status-first protocol."""
+    failure, states = result.get('navigation_failure') or {}, result.get('states') or {}
+    if (not safe_browser_town_stop(result, identity_id)
+            or not isinstance(failure, dict) or not isinstance(states, dict)
+            or re.fullmatch(r'找不到可步行路线：\[[^\]\n]+\] · 可御空',
+                            (result.get('report') or {}).get('error', '')) is None):
         return None
-    position, goal = result.get('position'), failure.get('goal')
-    if (not all(isinstance(point, list) and len(point) == 3
-                and all(type(v) in (int, float) and math.isfinite(v) for v in point) for point in (position, goal))
-            or math.hypot(position[0], position[2]) >= 300):
+    goal = failure.get('goal')
+    if (not isinstance(goal, list) or len(goal) != 3
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in goal)):
         return None
     npcs = {npc['id']: npc for npc in catalog()['npcs']}
     for quest in catalog()['quests']:
@@ -483,6 +501,15 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'combat_interrupted_navigation_upgrade'
+    elif safe_low_health_return(result, identity_id):
+        ended = (result.get('final_status') or {}).get('at')
+        observed = record.get('observed_at')
+        if (type(ended) in (int, float) and math.isfinite(ended)
+                and type(observed) in (int, float) and math.isfinite(observed)
+                and ended <= observed and 0 <= time.time() - observed < 60):
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'verified_low_health_safe_return'
     elif (result.get('player') == identity_id and result.get('phase') in {'done', 'bounded_stop'}
           and result.get('server_checked') is False and not result.get('error')
           and (result.get('final_status') or {}).get('fresh') is False
@@ -837,7 +864,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                 record.setdefault('receipts', []).append(row)
                 existing.add(reward_id)
         save()
-        confirmed_stop = ((process.returncode == 0 and result.get('server_checked') is True)
+        confirmed_stop = ((result.get('server_checked') is True and (
+                              process.returncode == 0 or safe_low_health_return(result, owner.identity_id)))
                           or ready_npc_navigation_handoff(result, owner.identity_id))
         if not confirmed_stop or result.get('player') != owner.identity_id:
             raise RuntimeError('qingxi_browser_requires_review')
