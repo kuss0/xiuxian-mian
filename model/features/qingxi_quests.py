@@ -406,6 +406,41 @@ def old_unconfirmed_field_preparation(record, identity_id):
         any(r.get('operation_id') == row['operation_id'] for row in pending)) for r in receipts)
 
 
+def ready_npc_navigation_handoff(result, identity_id):
+    """Hand a drained NPC approach back to the existing status-first protocol."""
+    report, failure = result.get('report') or {}, result.get('navigation_failure') or {}
+    world, states = result.get('world') or {}, result.get('states') or {}
+    stop_reason = result.get('stop_reason') or {}
+    if not all(isinstance(value, dict) for value in (report, failure, world, states, stop_reason)):
+        return None
+    if (result.get('player') != identity_id or result.get('phase') not in {'held', 'waiting'}
+            or result.get('upstream_version') != '2.0.53' or result.get('error') or result.get('status_error')
+            or result.get('cast_error') or result.get('pending') != 0 or result.get('stored_pending') != []
+            or result.get('pending_operations') != []
+            or result.get('combat_active') is not False or world.get('current') != 'yue'
+            or result.get('entry_error') or result.get('snapshot_error') or result.get('browser_shutdown_error')
+            or result.get('browser_close_error') or result.get('cleanup_error')
+            or stop_reason.get('reason') not in {None, 'quest_request_expired_before_send'}
+            or not isinstance(report.get('error'), str)
+            or re.fullmatch(r'找不到可步行路线：\[[^\]\n]+\] · 可御空', report.get('error', '')) is None):
+        return None
+    position, goal = result.get('position'), failure.get('goal')
+    if (not all(isinstance(point, list) and len(point) == 3
+                and all(type(v) in (int, float) and math.isfinite(v) for v in point) for point in (position, goal))
+            or math.hypot(position[0], position[2]) >= 300):
+        return None
+    npcs = {npc['id']: npc for npc in catalog()['npcs']}
+    for quest in catalog()['quests']:
+        slot = states.get(quest['id']) or {}
+        npc = npcs.get(quest.get('receiver')) or {}
+        point = _position(npc.get('positionXZ'))
+        if (isinstance(slot, dict) and slot.get('status') == 'ready' and quest.get('region', 'yue') == 'yue'
+                and point and math.hypot(goal[0] - point[0], goal[2] - point[2]) < .05
+                and abs(goal[1] - point[1]) <= 2):
+            return quest['id']
+    return None
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
@@ -472,6 +507,11 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'confirmed_field_release_rejection'
+    elif (quest_id := ready_npc_navigation_handoff(result, identity_id)) and (
+            (record.get('observed') or {}).get(quest_id, {}).get('status') in {'ready', 'rewarded'}):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'verified_npc_delivery_handoff'
     elif old_unconfirmed_field_preparation(record, identity_id):
         fresh = await call('status')
         state = fresh.get('quests') or {}
@@ -795,8 +835,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                 record.setdefault('receipts', []).append(row)
                 existing.add(reward_id)
         save()
-        if (process.returncode != 0 or result.get('player') != owner.identity_id
-                or result.get('server_checked') is not True):
+        confirmed_stop = ((process.returncode == 0 and result.get('server_checked') is True)
+                          or ready_npc_navigation_handoff(result, owner.identity_id))
+        if not confirmed_stop or result.get('player') != owner.identity_id:
             raise RuntimeError('qingxi_browser_requires_review')
         try:
             flight = await verify_flight()

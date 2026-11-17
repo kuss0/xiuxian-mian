@@ -188,9 +188,14 @@ async function check(scenario){
   let reads=0;
   const e=await ready({},(r,b)=>{
    if(r!=='quests')return {ok:true,account:{playerId:42}};
-   const response=new Response('{}');
-   response.json=async()=>{reads++;return {ok:true,quests:{states:{}},engagement:'fixture-receipt'}};
-   response.clone=()=>{throw Error('second network body read')};return response;
+   const response=new Response('{}');let networkReads=0;
+   response.json=async()=>{
+    reads++;if(++networkReads>1)throw Object.assign(Error('native deadline'),{name:'AbortError'});
+    return {ok:true,quests:{states:{}},engagement:'fixture-receipt'};
+   };
+   // A clone can be verified before the deadline, while the original body is
+   // aborted before official postJson consumes it. Both share that network body.
+   response.clone=()=>{const clone=new Response('{}');clone.json=response.json;return clone};return response;
   });
   const body={action:'field-engage',operationId:'engage-one',enemyId:'lantern:083'};
   const response=await e.send('quests',body);

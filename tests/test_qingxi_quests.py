@@ -772,6 +772,120 @@ def test_flight_hold_requires_fresh_explicit_server_closure(monkeypatch, flight_
     assert save.call_count == int(closed)
 
 
+@pytest.fixture
+def ready_npc_stop_result():
+    return dict(player=42, upstream_version='2.0.53', phase='waiting', pending=0, pending_operations=[],
+                stored_pending=[], combat_active=False, world={'current': 'yue'}, position=[0, .076, 108],
+                states={'qx_q12': {'status': 'ready'}},
+                report={'error': '找不到可步行路线：[57,1,5] · 可御空'},
+                navigation_failure={'goal': [57, 1, 5]},
+                stop_reason={'reason': 'quest_request_expired_before_send'})
+
+
+@pytest.mark.parametrize('taint', ['', 'identity', 'running', 'pending', 'pending_gap', 'stored', 'combat',
+                                 'world', 'position', 'goal', 'height', 'quest_active', 'wrong_receiver',
+                                 'query_error', 'cast_error', 'other_error', 'cleanup', 'shutdown',
+                                 'other_stop', 'stale_observation', 'flight_locked'])
+def test_ready_npc_navigation_returns_to_existing_protocol_only_after_safe_review(
+        monkeypatch, tmp_path, ready_npc_stop_result, taint):
+    import json
+    result = ready_npc_stop_result
+    observed = {'qx_q12': {'status': 'ready'}}
+    flight = {'ok': True, 'mana': {'flightLocked': False}}
+    if taint == 'identity':
+        result['player'] = 43
+    elif taint == 'running':
+        result['phase'] = 'running'
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'pending_gap':
+        result['pending_operations'] = [{'action': 'field-defeat'}]
+    elif taint == 'stored':
+        result['stored_pending'] = [{'action': 'turn-in'}]
+    elif taint == 'combat':
+        result['combat_active'] = True
+    elif taint == 'world':
+        result['world']['current'] = 'jiuguo'
+    elif taint == 'position':
+        result['position'] = [-40, 0, -400]
+    elif taint == 'goal':
+        result['navigation_failure']['goal'][0] += 10
+    elif taint == 'height':
+        result['navigation_failure']['goal'][1] = 30
+    elif taint == 'quest_active':
+        result['states']['qx_q12']['status'] = 'active'
+    elif taint == 'wrong_receiver':
+        result['states'] = {'qx_q13': {'status': 'ready'}}
+    elif taint == 'query_error':
+        result['status_error'] = 'quest_status_unavailable'
+    elif taint == 'cast_error':
+        result['cast_error'] = 'quest_cast_unacknowledged'
+    elif taint == 'other_error':
+        result['report']['error'] = '击杀结算未确认'
+    elif taint == 'cleanup':
+        result['cleanup_error'] = 'TimeoutError'
+    elif taint == 'shutdown':
+        result['browser_shutdown_error'] = 'TimeoutError'
+    elif taint == 'other_stop':
+        result['stop_reason']['reason'] = 'unknown'
+    elif taint == 'stale_observation':
+        observed['qx_q12']['status'] = 'active'
+    elif taint == 'flight_locked':
+        flight['mana']['flightLocked'] = True
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'observed': observed,
+              'browser': {'evidence_dir': str(tmp_path)}}
+    call, save = AsyncMock(return_value=flight), Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert save.call_count == int(not taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'verified_npc_delivery_handoff'
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+
+
+@pytest.mark.parametrize('failure', ['', 'unknown_defeat', 'flight_locked'])
+def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
+        monkeypatch, tmp_path, ready_npc_stop_result, failure):
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    from model.features import cave_treasure_miniapp, qingxi_trial_browser
+    for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    result = ready_npc_stop_result
+    if failure == 'unknown_defeat':
+        result.update(pending=1, pending_operations=[{'action': 'field-defeat'}])
+    process = SimpleNamespace(returncode=1, wait=AsyncMock(return_value=1))
+    async def launch(*command, **kwargs):
+        Path(command[command.index('--result') + 1]).write_text(json.dumps(result))
+        return process
+    monkeypatch.setattr(qingxi_trial_browser, 'TOOL_ROOT', tmp_path)
+    monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data',
+                        AsyncMock(return_value='offline-entry'))
+    monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr(quests, 'save', Mock())
+    flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': failure == 'flight_locked'}})
+    record = {}
+    operation = quests.run_gameplay(SimpleNamespace(identity_id=42), 'offline', 'offline', record,
+                                   lambda: True, verify_flight=flight)
+    if failure:
+        with pytest.raises(RuntimeError, match='qingxi_browser_requires_review' if failure == 'unknown_defeat'
+                           else 'qingxi_flight_requires_review'):
+            asyncio.run(operation)
+        assert record['gameplay_uncertain'] is True
+    else:
+        asyncio.run(operation)
+        assert record['gameplay_uncertain'] is False
+        assert record['browser']['flight_checked'] is True
+        assert record['browser']['phase'] == 'waiting'
+        assert record['browser']['report']['error'] == result['report']['error']
+        flight.assert_awaited_once()
+
+
 @pytest.mark.parametrize('taint', ['', 'new_transport', 'identity', 'running', 'shutdown', 'cast_count',
                                  'pending_count', 'stored_changed', 'request_gap', 'settlement', 'reward',
                                  'defeat', 'turn-in', 'cast_done', 'receipt_missing', 'receipt_success',
