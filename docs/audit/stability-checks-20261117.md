@@ -15,8 +15,10 @@ Validation used an isolated worktree with Python 3.13, `TZ=Asia/Shanghai`, and
 `XIUXIAN_ALLOW_LIVE_TEST_DB=0`. The first full run completed with 18,239 passed,
 1 failed, and 1,552 subtests passed in 485 seconds. After the fixture repair,
 the related integration, health, pacing, and hardening tests passed all 88
-cases; the repository-wide Ruff check and diff check also passed. A second
-full run was started to verify the final fixture against the whole suite.
+cases; the repository-wide Ruff check and diff check also passed. The second
+clean full run completed with 18,240 passed and 1,552 subtests passed in
+463.40 seconds, with zero failures or errors in its JUnit report. The tested
+fixture is byte-identical to the committed production-checkout fixture.
 
 The workflow retains push and pull-request checks. Its job timeout is now
 20 minutes because the measured full run alone used more than 8 minutes,

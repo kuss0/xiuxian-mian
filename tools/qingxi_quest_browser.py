@@ -56,6 +56,13 @@ QUEST_NAVIGATION_REVIEW = """if (!path && obstacles.length && !obstaclesReviewed
           }
           if (!path) {
             walkRecovery = true;"""
+QUEST_WALK_DEFENCE = """const defenceStartedAt = Date.now();
+        if (options.defend !== false && await defendNearby(owner)) {
+          // Confirmed defensive combat uses its own deadline. It is not walking
+          // time; storyCheck still enforces the unchanged whole-run deadline.
+          deadline += Date.now() - defenceStartedAt;
+          path = null; movedAt = Date.now(); continue;
+        }"""
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None):
@@ -81,6 +88,10 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         'async function fightEnemy(enemyId, owner) {': QUEST_COMBAT_LOOT,
         'let flightAttempt = null, walkRecovery = false;':
             'let flightAttempt = null, walkRecovery = false, obstaclesReviewed = false;',
+        'const obstacles = [], deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);':
+            'const obstacles = []; let deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);',
+        'if (options.defend !== false && await defendNearby(owner)) { path = null; movedAt = Date.now(); continue; }':
+            QUEST_WALK_DEFENCE,
         'if (!path) {\n            walkRecovery = true;': QUEST_NAVIGATION_REVIEW,
         "if (!path) throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' + recovery.reason);":
             "if (!path) {\n"
@@ -221,7 +232,7 @@ def main():
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
-    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 1}
+    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 2}
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)

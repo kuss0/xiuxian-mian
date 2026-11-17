@@ -367,6 +367,89 @@ def test_navigation_upgrade_recovers_only_once_after_verified_safe_return(monkey
         call.assert_not_awaited()
 
 
+@pytest.mark.parametrize('taint', ['', 'wrong_player', 'wrong_version', 'new_policy', 'wrong_phase', 'unknown_write',
+                                  'status_error', 'pending', 'disk_pending', 'active_combat', 'flight_locked',
+                                  'outside_town', 'other_region', 'bad_position', 'missing_position', 'other_error',
+                                  'no_settlements', 'failed_settlement', 'malformed_settlement', 'stale_observed',
+                                  'future_observed', 'before_finish', 'no_observed', 'no_final', 'no_status',
+                                  'failed_status', 'stale_status', 'future_status', 'unknown_receipt'])
+def test_combat_navigation_upgrade_requires_drained_run_and_fresh_owner_review(monkeypatch, tmp_path, taint):
+    import json
+    result = {'player': 42, 'upstream_version': '2.0.53', 'navigation_policy': 1, 'phase': 'held',
+              'server_checked': False, 'final_status': {'fresh': False, 'at': 100}, 'error': '',
+              'pending': 0, 'stored_pending': [], 'combat_active': False, 'position': [0, .076, 108],
+              'world': {'current': 'yue'}, 'report': {'error': '寻路超时：[-40.32,0,-348.76]',
+                                                   'fieldSettlements': [{'ok': True}]},
+              'receipts': [{'resource': 'quests', 'action': 'status', 'ok': True, 'at': 99.9}]}
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'observed_at': 110,
+              'browser': {'evidence_dir': str(tmp_path)}}
+    if taint == 'wrong_player':
+        result['player'] = 43
+    elif taint == 'wrong_version':
+        result['upstream_version'] = '2.0.54'
+    elif taint == 'new_policy':
+        result['navigation_policy'] = 2
+    elif taint == 'wrong_phase':
+        result['phase'] = 'running'
+    elif taint == 'unknown_write':
+        result['error'] = 'quest_transport_unconfirmed'
+    elif taint == 'status_error':
+        result['status_error'] = 'quest_status_unconfirmed'
+    elif taint == 'pending':
+        result['pending'] = 1
+    elif taint == 'disk_pending':
+        result['stored_pending'] = [{'operation_id': 'unknown'}]
+    elif taint == 'active_combat':
+        result['combat_active'] = True
+    elif taint == 'outside_town':
+        result['position'][2] = -379
+    elif taint == 'other_region':
+        result['world']['current'] = 'jiuguo'
+    elif taint == 'bad_position':
+        result['position'][0] = None
+    elif taint == 'missing_position':
+        result.pop('position')
+    elif taint == 'other_error':
+        result['report']['error'] = '击杀结算未确认'
+    elif taint == 'no_settlements':
+        result['report']['fieldSettlements'] = []
+    elif taint == 'failed_settlement':
+        result['report']['fieldSettlements'][0]['ok'] = False
+    elif taint == 'malformed_settlement':
+        result['report']['fieldSettlements'][0] = None
+    elif taint == 'stale_observed':
+        record['observed_at'] = 60
+    elif taint == 'future_observed':
+        record['observed_at'] = 121
+    elif taint == 'before_finish':
+        record['observed_at'] = 99
+    elif taint == 'no_observed':
+        record.pop('observed_at')
+    elif taint == 'no_final':
+        result.pop('final_status')
+    elif taint == 'no_status':
+        result['receipts'] = []
+    elif taint == 'failed_status':
+        result['receipts'][0]['ok'] = False
+    elif taint == 'stale_status':
+        result['receipts'][0]['at'] = 98
+    elif taint == 'future_status':
+        result['receipts'][0]['at'] = 101
+    elif taint == 'unknown_receipt':
+        result['receipts'].append({'resource': 'quests', 'action': 'turn-in', 'ok': False})
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    monkeypatch.setattr(quests.time, 'time', lambda: 120)
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'combat_interrupted_navigation_upgrade'
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    elif taint != 'flight_locked':
+        call.assert_not_awaited()
+
+
 @pytest.mark.parametrize('taint', ['', 'missing_cancel', 'failed_cancel', 'new_start', 'pending',
                                   'stale_status', 'active_combat', 'flight_locked'])
 def test_confirmed_movement_gather_cancel_recovers_without_replaying_it(monkeypatch, tmp_path, taint):

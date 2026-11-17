@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tools.qingxi_quest_browser import (GUARD, QUEST_COMBAT_ENTRY, QUEST_COMBAT_LOOT,
-                                      QUEST_NAVIGATION_REVIEW, VENDOR, finished_phase)
+                                      QUEST_NAVIGATION_REVIEW, VENDOR, browser_script, finished_phase)
 
 
 HARNESS = r"""
@@ -360,5 +360,36 @@ if(SCENARIO==='inferred_blocker'){
 """.replace('FIXTURE', fixture.read_text()).replace('SCENARIO', json.dumps(scenario))
     script = script.replace('PLANNER', planner).replace('SURFACES', surfaces).replace('REVIEW', QUEST_NAVIGATION_REVIEW)
     path = tmp_path / 'navigation.cjs'
+    path.write_text(script)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['confirmed_defence', 'story_limit', 'walk_timeout', 'unconfirmed_defence'])
+def test_walking_budget_excludes_confirmed_combat_but_preserves_other_deadlines(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to exercise the actual walking loop')
+    source = browser_script(42)
+    walk = source[source.index('  async function walkTo('):source.index('  // 地点来自任务目录')]
+    script = """const assert=require('node:assert/strict');
+let now=0,position=[0,0,0],defended=false;const goal=[1,0,0],state={generation:1,story:{}};
+const Date={now:()=>now},dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]),readWorld=()=>({actorPosition:position});
+const position3=p=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite);
+async function storyReady(){if(SCENARIO==='story_limit'&&now>80000)throw Error('story limit')}
+const walkGoalReached=(p,g,r)=>dist(p,g)<=r,travelFlightDecision=()=>({allowed:false}),
+ fieldEnvironment={},findPath=()=>[goal],walkSegment=()=>true,releaseKeys=()=>{},setKeys=()=>{},
+ chooseWalkInput=()=>({keys:['w']}),CFG={tickMs:10},log=()=>{};
+async function defendNearby(){
+ if(SCENARIO==='walk_timeout'||defended)return false;
+ defended=true;now+=100000;if(SCENARIO==='unconfirmed_defence')throw Error('battle unconfirmed');return true;
+}
+async function storyWait(){now+=10;if(SCENARIO==='walk_timeout')now+=100000;else position=goal.slice()}
+WALK
+(async()=>{
+ if(SCENARIO==='confirmed_defence'){await walkTo(goal,0,1);assert.deepEqual(position,goal)}
+ else await assert.rejects(walkTo(goal,0,1),SCENARIO==='story_limit'?/story limit/:
+   SCENARIO==='walk_timeout'?/寻路超时/:/battle unconfirmed/);
+})().catch(error=>{console.error(error);process.exitCode=1});
+""".replace('SCENARIO', json.dumps(scenario)).replace('WALK', walk)
+    path = tmp_path / 'walking-budget.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)

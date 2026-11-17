@@ -284,6 +284,41 @@ def confirmed_cast_receipts(record, identity_id):
     return receipts
 
 
+def combat_interrupted_navigation_stop(record, identity_id):
+    """Upgrade only the old walking timer, after fresh review of a drained run."""
+    result = _browser_evidence(record)
+    report = result.get('report') or {}
+    final = result.get('final_status') or {}
+    world = result.get('world') or {}
+    receipts = result.get('receipts')
+    if (not all(isinstance(value, dict) for value in (report, final, world))
+            or not isinstance(receipts, list)
+            or not all(isinstance(row, dict) and row.get('ok') is True for row in receipts)):
+        return False
+    ended = final.get('at')
+    observed = record.get('observed_at')
+    position = result.get('position')
+    settlements = report.get('fieldSettlements')
+    return (result.get('player') == identity_id and result.get('upstream_version') == '2.0.53'
+            and result.get('navigation_policy') == 1 and result.get('phase') == 'held'
+            and not result.get('error') and not result.get('status_error')
+            and result.get('pending') == 0 and result.get('stored_pending') == []
+            and result.get('combat_active') is False and world.get('current') == 'yue'
+            and re.fullmatch(r'寻路超时：\[[^\]\n]+\]', report.get('error', '')) is not None
+            and isinstance(position, list) and len(position) == 3
+            and all(type(v) in (int, float) and math.isfinite(v) for v in position)
+            and math.hypot(position[0], position[2]) < 300
+            and isinstance(settlements, list) and bool(settlements)
+            and all(isinstance(row, dict) and row.get('ok') is True for row in settlements)
+            and type(ended) in (int, float) and math.isfinite(ended)
+            and type(observed) in (int, float) and math.isfinite(observed)
+            and ended <= observed and 0 <= time.time() - observed < 60
+            and any(isinstance(row, dict) and row.get('resource') == 'quests'
+                    and row.get('action') == 'status' and row.get('ok') is True
+                    and type(row.get('at')) in (int, float) and 0 <= ended - row['at'] < 2
+                    for row in receipts))
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
@@ -312,10 +347,14 @@ async def review_browser_hold(call, record, identity_id):
           and all(type(v) in (int, float) and math.isfinite(v) for v in result['position'])
           and math.hypot(result['position'][0], result['position'][2]) < 300):
         # A single upgrade retry of the old navigator, after a proven safe return.
-        # A failure under navigation_policy=1 stays held for a new investigation.
+        # Policy 1 failures need the separate combat-time review below.
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'legacy_navigation_safe_return'
+    elif combat_interrupted_navigation_stop(record, identity_id):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'combat_interrupted_navigation_upgrade'
     elif (result.get('player') == identity_id and result.get('phase') in {'done', 'bounded_stop'}
           and result.get('server_checked') is False and not result.get('error')
           and (result.get('final_status') or {}).get('fresh') is False
