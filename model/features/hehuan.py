@@ -15,6 +15,7 @@ from ..state import (
     get_current_identity_id,
     get_game_group_id,
     get_game_group_ids,
+    get_game_group_reply_route,
     get_game_group_topic_id,
     get_game_topic_id,
     get_identity_enabled,
@@ -543,9 +544,9 @@ def _is_baiji_log_entry(payload):
 
 def _is_game_topic_entry(payload):
     chat_id = int((payload or {}).get("chat_id") or 0)
-    topic_id = int(get_game_group_topic_id(chat_id) or get_game_topic_id() or GAME_TOPIC_ID or 0)
+    topic_id = int(get_game_group_topic_id(chat_id, default=get_game_topic_id() or GAME_TOPIC_ID or 0))
     if topic_id <= 0:
-        return False
+        return True
     try:
         payload_topic_id = int(payload.get("topic_id", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -596,6 +597,7 @@ def find_recent_hehuan_partner_anchor_msg_id(
     max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC,
     target_id=0,
     require_game_topic=True,
+    chat_id=0,
 ):
     partner = _normalize_at_name(partner)
     if not partner:
@@ -622,6 +624,8 @@ def find_recent_hehuan_partner_anchor_msg_id(
                 continue
             if game_group_ids and int(payload.get("chat_id", 0) or 0) not in game_group_ids:
                 continue
+            if chat_id and int(payload.get("chat_id", 0) or 0) != chat_id:
+                continue
             if require_game_topic and not _is_game_topic_entry(payload):
                 continue
             if not _is_named_log_entry(payload, partner, partner_id):
@@ -640,46 +644,14 @@ def find_recent_hehuan_partner_anchor_msg_id(
     return 0
 
 
-def _find_hehuan_anchor_chat_id(anchor_msg_id, now=None):
-    """Resolve the chat containing an anchor, including partner messages.
-
-    The two configured game groups can route the same identity differently.
-    A reply-to message from the other group is not a valid warm-up anchor, so
-    the subsequent command must be sent to the anchor's actual chat.
-    """
-    try:
-        anchor_msg_id = int(anchor_msg_id or 0)
-    except (TypeError, ValueError, OverflowError):
-        anchor_msg_id = 0
-    if anchor_msg_id <= 0:
-        return 0
-    for path in _recent_message_log_paths(float(now if now is not None else time.time())):
-        if not os.path.exists(path):
-            continue
-        for line in reversed(_read_message_log_tail(path)):
-            try:
-                payload = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            try:
-                message_id = int(payload.get("message_id", 0) or 0)
-                chat_id = int(payload.get("chat_id", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if message_id == anchor_msg_id and chat_id:
-                return chat_id
-    return 0
-
-
-def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
+def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC, chat_id=0):
     return find_recent_hehuan_partner_anchor_msg_id(
         HEHUAN_BAIJI_USERNAME,
         now=now,
         max_age_sec=max_age_sec,
         target_id=HEHUAN_BAIJI_SEND_AS_ID,
         require_game_topic=True,
+        chat_id=chat_id,
     )
 
 
@@ -1182,7 +1154,7 @@ def _hehuan_block_label(code, reason):
     return f"{code}: {reason}" if reason else code
 
 
-async def _ensure_hehuan_reply_anchor(observed, now):
+async def _ensure_hehuan_reply_anchor(observed, now, *, target_chat_id=0):
     partner = str((observed or {}).get("last_partner") or "").strip()
     if partner:
         partner_id = int((observed or {}).get("last_partner_identity_id", 0) or 0)
@@ -1192,6 +1164,7 @@ async def _ensure_hehuan_reply_anchor(observed, now):
             partner,
             now=now,
             target_id=partner_id,
+            chat_id=target_chat_id,
         )
         if anchor_msg_id > 0:
             observed["last_partner_identity_id"] = partner_id
@@ -1211,6 +1184,7 @@ async def _ensure_hehuan_reply_anchor(observed, now):
             source_module="合欢宗",
             op_id=f"hehuan-anchor-{int(now)}",
             delete_policy="manual_keep",
+            **({"target_chat_id": target_chat_id} if target_chat_id else {}),
         )
         # 锚点发送期间让出了事件循环；把本次改动并回最新快照，而不是用 await 之前
         # 的副本整块覆盖（observed 是调用方持有的入参，需同步保持一致）。
@@ -1226,7 +1200,7 @@ async def _ensure_hehuan_reply_anchor(observed, now):
             return anchor_msg_id, ""
         return 0, f"同参对象 {partner} 发言锚点发送失败，暂不裸发温养双修。"
 
-    anchor_msg_id = find_recent_baiji_anchor_msg_id(now)
+    anchor_msg_id = find_recent_baiji_anchor_msg_id(now, chat_id=target_chat_id)
     if anchor_msg_id > 0:
         return anchor_msg_id, ""
 
@@ -1504,18 +1478,18 @@ async def run_hehuan_scheduler(now):
         _set_hehuan_auto_block(observed, now, plan.get("reason") or "合欢宗自动温养未满足条件", next_time)
         return
 
-    anchor_msg_id, anchor_error = await _ensure_hehuan_reply_anchor(observed, now)
+    # Partner and caller may have different cached game-group routes. Keep
+    # both the anchor and the warm command in the caller's proven group.
+    warm_chat_id = int(get_game_group_reply_route(get_current_identity_id()) or get_game_group_id() or 0)
+    anchor_msg_id, anchor_error = await _ensure_hehuan_reply_anchor(observed, now, target_chat_id=warm_chat_id)
     if anchor_msg_id <= 0 and anchor_error:
         _set_hehuan_auto_block(observed, now, anchor_error or "缺少吧唧回复锚点", now + 5 * 60)
         return
 
     retry_delay_sec = max(1.0, float(_hehuan_retry_delay_sec(observed)))
-    send_kwargs = {}
+    send_kwargs = {"target_chat_id": warm_chat_id} if warm_chat_id else {}
     if anchor_msg_id > 0:
         send_kwargs["reply_to"] = anchor_msg_id
-        anchor_chat_id = _find_hehuan_anchor_chat_id(anchor_msg_id, now=now)
-        if anchor_chat_id:
-            send_kwargs["target_chat_id"] = anchor_chat_id
     op_id = f"hehuan-auto-warm-{int(now)}"
     msg = await send_game_command(
         plan["command"],

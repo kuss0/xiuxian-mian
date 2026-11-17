@@ -877,6 +877,52 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(-1001680975844, send_mock.await_args.kwargs["target_chat_id"])
             self.assertEqual(8899, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
 
+    async def test_partner_anchor_and_warm_stay_in_callers_private_route(self):
+        now = datetime(2026, 7, 4, 13, 10, tzinfo=hehuan.TZ_LOCAL).timestamp()
+        partner_id = 8659059191
+        public, private = -1001680975844, -1002083016447
+        state_module.ensure_identity_registered(partner_id)
+        state_module.update_send_as_profile(partner_id, username="WalterWA2000", sect_name="天星宗")
+        state_module._meta_state["game_topic_id"] = 7310786
+        state_module.set_game_group_route_config({
+            "enabled": True, "primary_group_id": public, "backup_group_ids": [private],
+            "topic_id_by_group": {str(public): 7310786, str(private): 0},
+            "bot_reply_group_by_identity": {str(self.identity_id): private, str(partner_id): public},
+        })
+        for has_private_anchor in (True, False):
+            with self.subTest(has_private_anchor=has_private_anchor), tempfile.TemporaryDirectory() as tmpdir:
+                # The groups may reuse a message ID. A newer public anchor
+                # must not move the caller out of its working private group.
+                entries = [{"ts": "2026-07-04 13:09:59 UTC+8", "event_type": "sent",
+                            "message_id": 8899, "chat_id": public, "sender_id": partner_id,
+                            "topic_id": 7310786, "text": hehuan.HEHUAN_ANCHOR_TEXT}]
+                if has_private_anchor:
+                    entries.insert(0, {**entries[0], "ts": "2026-07-04 13:09:53 UTC+8",
+                                       "chat_id": private, "topic_id": 0})
+                (Path(tmpdir) / "2026-07-04.log").write_text(
+                    "\n".join(json.dumps(row) for row in entries), encoding="utf-8")
+                anchor_id = 8899 if has_private_anchor else 8901
+                replies = ([SimpleNamespace(id=8901)] if not has_private_anchor else [])
+                replies.append(SimpleNamespace(id=9003, sent_at=now))
+                with state_module.use_identity(self.identity_id):
+                    state_module.state["hehuan_enabled"] = True
+                    state_module.state["hehuan_observation"] = {
+                        "last_observed_at": now - 60, "contract_until": now + 3600,
+                        "last_partner": "@WalterWA2000", "auto_next_time": now - 1,
+                    }
+                    with (patch.object(hehuan, "MESSAGES_DIR", tmpdir), patch.object(hehuan, "save_state"),
+                          patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=replies)) as send_mock):
+                        await hehuan.run_hehuan_scheduler(now)
+                    self.assertEqual(1 if has_private_anchor else 2, send_mock.await_count)
+                    self.assertTrue(all(call.kwargs["target_chat_id"] == private
+                                        for call in send_mock.await_args_list))
+                    if not has_private_anchor:
+                        self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, send_mock.await_args_list[0].args[0])
+                        self.assertEqual(partner_id, send_mock.await_args_list[0].kwargs["send_as_id"])
+                    self.assertEqual(".双修 温养", send_mock.await_args.args[0])
+                    self.assertEqual(anchor_id, send_mock.await_args.kwargs["reply_to"])
+                    self.assertEqual(9003, state_module.state["hehuan_observation"]["auto_pending_msg_id"])
+
     async def test_scheduler_resolves_renamed_partner_from_username_alias(self):
         now = 1_780_000_000.0
         partner_id = 8659059191
