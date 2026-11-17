@@ -319,6 +319,39 @@ def combat_interrupted_navigation_stop(record, identity_id):
                     for row in receipts))
 
 
+def rejected_field_release_only(record, identity_id):
+    """Resolve only exact native release rejections, never replay the release."""
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    position, observed = result.get('position'), record.get('observed_at')
+    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+            or result.get('navigation_policy') != 2 or result.get('phase') != 'held'
+            or result.get('error') != 'quest_http_409_quest_too_far' or result.get('status_error')
+            or result.get('combat_active') is not False or (result.get('world') or {}).get('current') != 'yue'
+            or not isinstance(position, list) or len(position) != 3
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in position)
+            or math.hypot(position[0], position[2]) >= 300
+            or type(observed) not in (int, float) or not math.isfinite(observed)
+            or not 0 <= time.time() - observed < 60
+            or not isinstance(pending, list) or not pending or result.get('pending') != len(pending)
+            or result.get('stored_pending') != pending or not isinstance(receipts, list)
+            or not all(isinstance(row, dict) for row in pending + receipts)):
+        return False
+    def rejected(row):
+        return (row.get('resource') == 'quests' and row.get('action') == 'field-release'
+                and row.get('ok') is False and row.get('http_status') == 409
+                and row.get('error') == 'quest_too_far')
+    return (all(row.get('ok') is True or rejected(row) for row in receipts)
+            and all(row.get('resource') == 'quests' and row.get('action') == 'field-release'
+                    and isinstance(row.get('operation_id'), str) and bool(row['operation_id'])
+                    and type(row.get('at')) in (int, float) and math.isfinite(row['at'])
+                    and any(rejected(ack) and ack.get('operation_id') == row['operation_id']
+                            and ack.get('enemy_id') == row.get('enemy_id') and bool(row.get('enemy_id'))
+                            and type(ack.get('at')) in (int, float) and math.isfinite(ack['at'])
+                            and ack['at'] >= row['at'] for ack in receipts)
+                    for row in pending))
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
     if not record.get('gameplay_uncertain'):
@@ -375,6 +408,10 @@ async def review_browser_hold(call, record, identity_id):
             flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
             if server_flight_closed(flight):
                 reason = 'confirmed_gather_cancel_after_movement'
+    elif rejected_field_release_only(record, identity_id):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'confirmed_field_release_rejection'
     elif legacy_cast_only(record, identity_id):
         reason = 'legacy_cast_only_no_quest_mutations'
     elif read_only_browser_failure(record, identity_id):
@@ -404,6 +441,8 @@ async def review_browser_hold(call, record, identity_id):
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
         if reason == 'orphan_cast_no_engagement':
             record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
+        if reason == 'confirmed_field_release_rejection':
+            record['browser_review']['rejected_release_pending'] = result['pending_operations']
         save()
 
 
@@ -642,6 +681,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
             review = record.get('browser_review') or {}
             json.dump({'choices': choices or {}, 'reviewed_cast_pending':
                        review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else [],
+                       'reviewed_release_pending': review.get('rejected_release_pending', [])
+                       if review.get('reason') == 'confirmed_field_release_rejection' else [],
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])

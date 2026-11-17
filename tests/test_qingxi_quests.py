@@ -450,6 +450,68 @@ def test_combat_navigation_upgrade_requires_drained_run_and_fresh_owner_review(m
         call.assert_not_awaited()
 
 
+@pytest.mark.parametrize('taint', ['', 'wrong_player', 'wrong_version', 'new_policy', 'running', 'other_error',
+                                  'status_error', 'active_combat', 'outside_town', 'stale_status', 'flight_locked',
+                                  'unmatched_id', 'other_enemy', 'old_ack', 'unknown_status', 'other_action',
+                                  'extra_write', 'disk_mismatch', 'unknown_cast'])
+def test_rejected_release_requires_exact_negative_receipt_and_new_status(monkeypatch, tmp_path, taint):
+    import json
+    pending = {'resource': 'quests', 'action': 'field-release', 'operation_id': 'release-one',
+               'enemy_id': 'lantern:084', 'at': 100}
+    ack = {**pending, 'at': 105, 'ok': False, 'http_status': 409, 'error': 'quest_too_far'}
+    result = {'player': 42, 'upstream_version': '2.0.53', 'navigation_policy': 2, 'phase': 'held',
+              'error': 'quest_http_409_quest_too_far', 'pending': 1, 'pending_operations': [pending],
+              'stored_pending': [pending.copy()], 'combat_active': False, 'world': {'current': 'yue'},
+              'position': [-1.05, .8375, -.8], 'receipts': [ack]}
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'observed_at': 110,
+              'browser': {'evidence_dir': str(tmp_path)}}
+    if taint == 'wrong_player':
+        result['player'] = 43
+    elif taint == 'wrong_version':
+        result['upstream_version'] = '2.0.54'
+    elif taint == 'new_policy':
+        result['navigation_policy'] = 3
+    elif taint == 'running':
+        result['phase'] = 'running'
+    elif taint == 'other_error':
+        result['error'] = 'quest_transport_unconfirmed'
+    elif taint == 'status_error':
+        result['status_error'] = 'quest_status_unavailable'
+    elif taint == 'active_combat':
+        result['combat_active'] = True
+    elif taint == 'outside_town':
+        result['position'][2] = -374
+    elif taint == 'stale_status':
+        record['observed_at'] = 60
+    elif taint == 'unmatched_id':
+        ack['operation_id'] = 'other'
+    elif taint == 'other_enemy':
+        ack['enemy_id'] = 'lantern:085'
+    elif taint == 'old_ack':
+        ack['at'] = 99
+    elif taint == 'unknown_status':
+        ack['http_status'] = 503
+    elif taint == 'other_action':
+        pending['action'] = ack['action'] = result['stored_pending'][0]['action'] = 'turn-in'
+    elif taint == 'extra_write':
+        result['pending'] = 2
+    elif taint == 'disk_mismatch':
+        result['stored_pending'] = []
+    elif taint == 'unknown_cast':
+        result['receipts'].append({'resource': 'field-cast', 'ok': False})
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    monkeypatch.setattr(quests.time, 'time', lambda: 120)
+    monkeypatch.setattr(quests, 'save', Mock())
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    if not taint:
+        assert record['browser_review']['reason'] == 'confirmed_field_release_rejection'
+        assert record['browser_review']['rejected_release_pending'] == [pending]
+    elif taint != 'flight_locked':
+        call.assert_not_awaited()
+
+
 @pytest.mark.parametrize('taint', ['', 'missing_cancel', 'failed_cancel', 'new_start', 'pending',
                                   'stale_status', 'active_combat', 'flight_locked'])
 def test_confirmed_movement_gather_cancel_recovers_without_replaying_it(monkeypatch, tmp_path, taint):

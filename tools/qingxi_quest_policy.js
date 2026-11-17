@@ -33,8 +33,11 @@
     typeof row.operation_id === 'string' && Number.isFinite(row.at) &&
     (config.confirmedCastReceipts || []).some(receipt =>
       receipt.operation_id === row.operation_id && Number.isFinite(receipt.at) && receipt.at >= row.at);
+  const reviewedRelease = row => row?.resource === 'quests' && row.action === 'field-release' &&
+    typeof row.operation_id === 'string' && Number.isFinite(row.at) &&
+    (config.reviewedReleasePending || []).some(old => canonical(old) === canonical(row));
   const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row) &&
-    !confirmedCast(row) &&
+    !confirmedCast(row) && !reviewedRelease(row) &&
     !(row?.resource === 'field-cast' && row.action === 'events' &&
       reviewed.some(old => canonical(old) === canonical(row)))) : null;
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
@@ -88,6 +91,11 @@
       shape: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [],
       at: Date.now() / 1000};
     q.receipts.push(row);
+    // The native client releases leashed enemies while leaving the field. A
+    // distance rejection is a confirmed no-op, not an unknown reward/write.
+    const rejectedRelease = resource === 'quests' && body.action === 'field-release' &&
+      response.status === 409 && data?.ok === false && code === 'quest_too_far';
+    if (rejectedRelease) row.rejected_noop = true;
     if (row.ok && resource === 'quests' && body.action === 'status') q.questStatusRevision++;
     if (row.ok && (row.grants.length || row.cultivation) && key) {
       const runId = payload?.run?.id || body.runId || payload?.runId;
@@ -96,13 +104,13 @@
       q.rewards.set(row.reward_id, row);
     }
     if (q.receipts.length > 180) q.receipts.splice(0, 60);
-    if (!row.ok) {
+    if (!row.ok && !rejectedRelease) {
       if (resource === 'field-cast') return false;
       const error = 'quest_http_' + response.status + '_' + (code || (data ? 'unconfirmed' : 'non_json'));
       if (key) q.error = error;
       else q.statusError = error;
     }
-    return row.ok;
+    return row.ok || rejectedRelease;
   }
   async function castRequest(input, options, body) {
     // The native ordered transport retries up to three times. It may append

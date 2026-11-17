@@ -40,6 +40,27 @@ async function check(scenario){
    assert.equal(e.c.__qx.error==='',confirmed);
    assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),confirmed?[]:[row]);
   }
+ } else if(scenario==='release_rejection'){
+  for(const [action,status,error,ok=false] of [['field-release',409,'quest_too_far'],['turn-in',409,'quest_too_far'],
+      ['field-release',503,'quest_too_far'],['field-release',409,'quest_operation_conflict'],
+      ['field-release',409,'quest_too_far',true]]){
+   const e=await ready({},(r,b)=>b.action?new Response(JSON.stringify({ok,error}),{status}):{ok:true,account:{playerId:42}});
+   e.c.__autobot={quests:()=>[{id:'fixture',choices:[]}]};
+   const body={action,operationId:'release-one',enemyId:'lantern:084',questId:'fixture'},response=await e.send('quests',body);
+   const known=action==='field-release'&&status===409&&error==='quest_too_far'&&ok===false;
+   assert.equal(response.status,status);assert.equal((await response.json()).ok,ok);
+   assert.equal(e.c.__qx.receipts.at(-1).ok,false);
+   assert.equal(e.c.__qx.pending.size,known?0:1);assert.equal(e.c.__qx.error==='',known);
+   if(known){assert.equal(e.storage.get('qingxi-local-pending:42'),'[]');
+    await e.send('quests',body);assert.equal(e.calls.length,2)}
+  }
+ } else if(scenario==='release_journal'){
+  const row={resource:'quests',action:'field-release',operation_id:'one',enemy_id:'lantern:084',at:10};
+  for(const old of [null,{...row,operation_id:'other'},{...row,at:11},{...row,action:'turn-in'},row]){
+   const e=environment({reviewedReleasePending:old?[old]:[]},null,[row]);
+   const same=old===row;assert.equal(e.c.__qx.error==='',same);
+   assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),same?[]:[row]);
+  }
  } else if(scenario==='choices'){
   const e=await ready();e.c.__autobot={quests:()=>[{id:'q1',choices:[{id:'release'}]}]};
   await assert.rejects(e.send('quests',{action:'turn-in',questId:'q1',choice:'release',operationId:'one'}),/reward_choice_required/);
@@ -261,6 +282,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
+    'release_rejection', 'release_journal',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:
@@ -391,5 +413,33 @@ WALK
 })().catch(error=>{console.error(error);process.exitCode=1});
 """.replace('SCENARIO', json.dumps(scenario)).replace('WALK', walk)
     path = tmp_path / 'walking-budget.cjs'
+    path.write_text(script)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', ['live_stall', 'requested_engaged', 'no_threat', 'requested_dead',
+                                     'requested_returning', 'all_dead'])
+def test_field_combat_targets_live_threat_before_disengaged_original(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to replay the real field target selection')
+    source = browser_script(42)
+    helpers = source[source.index('  function livingEnemies('):source.index('  function protectFieldHealth(')]
+    selection = source[source.index('        const requested ='):source.index('        if (!target) {')]
+    fixture = (Path(__file__).parent / 'fixtures/qingxi-disengaged-target.json').read_text()
+    script = """const assert=require('node:assert/strict'),f=FIXTURE;
+const myPos=()=>f.actor,dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+HELPERS
+function choose(s,enemyId){SELECT;return target?.id||null}
+const s={overworld:true,enemies:f.enemies},original=s.enemies.find(e=>e.id===f.requested);
+if(SCENARIO==='requested_engaged')original.engaged=true;
+if(SCENARIO==='no_threat')s.enemies.forEach(e=>e.engaged=false);
+if(SCENARIO==='requested_dead')original.hp=0;
+if(SCENARIO==='requested_returning')original.returning=true;
+if(SCENARIO==='all_dead')s.enemies.forEach(e=>e.hp=0);
+const expected=SCENARIO==='all_dead'?null:['requested_engaged','no_threat'].includes(SCENARIO)?f.requested:'field-enemy-3';
+assert.equal(choose(s,f.requested),expected);
+""".replace('FIXTURE', fixture).replace('HELPERS', helpers).replace('SELECT', selection)
+    script = script.replace('SCENARIO', json.dumps(scenario))
+    path = tmp_path / 'field-target.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)

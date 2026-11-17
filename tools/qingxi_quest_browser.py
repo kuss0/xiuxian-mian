@@ -65,13 +65,15 @@ QUEST_WALK_DEFENCE = """const defenceStartedAt = Date.now();
         }"""
 
 
-def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None):
+def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None,
+                   reviewed_release_pending=None):
     source = (VENDOR / 'trial-bot.user.js').read_bytes()
     provenance = json.loads((VENDOR / 'source.json').read_text())
     if hashlib.sha256(source).hexdigest() != provenance['sha256']:
         raise RuntimeError('qingxi_upstream_source_changed')
     config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
               'reviewedCastPending': reviewed_cast_pending or [],
+              'reviewedReleasePending': reviewed_release_pending or [],
               'confirmedCastReceipts': confirmed_cast_receipts or []}
     script = source.decode()
     # Use upstream's own deferred-task path, while the fetch policy remains the
@@ -86,6 +88,9 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         "if (!window.__rt.startQuestCombat?.(objective.arena)) throw new Error('游戏未接受郊外战斗入口，请确认人物已进入区域');":
             QUEST_COMBAT_ENTRY,
         'async function fightEnemy(enemyId, owner) {': QUEST_COMBAT_LOOT,
+        'const target = livingEnemies(s).find(e => e.id === enemyId) || fieldThreat(s);':
+            'const requested = livingEnemies(s).find(e => e.id === enemyId);\n'
+            '        const target = (requested?.engaged ? requested : null) || fieldThreat(s) || requested;',
         'let flightAttempt = null, walkRecovery = false;':
             'let flightAttempt = null, walkRecovery = false, obstaclesReviewed = false;',
         'const obstacles = [], deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);':
@@ -144,14 +149,16 @@ def finished_phase(snapshot):
     return 'held'
 
 
-def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None):
+def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None,
+                reviewed_release_pending=None):
     target = cdp.call('Target.createTarget', {'url': 'about:blank', 'newWindow': True})['targetId']
     session = cdp.attach(target)
     for method in ('Page.enable', 'Runtime.enable', 'Network.enable', 'Page.bringToFront'):
         cdp.call(method, session=session)
     cdp.call('Page.addScriptToEvaluateOnNewDocument',
              {'source': browser_script(player, choices, read_only=read_only, reviewed_cast_pending=reviewed_cast_pending,
-                                       confirmed_cast_receipts=confirmed_cast_receipts)}, session)
+                                       confirmed_cast_receipts=confirmed_cast_receipts,
+                                       reviewed_release_pending=reviewed_release_pending)}, session)
     return browser.Page(cdp, session, target)
 
 
@@ -232,7 +239,7 @@ def main():
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
-    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 2}
+    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 3}
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)
@@ -243,7 +250,8 @@ def main():
                 port = next(int(arg.split('=')[1]) for arg in process.args if arg.startswith('--remote-debugging-port='))
                 cdp = browser.CDP(browser.cdp_version(port)['webSocketDebuggerUrl'])
                 page = create_page(browser, cdp, args.expected_player_id, options.get('choices', {}),
-                                   args.read_only, options.get('reviewed_cast_pending'), options.get('confirmed_cast_receipts'))
+                                   args.read_only, options.get('reviewed_cast_pending'), options.get('confirmed_cast_receipts'),
+                                   options.get('reviewed_release_pending'))
                 result['entry_started_at'] = time.time()
                 write_result(args.result, result)
                 try:

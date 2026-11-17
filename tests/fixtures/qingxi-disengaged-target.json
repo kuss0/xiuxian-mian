@@ -1,0 +1,14 @@
+{
+  "source": "read-only live CDP combat snapshot live-combat-1794890280073286801.json",
+  "module": "qingxi_quests",
+  "family": "field_combat",
+  "event_type": "combat_snapshot",
+  "text": "Requested spear mob has disengaged 37 meters away while an engaged blade mob remains nearby; no output for several minutes.",
+  "observed_at": 1794890280.048,
+  "actor": [-29.07369690258259, 0.035, -374.1157337027763],
+  "requested": "field-enemy-12",
+  "enemies": [
+    {"id": "field-enemy-3", "hp": 8054.685600911998, "position": [-33.53963298570513, 0.035, -369.4271371593335], "engaged": true, "returning": false, "hidden": false},
+    {"id": "field-enemy-12", "hp": 15850, "position": [-36.70210187025829, 0.035, -409.68769137835756], "engaged": false, "returning": false, "hidden": false}
+  ]
+}
