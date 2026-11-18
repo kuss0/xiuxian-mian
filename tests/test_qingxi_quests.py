@@ -1033,7 +1033,7 @@ def test_old_unconfirmed_preparation_upgrade_excludes_kills_and_rewards(monkeypa
         'enemies': [{'id': 'lantern:083', 'generation': 5, 'hp': 13869}]}}}
     flight = {'ok': True, 'mana': {'flightLocked': False}}
     if taint == 'new_transport':
-        result['transport_policy'] = 1
+        result['transport_policy'] = 1  # without a verified previous run
     elif taint == 'identity':
         result['player'] = 43
     elif taint == 'running':
@@ -1146,3 +1146,116 @@ def test_orphan_proof_abandonment_retains_exact_journal_and_requires_flight_clos
     if locked is False:
         assert record['browser_review']['abandoned_cast_pending'] == result['pending_operations']
         assert record['browser_review']['reason'] == 'orphan_cast_no_engagement'
+
+
+def _held_record(tmp_path, result, **previous):
+    import json
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    base = {'server_checked': True, 'error': '', 'pending': 0, 'flight_checked': True}
+    return {'phase': 'held', 'gameplay_uncertain': True, 'observed_at': __import__('time').time(),
+            'browser': {'evidence_dir': str(tmp_path)}, 'previous_browser': {**base, **previous}}
+
+
+@pytest.mark.parametrize('previous', [{}, {'server_checked': False}, {'error': 'quest_http_200_non_json'},
+                                      {'pending': 1}, {'flight_checked': False}])
+def test_new_transport_preparation_needs_a_verified_previous_run(monkeypatch, tmp_path, previous):
+    """Real 2026-11-17 16:22 case: engage and one 'use' upload both ended in AbortError."""
+    pending = [dict(resource='quests', action='field-engage', operation_id='engage', enemy_id='lantern:083', at=10),
+               dict(resource='field-cast', action='events', operation_id='cast', at=10, attempts=1,
+                    events=[dict(k='use', s=100, key='pierce', pos=[0, 0])])]
+    receipts = [dict(resource='quests', action='status', ok=True),
+                dict(resource='flight', action='start', ok=True)] + [
+        {k: v for k, v in row.items() if k not in {'events', 'attempts'}} | dict(
+            ok=False, http_status=200, error='non_json', parse_error='AbortError', content_type='application/json', at=11)
+        for row in pending]
+    result = dict(player=42, upstream_version='2.0.53', navigation_policy=4, transport_policy=1, phase='held',
+                  error='quest_http_200_non_json', casts=1, requests=2, pending=4,
+                  pending_operations=pending, stored_pending=pending, receipts=receipts,
+                  report={'fieldSettlements': []}, reward_receipts=[])
+    record = _held_record(tmp_path, result, **previous)
+    fresh = {'ok': True, 'quests': {'states': {}, 'corpses': [], 'field': {
+        'enemies': [{'id': 'lantern:083', 'generation': 5, 'hp': 13869}]}}}
+    call = AsyncMock(side_effect=[fresh, {'ok': True, 'mana': {'flightLocked': False}}])
+    monkeypatch.setattr(quests, 'save', Mock())
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(previous)
+    if not previous:
+        assert record['browser_review']['reason'] == 'unconfirmed_field_preparation_upgrade'
+        assert record['browser_review']['abandoned_preparation_pending'] == pending
+
+
+@pytest.mark.parametrize('taint', [
+    '', 'identity', 'old_transport', 'previous_unverified', 'http_500', 'json_body', 'use_event', 'two_pending',
+    'stored_changed', 'begin_missing', 'begin_failed', 'later_success', 'other_failed_write', 'reward',
+    'failed_settlement', 'shutdown', 'stale_status', 'flight_locked'])
+def test_gateway_refused_cast_completion_is_abandoned_after_fresh_checks(monkeypatch, tmp_path, taint):
+    """Real 2026-11-17 22:41 case: three kills acknowledged, then Cloudflare 521 on the last 'done'."""
+    import copy
+    import time
+    done = dict(resource='field-cast', action='events', operation_id='field-cast:done:500', attempts=3, at=20,
+                events=[dict(k='done', s=500, track=[[0, 0]], pos=[0, 0])])
+    refused = dict(ok=False, http_status=521, error='non_json', parse_error='SyntaxError',
+                   content_type='text/html; charset=UTF-8', grants=[], cultivation=0, pickedItems=[])
+    receipts = [
+        dict(resource='quests', action='status', ok=True, at=1),
+        dict(resource='quests', action='field-engage', ok=True, operation_id='engage', enemy_id='bamboo:050', at=10),
+        dict(resource='field-cast', action='events', ok=True, operation_id='field-cast:begin:500', at=18),
+        dict(resource='quests', action='field-defeat', ok=True, operation_id='defeat', enemy_id='bamboo:050', at=19),
+        dict(resource='field-cast', action='events', operation_id='field-cast:done:500', at=21, attempt=1, **refused),
+        dict(resource='quests', action='status', operation_id=False, at=22, **refused),
+        dict(resource='battle/doufa-profile', action='events', ok=False, http_status=None, error='request_aborted', at=30),
+        dict(resource='quests', action='status', ok=False, http_status=None, error='request_aborted', at=31),
+    ]
+    result = dict(player=42, upstream_version='2.0.53', navigation_policy=4, transport_policy=1, phase='held',
+                  error='quest_cast_response_unreadable', casts=23, requests=32, pending=2,
+                  pending_operations=[done], stored_pending=copy.deepcopy([done]), receipts=receipts,
+                  report={'fieldSettlements': [{'ok': True, 'enemyId': 'bamboo:050'}]}, reward_receipts=[])
+    previous, flight, observed = {}, {'ok': True, 'mana': {'flightLocked': False}}, time.time()
+    if taint == 'identity':
+        result['player'] = 43
+    elif taint == 'old_transport':
+        result['transport_policy'] = 0
+    elif taint == 'previous_unverified':
+        previous = {'server_checked': False}
+    elif taint == 'http_500':
+        receipts[4]['http_status'] = 500
+    elif taint == 'json_body':
+        receipts[4]['content_type'] = 'application/json'
+    elif taint == 'use_event':
+        done['events'][0]['k'] = 'use'
+        result['stored_pending'] = copy.deepcopy([done])
+    elif taint == 'two_pending':
+        result['pending_operations'] = [done, dict(done, operation_id='field-cast:done:501')]
+        result['stored_pending'] = copy.deepcopy(result['pending_operations'])
+    elif taint == 'stored_changed':
+        result['stored_pending'][0]['at'] += 1
+    elif taint == 'begin_missing':
+        receipts.pop(2)
+    elif taint == 'begin_failed':
+        receipts[2]['ok'] = False
+    elif taint == 'later_success':
+        receipts.append(dict(resource='quests', action='field-defeat', ok=True, operation_id='late', at=25))
+    elif taint == 'other_failed_write':
+        receipts.append(dict(resource='quests', action='field-defeat', operation_id='lost', at=23, **refused))
+    elif taint == 'reward':
+        receipts[4]['grants'] = [{'name': '灵石', 'quantity': 1}]
+    elif taint == 'failed_settlement':
+        result['report']['fieldSettlements'].append({'ok': False})
+    elif taint == 'shutdown':
+        result['browser_shutdown_error'] = 'TimeoutError'
+    elif taint == 'stale_status':
+        observed -= 120
+    elif taint == 'flight_locked':
+        flight['mana']['flightLocked'] = True
+    record = _held_record(tmp_path, result, **previous)
+    record['observed_at'] = observed
+    call, save = AsyncMock(return_value=flight), Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert save.call_count == int(not taint)
+    if not taint:
+        assert record['phase'] == 'waiting_gameplay'
+        assert record['browser_review']['reason'] == 'gateway_refused_cast_completion'
+        assert record['browser_review']['abandoned_cast_pending'] == [done]
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')

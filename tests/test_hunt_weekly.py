@@ -317,3 +317,31 @@ def test_outer_sea_survival_boundary(hull, expected):
 def test_outer_sea_invalid_hull_never_guesses(hull):
     with pytest.raises(ValueError):
         hunt.choose_sea({"day": 1, "seas": ["外海"] * 3}, f"船体 █ {hull}　舱中收获 0.0")
+
+
+@pytest.mark.parametrize("unsent", [True, False])
+def test_unsent_boat_query_is_retried_but_unknown_send_is_held(weekly_env, unsent):
+    """Real 2026-11-19 00:01 case: the read query timed out in the local queue."""
+    env = weekly_env
+
+    async def no_receipt(command, **kwargs):
+        env.sends.append((command, kwargs))
+        return None
+
+    env.ctx.send = no_receipt
+    env.ctx.definitely_unsent = lambda identity, command: unsent and command == ".船况"
+    asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0]))
+    record = env.weekly["周常队"]
+    if unsent:
+        assert (record["phase"], record["query"]) == ("idle", None)
+        assert record["next_at"] == env.now[0] + hunt_weekly.QUERY_RETRY
+        env.ctx.notice.assert_not_awaited()
+        asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0] + 60))
+        assert len(env.sends) == 1
+        asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0] + hunt_weekly.QUERY_RETRY + 1))
+        assert [command for command, _ in env.sends] == [".船况"] * 2
+    else:
+        assert record["phase"] == "held"
+        env.ctx.notice.assert_awaited_once()
+        asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0] + 3600))
+        assert len(env.sends) == 1

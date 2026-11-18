@@ -10,6 +10,7 @@ _LOCK = asyncio.Lock()
 _QUOTA_RE = re.compile(r"本周有奖出海[：:]\s*(\d+)\s*/\s*(\d+)")
 _TZ = timezone(timedelta(hours=8))
 QUERY_TIMEOUT = 120
+QUERY_RETRY = 5 * 60
 BETWEEN_VOYAGES = 300
 
 
@@ -140,7 +141,12 @@ async def scheduler(ctx, now):
                                      send_guard=lambda: _query_allowed(ctx, team, record, request))
                 request["msg_id"] = int(getattr(msg, "id", 0) or 0)
                 if not request["msg_id"]:
-                    await _hold(ctx, record, "船况查询发送未确认，未开船")
+                    if getattr(ctx, "definitely_unsent", lambda *_: False)(member["identity_id"], ".船况"):
+                        # The read never left the local queue (another activity held it).
+                        record.update(phase="idle", query=None, next_at=now + QUERY_RETRY,
+                                      last_error="船况查询排队未发出，稍后重查")
+                    else:
+                        await _hold(ctx, record, "船况查询发送未确认，未开船")
                 ctx.save()
                 return
             if all(int(counter["used"]) >= 5 for counter in counters.values()):

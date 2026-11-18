@@ -352,18 +352,77 @@ def rejected_field_release_only(record, identity_id):
                     for row in pending))
 
 
-def old_unconfirmed_field_preparation(record, identity_id):
-    """Recognize the old body-read failure before any kill or reward request.
+def _previous_run_verified(record):
+    previous = record.get('previous_browser') or {}
+    return (previous.get('server_checked') is True and not previous.get('error')
+            and previous.get('pending') == 0 and previous.get('flight_checked') is True)
 
-    Native recoverFieldDeaths synchronizes the spawn and discards a local death
-    without an engagement token. These uploads may be abandoned, never replayed.
-    The upgraded transport cannot use this one-time migration again.
+
+def gateway_refused_cast_completion(record, identity_id):
+    """A cast 'done' proof that only ever met the gateway's origin-down page.
+
+    Cloudflare answers 521-523 itself when the origin is unreachable, so the
+    upload was never processed. Its 'begin' and every engage and defeat before
+    it were acknowledged. The proof is abandoned, never replayed.
     """
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
     report = result.get('report') or {}
     if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
-            or result.get('transport_policy', 0) != 0 or result.get('navigation_policy') != 4
+            or result.get('transport_policy') != 1 or result.get('phase') != 'held'
+            or result.get('error') != 'quest_cast_response_unreadable'
+            or result.get('entry_error') or result.get('browser_shutdown_error') or result.get('browser_close_error')
+            or not _previous_run_verified(record)
+            or not isinstance(pending, list) or len(pending) != 1 or result.get('stored_pending') != pending
+            or type(result.get('pending')) is not int or not 1 <= result['pending'] <= 2
+            or not isinstance(receipts, list) or not all(isinstance(row, dict) for row in pending + receipts)
+            or result.get('reward_receipts') or not isinstance(report, dict)
+            or not isinstance(report.get('fieldSettlements'), list)
+            or not all(isinstance(row, dict) and row.get('ok') is True for row in report['fieldSettlements'])):
+        return False
+    row = pending[0]
+    events, operation = row.get('events'), row.get('operation_id')
+    if (row.get('resource') != 'field-cast' or row.get('action') != 'events'
+            or not isinstance(operation, str) or not operation.startswith('field-cast:done:')
+            or type(row.get('at')) not in (int, float) or not math.isfinite(row['at'])
+            or not isinstance(events, list) or len(events) != 1
+            or not isinstance(events[0], dict) or events[0].get('k') != 'done'):
+        return False
+    begin = 'field-cast:begin:' + operation.removeprefix('field-cast:done:')
+    failed = [r for r in receipts if r.get('ok') is not True]
+    def refused(r):
+        return (r.get('ok') is False and r.get('http_status') in {521, 522, 523}
+                and str(r.get('content_type', '')).startswith('text/html')
+                and not r.get('grants') and not r.get('pickedItems') and not r.get('cultivation')
+                and ((r.get('resource') == 'field-cast' and r.get('action') == 'events'
+                      and r.get('operation_id') == operation)
+                     or (r.get('resource') == 'quests' and r.get('action') == 'status')))
+    def aborted_read(r):
+        return (r.get('ok') is False and r.get('http_status') is None and r.get('error') == 'request_aborted'
+                and ((r.get('resource') == 'quests' and r.get('action') == 'status')
+                     or r.get('resource') == 'battle/doufa-profile'))
+    return (any(r.get('operation_id') == operation for r in failed)
+            and all(refused(r) or aborted_read(r) for r in failed)
+            and any(r.get('ok') is True and r.get('resource') == 'field-cast' and r.get('operation_id') == begin
+                    and type(r.get('at')) in (int, float) and r['at'] <= row['at'] for r in receipts)
+            and not any(r.get('ok') is True and type(r.get('at')) in (int, float) and r['at'] > row['at']
+                        for r in receipts))
+
+
+def old_unconfirmed_field_preparation(record, identity_id):
+    """Recognize the old body-read failure before any kill or reward request.
+
+    Native recoverFieldDeaths synchronizes the spawn and discards a local death
+    without an engagement token. These uploads may be abandoned, never replayed.
+    The read abort recurs on the upgraded transport. There it is admitted only
+    after a cleanly verified run, so two failures in a row stay held.
+    """
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    report = result.get('report') or {}
+    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+            or result.get('transport_policy', 0) not in {0, 1} or result.get('navigation_policy') != 4
+            or (result.get('transport_policy', 0) == 1 and not _previous_run_verified(record))
             or result.get('phase') != 'held' or result.get('error') != 'quest_http_200_non_json'
             or result.get('entry_error') or result.get('browser_shutdown_error') or result.get('browser_close_error')
             or type(result.get('casts')) is not int or result.get('casts') != 1
@@ -554,6 +613,12 @@ async def review_browser_hold(call, record, identity_id):
             flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
             if server_flight_closed(flight):
                 reason = 'unconfirmed_field_preparation_upgrade'
+    elif gateway_refused_cast_completion(record, identity_id):
+        observed = record.get('observed_at')
+        if (type(observed) in (int, float) and math.isfinite(observed) and 0 <= time.time() - observed < 60):
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'gateway_refused_cast_completion'
     elif legacy_cast_only(record, identity_id):
         reason = 'legacy_cast_only_no_quest_mutations'
     elif read_only_browser_failure(record, identity_id):
@@ -581,7 +646,7 @@ async def review_browser_hold(call, record, identity_id):
         record.update(gameplay_uncertain=False, phase='held' if record.get('pending') or record.get('gather')
                       else 'waiting_gameplay', last_error='', next_at=time.time() + 60)
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
-        if reason == 'orphan_cast_no_engagement':
+        if reason in {'orphan_cast_no_engagement', 'gateway_refused_cast_completion'}:
             record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
         if reason == 'confirmed_field_release_rejection':
             record['browser_review']['rejected_release_pending'] = result['pending_operations']
@@ -826,7 +891,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         with os.fdopen(os.open(options, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
             review = record.get('browser_review') or {}
             json.dump({'choices': choices or {}, 'reviewed_cast_pending':
-                       review.get('abandoned_cast_pending', []) if review.get('reason') == 'orphan_cast_no_engagement' else [],
+                       review.get('abandoned_cast_pending', []) if review.get('reason') in {
+                           'orphan_cast_no_engagement', 'gateway_refused_cast_completion'} else [],
                        'reviewed_release_pending': review.get('rejected_release_pending', [])
                        if review.get('reason') == 'confirmed_field_release_rejection' else [],
                        'reviewed_preparation_pending': review.get('abandoned_preparation_pending', [])
