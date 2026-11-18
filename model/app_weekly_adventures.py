@@ -46,7 +46,7 @@ def _available(identity_id, name=""):
     return (identity_id in _team_config(name).get("participant_identity_ids", []) and identity_id in get_identity_ids()
             and get_identity_enabled(identity_id)
             and get_registered_client(get_identity_account(identity_id)) is not None
-            and not get_activity_block_reason(identity_id, include_weekly=False))
+            and not get_activity_block_reason(identity_id, include_weekly=False, include_qingxi_review=False))
 
 
 def _members(kind, name=""):

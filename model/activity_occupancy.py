@@ -6,13 +6,15 @@ from .state import get_expedition_run_state, get_hunt_run_state, get_replica_run
 from .features.hunt import ACTIVE_PHASES
 
 
-def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=True, include_changfeng=True, include_replica=True, include_weekly=True, include_zhengmo=True, include_paired=True, include_qingxi=True, now=None):
+def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=True, include_changfeng=True, include_replica=True, include_weekly=True, include_zhengmo=True, include_paired=True, include_qingxi=True, include_qingxi_review=True, now=None):
     now = time.time() if now is None else float(now)
     identity_id = int(identity_id)
     if include_qingxi:
         quest = get_expedition_run_state().get('qingxi_quests', {}).get(str(identity_id), {})
-        if (quest.get('phase') in {'loading', 'running'} or quest.get('gameplay_uncertain')
-                or quest.get('pending') or quest.get('gather')):
+        # A live run owns the account everywhere. A stopped run awaiting review
+        # owns only the dwelling scene; group text activities opt out of it.
+        if quest.get('phase') in {'loading', 'running'} or (include_qingxi_review and (
+                quest.get('gameplay_uncertain') or quest.get('pending') or quest.get('gather'))):
             return '青溪坊任务执行中或结果待核对'
     if include_paired:
         for key in ("warm_pairs", "global_duel"):

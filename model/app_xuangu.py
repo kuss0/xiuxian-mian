@@ -64,7 +64,7 @@ def _preflight_error(identity_id):
         return "玄骨要求结丹初期以上，请先核对境界"
     if get_registered_client(get_identity_account(identity_id)) is None:
         return "所属账号未登录"
-    return get_activity_block_reason(identity_id, include_xuangu=False)
+    return get_activity_block_reason(identity_id, include_xuangu=False, include_qingxi_review=False)
 
 
 async def _audit(text, **_kwargs):
@@ -80,7 +80,7 @@ async def _send(command, *, send_as_id, send_guard, deadline=0, op_id=None, chai
     return await send_game_command(
         command, send_as_id=send_as_id, track=False, target_chat_id=chat_id,
         operation_check=lambda: send_guard() and (not deadline or time.time() < deadline) and _enabled(send_as_id)
-        and not get_activity_block_reason(send_as_id, include_xuangu=False)
+        and not get_activity_block_reason(send_as_id, include_xuangu=False, include_qingxi_review=False)
         and _target() == (chat_id, topic_id),
         source_module="玄骨遗府", priority="urgent_reactive" if critical else "chain",
         max_retry=0, queue_timeout=queue_timeout, op_id=op_id, chain_id=chain_id,

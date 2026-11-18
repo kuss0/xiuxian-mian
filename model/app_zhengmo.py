@@ -36,7 +36,7 @@ def _members(identities):
     for identity in identities:
         if not _enabled(identity):
             return [], f"身份 {identity} 未登录或已暂停"
-        reason = get_activity_block_reason(identity)
+        reason = get_activity_block_reason(identity, include_qingxi_review=False)
         if reason:
             return [], reason
         members.append({"identity_id": identity, "root_id": _root(identity),
@@ -66,7 +66,8 @@ async def _send(command, *, send_as_id, target_group_role, send_guard, deadline,
         queue_timeout=min(45, max(.1, deadline - time.time())),
         operation_check=lambda: (send_guard() and _enabled(send_as_id) and time.time() < deadline
                                  and hunt_target(target_group_role) == target
-                                 and not get_activity_block_reason(send_as_id, include_zhengmo=False)),
+                                 and not get_activity_block_reason(
+                                     send_as_id, include_zhengmo=False, include_qingxi_review=False)),
     )
 
 

@@ -37,7 +37,7 @@ def available(identity, owner=None):
            for key in ("warm_pairs", "global_duel") for run in records(key).values()):
         return False
     return (get_identity_enabled(identity) and get_registered_client(get_identity_account(identity)) is not None
-            and not get_activity_block_reason(identity, include_paired=False))
+            and not get_activity_block_reason(identity, include_paired=False, include_qingxi_review=False))
 
 
 def _owned(run, event):

@@ -33,7 +33,7 @@ def _members(identity_ids):
             return [], f"身份 {identity_id} 的所属账号未登录"
         if not get_identity_enabled(identity_id):
             return [], f"身份 {identity_id} 已暂停"
-        reason = get_activity_block_reason(identity_id)
+        reason = get_activity_block_reason(identity_id, include_qingxi_review=False)
         if reason:
             return [], f"身份 {identity_id} 当前不可出海：{reason}"
         profile = get_send_as_profile(identity_id)

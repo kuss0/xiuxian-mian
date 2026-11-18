@@ -418,7 +418,7 @@ def test_startup_replays_march_terminal_without_sending_again(env, monkeypatch, 
 def test_adapter_members_and_context_use_same_soul_owner(monkeypatch):
     monkeypatch.setattr(app_zhengmo, "get_avatar_owner_id", lambda identity: 1 if identity == 2 else 0)
     monkeypatch.setattr(app_zhengmo, "_enabled", lambda identity: True)
-    monkeypatch.setattr(app_zhengmo, "get_activity_block_reason", lambda identity: "")
+    monkeypatch.setattr(app_zhengmo, "get_activity_block_reason", lambda identity, **_kw: "")
     monkeypatch.setattr(app_zhengmo, "get_send_as_profile", lambda identity: {"username": f"u{identity}"})
     members, error = app_zhengmo._members([2])
     assert not error
