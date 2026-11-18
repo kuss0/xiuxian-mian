@@ -31,7 +31,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..message_keys import message_key_parts
-from ..message_log_recovery import _read_log_tail_lines, sender_matches_identity
+from ..message_log_recovery import _read_log_tail_lines, iter_message_log_rows, sender_matches_identity
 from ..persistence import save_state
 from .. import yinluo_accounting as resource_accounting
 from ..runtime import classify_game_send_block, clear_pending_by_reply, send_audit_log, send_game_command
@@ -200,6 +200,14 @@ RE_WANXIN_DURATION = re.compile(r"(?:[0-9]{1,3}\s*小时\s*)?(?:[0-9]{1,3}\s*分
 RE_COMMISSION_ID = re.compile(r"(?m)^[ \t]*委托[ \t]*ID[:：][ \t]*([^\n]*)$")
 RE_EXISTING_COMMISSION_ID = re.compile(
     r"你已有进行中的解咒委托[（(]\s*ID[:：]\s*([0-9]{1,19})\s*[）)][，,]不可重复发布[。.]?"
+)
+# The current refusal reports the live state instead of "不可重复发布". Its fixed
+# footer names "尚未接取的委托", so it is admitted only as this complete wording.
+RE_EXISTING_COMMISSION_STATUS = re.compile(
+    r"你已有进行中的解咒委托[（(]\s*ID[:：]\s*(?P<id>[0-9]{1,19})[，,]\s*"
+    r"(?:(?P<waiting>等待接取)|已被接取)[，,]\s*剩余\s*(?P<remaining>[0-9小时分钟秒 \t]{1,32})[）)][。.]?\n"
+    r"(?:接取者[:：][ \t]*@(?P<helper>[A-Za-z0-9_]{1,32})\n)?"
+    r"如需撤回尚未接取的委托[，,]请使用[ \t]*\.取消解咒委托[；;]已接取的委托需等待完成或到期[。.]?"
 )
 RE_ACCEPT_CONTRACT = re.compile(
     r"阴罗宗弟子[ \t]+@(?P<helper>[A-Za-z0-9_]{1,32})[ \t]+已接取[ \t]+"
@@ -1237,6 +1245,21 @@ def _parse_wanxin_commission_result(raw, now, parsed):
     kinds = [kind for kind, present in claims.items() if present]
     if not kinds and title != "【阴罗辨咒】":
         return None
+    status = RE_EXISTING_COMMISSION_STATUS.fullmatch(body) if kinds == ["commission_existing"] and not title else None
+    if status is not None:
+        # Nothing but the known refusal is present; "尚未接取" here is its footer.
+        commission_id = _wanxin_uint(status["id"])
+        remaining = status["remaining"].strip()
+        wait_seconds = (parse_wait_time(remaining)
+                        if RE_WANXIN_DURATION.fullmatch(remaining) and has_wait_time(remaining) else 0)
+        waiting = status["waiting"] is not None
+        if (not commission_id or not 0 < wait_seconds <= WANXIN_COMMISSION_TTL_SEC
+                or waiting == (status["helper"] is not None)):
+            return parsed
+        parsed.update(type="commission_existing", commission_id=commission_id, available="yes",
+                      summary="已有进行中委托", commission_state="waiting" if waiting else "accepted",
+                      helper_username=status["helper"] or "", remaining_seconds=wait_seconds)
+        return parsed
     if len(kinds) > 1 or (title and not raw.startswith(title)) or any(marker in raw for marker in (
         "失败", "未能", "处理中", "正在处理", "请稍候", "请稍后", "尚未确认", "示例", "预览",
         "未完成", "未发布", "未接取", "未辨认", "正在发布", "正在接取", "正在辨认",
@@ -1919,6 +1942,33 @@ async def _recover_wanxin_pending_from_message_log(observed, now, *, pending=Non
     return bool(handled and not any(_same_wanxin_operation(item, pending) for item in _wanxin_pending_operations(observed)))
 
 
+def _pinned_wanxin_evidence(entries, operations):
+    """Re-read by native ID the rows of sent operations that left the log tail.
+
+    The tail is bounded by bytes, so a reply that could not be read when it
+    arrived can age out before it becomes readable. A sent operation names its
+    own command message; only that message and its direct replies are added.
+    """
+    logged = {(entry.get("chat_id"), entry.get("message_id")) for entry in entries
+              if entry.get("event_type") == "message"}
+    pinned = []
+    for item in operations:
+        chat_id, msg_id = item.get("chat_id"), item.get("msg_id")
+        sent_at = timestamp(item.get("sent_at")) or timestamp(item.get("started_at"))
+        if not chat_id or not msg_id or not sent_at or (chat_id, msg_id) in logged:
+            continue
+        needles = (f'"message_id": {msg_id}', f'"reply_to_msg_id": {msg_id}')
+        for row in iter_message_log_rows(
+            sent_at - 1, sent_at + WANXIN_LOG_LOOKBACK_SEC, messages_dir=MESSAGES_DIR,
+            line_predicate=lambda line, needles=needles: any(needle in line for needle in needles),
+        ):
+            if (row.get("event_type") in ("message", "edit") and row.get("chat_id") == chat_id
+                    and msg_id in (row.get("message_id"), row.get("reply_to_msg_id"))
+                    and row not in entries and row not in pinned):
+                pinned.append(row)
+    return entries + pinned
+
+
 async def _recover_wanxin_operations(observed, now):
     owner = _capture_wanxin_owner()
     if not _wanxin_owner_current(owner) or observed.get("unresolved_invalid") or observed.get("reply_points_invalid"):
@@ -1936,6 +1986,7 @@ async def _recover_wanxin_operations(observed, now):
     starts = [timestamp(item.get("started_at")) or timestamp(item.get("sent_at")) for item in pending]
     since = min((value for value in starts if value > 0), default=now)
     entries = [entry for entry, _received in _iter_message_log_entries_between(max(1, since - 1), now)]
+    entries = _pinned_wanxin_evidence(entries, pending)
     recovered = False
     for item in pending:
         if not _refresh_wanxin_observation(owner, observed):
@@ -2636,6 +2687,24 @@ def _project_owner_reply(observed, parsed, now, *, owner_id, action, command_msg
         observed["auto_last_error"] = parsed.get("summary") or "缺少婉心封魂前置"
         observed["auto_next_time"] = now + WANXIN_UNAVAILABLE_BACKOFF_SEC
         updates["wanxin_enabled"] = False
+    elif (ptype == "commission_existing" and parsed.get("commission_state") == "accepted"
+          and int(parsed.get("commission_id", 0) or 0) != int(observed["commission"].get("id", 0) or 0)):
+        # The game still holds an accepted contract that this record does not
+        # track (a failed strip leaves it open). A refusal cannot rebuild that
+        # contract, so no accept, cancel or new publish is due before the game
+        # itself completes or expires it.
+        expires_at = float(now) + int(parsed["remaining_seconds"])
+        _consume_commission(observed, owner_id=owner_id)
+        _set_next_time_for_action(observed, WANXIN_ACTION_STRIP, max(
+            _due_time_for_action(observed, WANXIN_ACTION_STRIP), expires_at + CD_BUFFER_SEC,
+        ))
+        observed["auto_last_action"] = WANXIN_ACTION_PUBLISH
+        observed["auto_last_result"] = (
+            f"已有委托 {parsed['commission_id']} 已被 @{parsed.get('helper_username') or '未知'} 接取，"
+            f"等待完成或到期：{fmt_abs_ts(expires_at)}"
+        )
+        observed["auto_last_error"] = ""
+        _schedule_next(observed, now)
     elif ptype in {"commission_published", "commission_existing"}:
         commission = observed["commission"]
         previous_commission_id = int(commission.get("id", 0) or 0)
@@ -2909,7 +2978,12 @@ async def handle_wanxin_reply(text, now, reply_to=None, matched_family=None, res
             if relation is None or relation < 0:
                 return False
             if relation == 0 and not (previous.get("handled") and previous.get("fingerprint") == fingerprint):
-                return False
+                # An earlier pass that could not read this revision accounted for
+                # nothing. Admit the same revision only once its reading has
+                # changed into a result for this action.
+                if (previous.get("handled") or previous.get("fingerprint") == fingerprint
+                        or not _wanxin_reply_type_matches(action, parsed)):
+                    return False
     same_fact = bool(
         previous and previous.get("root") == source["msg_id"]
         and previous["point"]["evidence"]["chat_id"] == source["chat_id"]

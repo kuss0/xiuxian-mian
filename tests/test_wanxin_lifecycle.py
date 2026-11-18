@@ -708,3 +708,123 @@ def test_verified_expired_external_commission_can_be_cancelled(env):
     assert asyncio.run(deliver(event))
     assert env.owner["wanxin_observation"]["commission"]["id"] == 0
     assert not env.owner["wanxin_observation"]["pending"]
+
+
+EXISTING_FOOTER = "如需撤回尚未接取的委托，请使用 .取消解咒委托；已接取的委托需等待完成或到期。"
+EXISTING_ACCEPTED = "你已有进行中的解咒委托（ID: 1555，已被接取，剩余 15小时56分钟22秒）。\n接取者：@helper\n" + EXISTING_FOOTER
+EXISTING_WAITING = "你已有进行中的解咒委托（ID: 1555，等待接取，剩余 6小时10分钟42秒）。\n" + EXISTING_FOOTER
+
+
+def prepare_publish(env):
+    observed = env.owner["wanxin_observation"]
+    # Only commission work may become due while these tests advance the clock.
+    observed.update(next_visit_time=NOW + 10 ** 7, next_protect_time=NOW + 10 ** 7, next_deduce_time=NOW + 10 ** 7)
+    observed["auto_config"]["publish_enabled"] = True
+    observed["assist"]["next_strip_time"] = NOW - 1
+
+
+def publish_refusal(text, *, at=NOW + 3):
+    return native_reply(OWNER, ".发布解咒委托 1", text, at, root=100, command_at=NOW)
+
+
+def test_accepted_existing_commission_waits_for_expiry_without_new_commands(env):
+    """Real 2026-11-18 case: a failed strip left commission 1555 open in the game."""
+    prepare_publish(env)
+    sender = AsyncMock(return_value=receipt())
+    env.monkeypatch.setattr(wanxin, "send_game_command", sender)
+    asyncio.run(schedule())
+    assert sender.await_args.args[0] == ".发布解咒委托 1"
+    assert asyncio.run(deliver(publish_refusal(EXISTING_ACCEPTED)))
+    observed = env.owner["wanxin_observation"]
+    assert not observed["pending"] and not observed["unresolved_actions"]
+    assert observed["commission"]["id"] == 0 and not observed["commission"]["accepted"]
+    assert observed["assist"]["next_strip_time"] == NOW + 3 + 57382 + wanxin.CD_BUFFER_SEC
+    assert observed["reply_points"]["publish"]["handled"]
+    assert (observed["reply_points"]["publish"]["type"], observed["reply_points"]["publish"]["commission_id"]) == ("commission_existing", 1555)
+    assert "1555" in observed["auto_last_result"] and "@helper" in observed["auto_last_result"]
+    sender.reset_mock()
+    asyncio.run(schedule(NOW + 600))
+    asyncio.run(schedule(NOW + 57382))
+    sender.assert_not_awaited()
+    asyncio.run(schedule(NOW + 3 + 57382 + wanxin.CD_BUFFER_SEC + 1))
+    sender.assert_awaited_once()
+    assert sender.await_args.args[0] == ".发布解咒委托 1"
+
+
+def test_waiting_existing_commission_is_adopted_for_the_helper(env):
+    prepare_publish(env)
+    sender = AsyncMock(return_value=receipt())
+    env.monkeypatch.setattr(wanxin, "send_game_command", sender)
+    asyncio.run(schedule())
+    assert asyncio.run(deliver(publish_refusal(EXISTING_WAITING)))
+    commission = env.owner["wanxin_observation"]["commission"]
+    assert (commission["id"], commission["accepted"], commission["claimed_elsewhere"]) == (1555, False, False)
+    assert env.owner["wanxin_observation"]["assist"]["next_strip_time"] == NOW - 1
+    sender.reset_mock()
+    asyncio.run(schedule(NOW + 30))
+    assert sender.await_args.args[0] == ".接取解咒委托 1555"
+    assert sender.await_args.kwargs["send_as_id"] == HELPER
+
+
+def test_accepted_existing_reply_leaves_a_tracked_commission_untouched(env):
+    observed = env.owner["wanxin_observation"]
+    observed["commission"].update(
+        id=1555, published_at=NOW - 1000, accepted=True, accepted_at=NOW - 900, helper_username="helper",
+    )
+    observed["assist"].update(identified_commission_id=1555, next_strip_time=NOW + 50)
+    assert asyncio.run(deliver(publish_refusal(EXISTING_ACCEPTED)))
+    observed = env.owner["wanxin_observation"]
+    assert (observed["commission"]["id"], observed["commission"]["accepted"]) == (1555, True)
+    assert observed["commission"]["published_at"] == NOW - 1000
+    assert observed["assist"]["identified_commission_id"] == 1555
+    assert observed["assist"]["next_strip_time"] == NOW + 50
+
+
+def hold_unreadable_publish(env, tmp_path):
+    """Leave a sent publish held behind a refusal that the parser could not read."""
+    prepare_publish(env)
+    env.monkeypatch.setattr(wanxin, "send_game_command", AsyncMock(return_value=receipt()))
+    asyncio.run(schedule())
+    known = wanxin.parse_wanxin_text
+    env.monkeypatch.setattr(wanxin, "parse_wanxin_text", lambda text, **kwargs: dict(
+        known("婉心封魂", **kwargs), type="unknown",
+    ))
+    assert not asyncio.run(deliver(publish_refusal(EXISTING_ACCEPTED)))
+    env.monkeypatch.setattr(wanxin, "parse_wanxin_text", known)
+    asyncio.run(schedule(NOW + 200))
+    observed = env.owner["wanxin_observation"]
+    assert observed["unresolved_actions"]["publish"]["msg_id"] == 100
+    assert not observed["reply_points"]["publish"]["handled"]
+    env.monkeypatch.setattr(wanxin, "MESSAGES_DIR", str(tmp_path))
+    rows = native_logs(publish_refusal(EXISTING_ACCEPTED))
+    day = wanxin.datetime.fromtimestamp(NOW, wanxin.TZ_LOCAL).date().isoformat()
+    (tmp_path / f"{day}.log").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def test_unreadable_refusal_is_recovered_by_message_id_after_it_left_the_log_tail(env, tmp_path):
+    hold_unreadable_publish(env, tmp_path)
+    sender = AsyncMock()
+    env.monkeypatch.setattr(wanxin, "send_game_command", sender)
+    # The byte-bounded tail no longer contains the command or its reply.
+    asyncio.run(schedule(NOW + 9 * 3600))
+    sender.assert_not_awaited()
+    observed = env.owner["wanxin_observation"]
+    assert not observed["unresolved_actions"] and not observed["pending"]
+    assert observed["reply_points"]["publish"]["handled"]
+    assert observed["commission"]["id"] == 0
+    assert observed["assist"]["next_strip_time"] == NOW + 3 + 57382 + wanxin.CD_BUFFER_SEC
+
+
+def test_still_unreadable_refusal_stays_held_without_resending(env, tmp_path):
+    hold_unreadable_publish(env, tmp_path)
+    known = wanxin.parse_wanxin_text
+    env.monkeypatch.setattr(wanxin, "parse_wanxin_text", lambda text, **kwargs: dict(
+        known("婉心封魂", **kwargs), type="unknown",
+    ))
+    sender = AsyncMock()
+    env.monkeypatch.setattr(wanxin, "send_game_command", sender)
+    before = copy.deepcopy(env.owner["wanxin_observation"]["reply_points"])
+    asyncio.run(schedule(NOW + 9 * 3600))
+    sender.assert_not_awaited()
+    assert env.owner["wanxin_observation"]["unresolved_actions"]["publish"]["msg_id"] == 100
+    assert env.owner["wanxin_observation"]["reply_points"] == before

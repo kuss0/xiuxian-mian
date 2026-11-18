@@ -172,6 +172,44 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(("assist_strip_failed", 120), (failed["type"], failed["sha_cost"]))
 
+    def test_parse_existing_commission_status_real_replies(self):
+        footer = "如需撤回尚未接取的委托，请使用 .取消解咒委托；已接取的委托需等待完成或到期。"
+        accepted = wanxin.parse_wanxin_text(
+            "你已有进行中的解咒委托（ID: 1555，已被接取，剩余 15小时56分钟22秒）。\n接取者：@xianxia9527\n" + footer
+        )
+        waiting = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 1554，等待接取，剩余 6小时10分钟42秒）。\n" + footer)
+        short = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 1533，已被接取，剩余 1小时52秒）。\n接取者：@xiuxian_001\n" + footer)
+        minutes = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 1535，等待接取，剩余 29分钟49秒）。\n" + footer)
+
+        self.assertEqual(
+            ("commission_existing", 1555, "accepted", "xianxia9527", 57382),
+            tuple(accepted[key] for key in ("type", "commission_id", "commission_state", "helper_username", "remaining_seconds")),
+        )
+        self.assertEqual(
+            ("commission_existing", 1554, "waiting", "", 22242),
+            tuple(waiting[key] for key in ("type", "commission_id", "commission_state", "helper_username", "remaining_seconds")),
+        )
+        self.assertEqual(("accepted", "xiuxian_001", 3652), (short["commission_state"], short["helper_username"], short["remaining_seconds"]))
+        self.assertEqual(("waiting", 1789), (minutes["commission_state"], minutes["remaining_seconds"]))
+        # The older one-line refusal keeps its exact result shape.
+        legacy = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 5），不可重复发布。")
+        self.assertNotIn("commission_state", legacy)
+
+    def test_parse_existing_commission_status_rejects_incomplete_wording(self):
+        footer = "如需撤回尚未接取的委托，请使用 .取消解咒委托；已接取的委托需等待完成或到期。"
+        head = "你已有进行中的解咒委托（ID: 1555，已被接取，剩余 15小时56分钟22秒）。\n"
+        for text in (
+            head + footer,  # accepted without a named helper
+            "你已有进行中的解咒委托（ID: 1554，等待接取，剩余 6小时10分钟42秒）。\n接取者：@xianxia9527\n" + footer,
+            head + "接取者：@xianxia9527\n" + footer + "\n委托处理中",
+            head + "接取者：@xianxia9527",
+            "你已有进行中的解咒委托（ID: 1555，已被接取，剩余 25小时）。\n接取者：@xianxia9527\n" + footer,
+            "你已有进行中的解咒委托（ID: 1555，已被接取，剩余 稍后）。\n接取者：@xianxia9527\n" + footer,
+            "你已有进行中的解咒委托（ID: 5），不可重复发布。委托尚未接取",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual("unknown", wanxin.parse_wanxin_text(text)["type"])
+
     def test_action_guard_resolves_wanxin_commands(self):
         self.assertEqual("wanxin_panel", action_guard.resolve_action_key(".婉心"))
         self.assertEqual("wanxin_visit", action_guard.resolve_action_key(".探望南宫婉"))
