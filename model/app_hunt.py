@@ -78,6 +78,11 @@ def _context():
     )
 
 
+async def recheck_hunt_weekly(name):
+    """Same operator action as the log-group command '.猎妖 周常重查 <队名>'."""
+    return await hunt_weekly.reset_check(_context(), str(name or ""))
+
+
 async def handle_hunt_log_command(event):
     parts = str(getattr(event, "raw_text", "") or "").split()
     if len(parts) == 3 and parts[:2] == [".猎妖", "周常重查"]:

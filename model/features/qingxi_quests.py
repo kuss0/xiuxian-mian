@@ -197,6 +197,24 @@ def _browser_evidence(record):
     return result if isinstance(result, dict) else {}
 
 
+def evidence_digest(result):
+    """Unresolved writes and every non-successful receipt, for review without file access."""
+    def rows(value, limit):
+        return [copy.deepcopy(row) for row in value if isinstance(row, dict)][-limit:] if isinstance(value, list) else None
+    receipts = result.get('receipts')
+    return {
+        'pending_operations': rows(result.get('pending_operations'), 8),
+        'stored_pending': rows(result.get('stored_pending'), 8),
+        'failed_receipts': rows([row for row in receipts if isinstance(row, dict) and row.get('ok') is not True]
+                                if isinstance(receipts, list) else None, 12),
+        'last_receipts': [{key: row.get(key) for key in ('resource', 'action', 'ok', 'http_status', 'error',
+                                                         'operation_id', 'enemy_id', 'at')}
+                          for row in (rows(receipts, 12) or [])],
+        **{key: result.get(key) for key in ('state', 'combat_active', 'hp', 'position', 'cast_error',
+                                            'transport_policy', 'navigation_policy')},
+    }
+
+
 def legacy_cast_only(record, identity_id):
     """Recognize the retired worker's single ambiguous cast, never quest writes.
 
@@ -525,6 +543,9 @@ async def review_browser_hold(call, record, identity_id):
     browser = record.get('browser') or {}
     reason = ''
     result = _browser_evidence(record)
+    if result and isinstance(record.get('browser'), dict) and 'evidence' not in record['browser']:
+        # The caller persists the record right after this review.
+        record['browser']['evidence'] = evidence_digest(result)
     if (result.get('player') == identity_id and result.get('entry_error')
             and not result.get('mainline_started_at') and result.get('server_checked') is True
             and (result.get('final_status') or {}).get('fresh') is True
@@ -923,6 +944,7 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         record['browser'].update({k: result.get(k) for k in (
             'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
             'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report')})
+        record['browser']['evidence'] = evidence_digest(result)
         existing = {row.get('reward_id', row['operation_id']) for row in record.get('receipts', [])}
         for row in result.get('reward_receipts', []):
             reward_id = row.get('reward_id', row.get('operation_id'))

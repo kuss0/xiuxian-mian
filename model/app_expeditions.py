@@ -77,6 +77,9 @@ async def ui_additional_activity_action(payload):
         if action == "reconcile_notifications":
             from .runtime import reconcile_audit_summary
             return await reconcile_audit_summary()
+        if action == "hunt_weekly_recheck":
+            from .app_hunt import recheck_hunt_weekly
+            return await recheck_hunt_weekly(payload.get("team"))
         if action == "profile":
             return await avatar_soul.refresh_avatar_profile(int(payload.get("identity_id")))
         if action == "restart_global_duel":

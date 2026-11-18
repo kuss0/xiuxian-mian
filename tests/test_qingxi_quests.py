@@ -1259,3 +1259,23 @@ def test_gateway_refused_cast_completion_is_abandoned_after_fresh_checks(monkeyp
         assert record['browser_review']['reason'] == 'gateway_refused_cast_completion'
         assert record['browser_review']['abandoned_cast_pending'] == [done]
         call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+
+
+def test_review_keeps_unresolved_evidence_in_the_record(monkeypatch, tmp_path):
+    import json
+    pending = [dict(resource='quests', action='field-engage', operation_id='engage', enemy_id='lantern:083', at=10)]
+    receipts = [dict(resource='quests', action='status', ok=True, at=1),
+                dict(resource='quests', action='field-engage', operation_id='engage', ok=False, http_status=409,
+                     error='non_json', at=11)]
+    (tmp_path / 'result.json').write_text(json.dumps(dict(
+        player=42, phase='held', error='quest_http_409_non_json', pending=1, hp=9000, combat_active=False,
+        pending_operations=pending, stored_pending=pending, receipts=receipts)))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    monkeypatch.setattr(quests, 'save', Mock())
+    asyncio.run(quests.review_browser_hold(AsyncMock(), record, 42))
+    evidence = record['browser']['evidence']
+    assert record['gameplay_uncertain'] is True
+    assert evidence['pending_operations'] == pending and evidence['stored_pending'] == pending
+    assert evidence['failed_receipts'] == [receipts[1]]
+    assert [row['action'] for row in evidence['last_receipts']] == ['status', 'field-engage']
+    assert (evidence['hp'], evidence['combat_active']) == (9000, False)

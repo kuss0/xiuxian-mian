@@ -345,3 +345,20 @@ def test_unsent_boat_query_is_retried_but_unknown_send_is_held(weekly_env, unsen
         env.ctx.notice.assert_awaited_once()
         asyncio.run(hunt_weekly.scheduler(env.ctx, env.now[0] + 3600))
         assert len(env.sends) == 1
+
+
+def test_operator_recheck_action_resets_a_held_query(weekly_env, monkeypatch):
+    from model import app_expeditions, app_hunt
+    env = weekly_env
+    env.weekly["周常队"] = {"phase": "held", "last_error": "船况查询发送未确认，未开船", "query": {"msg_id": 0}}
+    monkeypatch.setattr(app_hunt, "_context", lambda: env.ctx)
+    ok, message = asyncio.run(app_expeditions.ui_additional_activity_action(
+        {"action": "hunt_weekly_recheck", "team": "周常队"}))
+    assert ok and "重新核对" in message
+    assert (env.weekly["周常队"]["phase"], env.weekly["周常队"]["query"]) == ("idle", None)
+    assert asyncio.run(app_expeditions.ui_additional_activity_action(
+        {"action": "hunt_weekly_recheck", "team": "不存在"})) == (False, "没有该队伍的周常记录")
+    env.runs["周常队"] = {"phase": "held", "requires_reconciliation": True}
+    ok, message = asyncio.run(app_expeditions.ui_additional_activity_action(
+        {"action": "hunt_weekly_recheck", "team": "周常队"}))
+    assert not ok and "待核对" in message

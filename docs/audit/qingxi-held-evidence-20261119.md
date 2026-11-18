@@ -31,3 +31,13 @@
 
 - 新增测试用的是两份真实证据的形状：前置放行 5 种上一轮状态、网关拒收 17 种污染、船况未发与未知各一。逐项回退均有对应测试失败。
 - 两个新判定对生产库里的真实记录只读试算：吧唧命中前置放行、wa 命中网关拒收，互不串用。
+
+## 02:45 补充：重查入口与证据摘要
+
+- 猎妖周常的人工重查原先只能在日志群发 `.猎妖 周常重查 <队名>`。新增认证接口动作
+  `/api/additional-activity-action` `{"action": "hunt_weekly_recheck", "team": "<队名>"}`，调用同一个 `reset_check`，
+  原船仍在进行或待核对时照样拒绝。
+- 浏览器证据目录是 root 专属。运行结束和每次复核时，把未决操作、所有失败回执和最后 12 条回执摘要写进
+  `expedition_run_state.qingxi_quests[*].browser.evidence`，核对不再依赖文件权限。原 `result.json` 不改。
+- 运维操作：经 `/api/toggle` 关闭 xueuode5、growrdick、xuruode6、tutuerduoxiao 的天星宗。这四个冻结频道身份无法在群里
+  推命/改命，天星前置自 2026-07-25 起一直挡着它们的洞府野外历练。
