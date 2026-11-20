@@ -15,6 +15,12 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
+
+
+def provenance_version():
+    return json.loads((VENDOR / 'source.json').read_text())['version']
+
+
 QUEST_COMBAT_ENTRY = """step('准备郊外战斗 · ' + objective.text);
       await until(() => {
         const combat = readCombat(), runtime = window.__rt;
@@ -63,16 +69,20 @@ QUEST_WALK_DEFENCE = """const defenceStartedAt = Date.now();
           deadline += Date.now() - defenceStartedAt;
           path = null; movedAt = Date.now(); continue;
         }"""
-QUEST_NATIVE_TAKEOFF = """  function takeoffGround(point) {
-    // beginFlightNow checks canFly at the actor's current height. Landing needs
-    // walkable support; takeoff must not inherit the landing-only restriction.
-    const env = fieldEnvironment;
-    if (!position3(point) || !env?.groundHeight || !env?.canFly) return null;
-    const y = env.groundHeight(point[0], point[2], point[1]);
-    return Number.isFinite(y) && Math.abs(y - point[1]) <= .43 &&
-      env.canFly(point[0], point[2], .4, point[1]) ? [point[0], y, point[2]] : null;
-  }
-"""
+QUEST_NATIVE_TAKEOFF_FALLBACK = """if (!position3(point) || !fieldEnvironment?.groundHeight || !fieldEnvironment?.canFly) return null;
+    const y = fieldEnvironment.groundHeight(point[0], point[2], point[1]);
+    if (!Number.isFinite(y) || Math.abs(y - point[1]) > .43) return null;
+    // The game's beginFlightNow checks canFly at the actor's current height.
+    // Preserve upstream's roof/landing checks above, then allow this native
+    // fallback when walkability alone rejects a valid takeoff point.
+    if (fieldEnvironment.canFly(point[0], point[2], .4, point[1])) return [point[0], y, point[2]];
+    if (!raisedSurface(point)) return null;"""
+QUEST_NAVIGATION_EVIDENCE = """if (!path) {
+              window.__qx.navigationFailure = {position:p.slice(), goal:goal.slice(), radius,
+                obstacles:obstacles.map(o=>o.slice()), obstaclesReviewed, recovery, at:Date.now()/1000};
+              throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' +
+                (state.story?.flightLastFailure || recovery.reason));
+            }"""
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None,
@@ -90,8 +100,9 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
     # Use upstream's own deferred-task path, while the fetch policy remains the
     # final guard. Missing choices/fishing must not prevent unrelated errands.
     patches = {
-        script[script.index('  function takeoffGround('):script.index('  function flightCombatBlocked(')]:
-            QUEST_NATIVE_TAKEOFF,
+        'if (!raisedSurface(point)) return null;\n'
+        '    const y = fieldEnvironment.groundHeight(point[0], point[2], point[1]);':
+            QUEST_NATIVE_TAKEOFF_FALLBACK,
         'const wanted = state.story.options.rewardChoices?.[q.id];':
             "const wanted = state.story.options.rewardChoices?.[q.id];\n"
             "        if (!wanted) throw Object.assign(new Error('任务奖励保留待选'), {code:'unsupported_quest_objective'});",
@@ -111,12 +122,9 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         'if (options.defend !== false && await defendNearby(owner)) { path = null; movedAt = Date.now(); continue; }':
             QUEST_WALK_DEFENCE,
         'if (!path) {\n            walkRecovery = true;': QUEST_NAVIGATION_REVIEW,
-        "if (!path) throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' + recovery.reason);":
-            "if (!path) {\n"
-            "              window.__qx.navigationFailure = {position:p.slice(), goal:goal.slice(), radius,\n"
-            "                obstacles:obstacles.map(o=>o.slice()), obstaclesReviewed, recovery, at:Date.now()/1000};\n"
-            "              throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' + recovery.reason);\n"
-            "            }",
+        "if (!path) throw new Error('找不到可步行路线：' + JSON.stringify(goal) + ' · ' +\n"
+        "              (state.story?.flightLastFailure || recovery.reason));":
+            QUEST_NAVIGATION_EVIDENCE,
     }
     for before, after in patches.items():
         if script.count(before) != 1:
@@ -260,7 +268,7 @@ def main():
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
-    result = {'phase': 'preparing', 'upstream_version': '2.0.53', 'navigation_policy': 4, 'transport_policy': 1}
+    result = {'phase': 'preparing', 'upstream_version': provenance_version(), 'navigation_policy': 4, 'transport_policy': 1}
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)

@@ -514,7 +514,7 @@ def test_takeoff_matches_native_point_gate_and_preserves_server_and_combat_gates
     if shutil.which('node') is None:
         pytest.skip('Node is required to replay the native takeoff gate')
     source = browser_script(42)
-    rules = source[source.index('  function takeoffGround('):source.index('  function canTravelFly(')]
+    rules = source[source.index('  function outdoorGround('):source.index('  function canTravelFly(')]
     fixture = (Path(__file__).parent / 'fixtures/qingxi-native-takeoff.json').read_text()
     script = """const assert=require('node:assert/strict'),f=FIXTURE;
 const runtime={toggleFlight(){},dropFlight(){},setFlightVerticalInput(){}};
@@ -537,5 +537,38 @@ assert.equal(decision.allowed,SCENARIO==='native_point'&&f.native_point_allows_t
 if(SCENARIO==='native_point'){assert.equal(f.can_walk,false);assert.deepEqual(takeoffGround(f.actor),f.actor)}
 """.replace('FIXTURE', fixture).replace('RULES', rules).replace('SCENARIO', json.dumps(scenario))
     path = tmp_path / 'native-takeoff.cjs'
+    path.write_text(script)
+    subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+@pytest.mark.parametrize('scenario', [
+    'native_walk_blocked', 'raised_roof', 'indoor_roof', 'blocked_native_height',
+    'landing_under_roof', 'nonfinite_support', 'unsupported_height',
+])
+def test_takeoff_fallback_preserves_native_height_and_upstream_landing_geometry(scenario, tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to replay takeoff and landing geometry')
+    source = browser_script(42)
+    rules = source[source.index('  function outdoorGround('):source.index('  function flightCombatBlocked(')]
+    script = """const assert=require('node:assert/strict');
+const CFG={flightAltitude:8};
+const position3=p=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite);
+const dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+const raised=['raised_roof','blocked_native_height'].includes(SCENARIO),point=[1,raised?10:.035,2];
+const underRoof=['raised_roof','indoor_roof','landing_under_roof','blocked_native_height'].includes(SCENARIO);
+const fieldEnvironment={
+ roofLandingHeightAt:()=>underRoof?10:NaN,
+ groundHeight:(x,z,h)=>SCENARIO==='nonfinite_support'?NaN:
+  SCENARIO==='unsupported_height'?point[1]+1:underRoof?(h<1?.035:10):.035,
+ canWalk:()=>SCENARIO==='landing_under_roof',
+ canFly:(x,z,r,h)=>!['indoor_roof','blocked_native_height'].includes(SCENARIO)&&h===point[1],
+};
+RULES
+const allowed=['native_walk_blocked','raised_roof','landing_under_roof'].includes(SCENARIO);
+assert.equal(!!takeoffGround(point),allowed);
+if(allowed)assert.deepEqual(takeoffGround(point),point);
+if(underRoof)assert.equal(landingGround([1,.035,2]),null);
+""".replace('RULES', rules).replace('SCENARIO', json.dumps(scenario))
+    path = tmp_path / 'takeoff-landing.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)

@@ -27,6 +27,7 @@ from .cave_treasure_miniapp import build_cave_treasure_miniapp_adapter
 from .miniapp_common import MiniAppIdentityOwner, build_pooled_miniapp_transport, run_miniapp_blocking_flow
 
 API_PATH = '/api/miniapp/xianxia-dwelling/quests'
+SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78'})
 CATALOG_PATH = Path(__file__).with_name('qingxi_quest_catalog.json')
 _TASKS = {}
 
@@ -248,7 +249,7 @@ def read_only_browser_failure(record, identity_id):
     pending = result.get('pending_operations')
     harmless = lambda row: row.get('resource') == 'location' or (
         row.get('resource') == 'players/social' and row.get('action') == 'view')
-    return (result.get('player') == identity_id and result.get('upstream_version') == '2.0.53'
+    return (result.get('player') == identity_id and result.get('upstream_version') in SUPPORTED_UPSTREAM_VERSIONS
             and isinstance(pending, list) and result.get('pending') == len(pending)
             and all(harmless(row) for row in pending) and result.get('casts') == 0
             and result.get('requests') in {len(statuses), len(statuses) + 1} and bool(statuses)
@@ -262,7 +263,7 @@ def native_flight_only_failure(record, identity_id):
         return False
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
-    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+    if (result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
             or result.get('casts') != 0 or not isinstance(pending, list) or not pending
             or result.get('pending') != len(pending) or not isinstance(receipts, list)
             or not all(isinstance(row, dict) for row in pending + receipts)):
@@ -317,7 +318,7 @@ def combat_interrupted_navigation_stop(record, identity_id):
     observed = record.get('observed_at')
     position = result.get('position')
     settlements = report.get('fieldSettlements')
-    return (result.get('player') == identity_id and result.get('upstream_version') == '2.0.53'
+    return (result.get('player') == identity_id and result.get('upstream_version') in SUPPORTED_UPSTREAM_VERSIONS
             and result.get('navigation_policy') == 1 and result.get('phase') == 'held'
             and not result.get('error') and not result.get('status_error')
             and result.get('pending') == 0 and result.get('stored_pending') == []
@@ -342,7 +343,7 @@ def rejected_field_release_only(record, identity_id):
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
     position, observed = result.get('position'), record.get('observed_at')
-    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+    if (result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
             or result.get('navigation_policy') != 2 or result.get('phase') != 'held'
             or result.get('error') != 'quest_http_409_quest_too_far' or result.get('status_error')
             or result.get('combat_active') is not False or (result.get('world') or {}).get('current') != 'yue'
@@ -386,7 +387,7 @@ def gateway_refused_cast_completion(record, identity_id):
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
     report = result.get('report') or {}
-    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+    if (result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
             or result.get('transport_policy') != 1 or result.get('phase') != 'held'
             or result.get('error') != 'quest_cast_response_unreadable'
             or result.get('entry_error') or result.get('browser_shutdown_error') or result.get('browser_close_error')
@@ -438,7 +439,7 @@ def old_unconfirmed_field_preparation(record, identity_id):
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
     report = result.get('report') or {}
-    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+    if (result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
             or result.get('transport_policy', 0) not in {0, 1} or result.get('navigation_policy') != 4
             or (result.get('transport_policy', 0) == 1 and not _previous_run_verified(record))
             or result.get('phase') != 'held' or result.get('error') != 'quest_http_200_non_json'
@@ -490,7 +491,7 @@ def safe_browser_town_stop(result, identity_id):
     if not all(isinstance(value, dict) for value in (report, world, stop_reason, result.get('final_status') or {})):
         return False
     if (result.get('player') != identity_id or result.get('phase') not in {'held', 'waiting'}
-            or result.get('upstream_version') != '2.0.53' or result.get('error') or result.get('status_error')
+            or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS or result.get('error') or result.get('status_error')
             or result.get('cast_error') or result.get('pending') != 0 or result.get('stored_pending') != []
             or result.get('pending_operations') != []
             or result.get('combat_active') is not False or world.get('current') != 'yue'
@@ -554,7 +555,7 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'verified_entry_failure'
-    elif (result.get('player') == identity_id and result.get('upstream_version') == '2.0.53'
+    elif (result.get('player') == identity_id and result.get('upstream_version') in SUPPORTED_UPSTREAM_VERSIONS
           and result.get('navigation_policy', 0) in {0, 3}
           and (result.get('navigation_policy', 0) == 0 or (
               isinstance(result.get('navigation_failure'), dict)
@@ -683,7 +684,7 @@ def orphan_cast_proof_only(record, identity_id):
         return False
     result = _browser_evidence(record)
     pending, receipts = result.get('pending_operations'), result.get('receipts')
-    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.53'
+    if (result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
             or result.get('casts') != 1 or result.get('pending') != 1
             or not isinstance(pending, list) or len(pending) != 1
             or not isinstance(pending[0], dict) or pending[0].get('resource') != 'field-cast'
@@ -922,7 +923,7 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
         record.update(phase='running', deadline=time.time() + 1500, gameplay_uncertain=True,
-                      browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.53'})
+                      browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.78'})
         save()
         command = [str(python), str(script), '--tool-root', str(TOOL_ROOT), '--url-file', str(launch),
                    '--profile-dir', str(directory.parent / 'profile'), '--result', str(directory / 'result.json'),

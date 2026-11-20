@@ -617,6 +617,14 @@ if(calls!==0)throw Error('blocked request dispatched');
 await fetch(url+'start',{body:'{}'});
 await fetch(url+'quests',{body:JSON.stringify({action:'accept',operationId:'one'})});
 if(calls!==2||__qx.player!==42)throw Error('verified request blocked');
+for(const action of ['start','act','finish','claim','retry']){
+ let rejected=false;try{await fetch(url+'trial',{body:JSON.stringify({action,playerId:42})})}catch(error){
+  rejected=error.message==='quest_runner_trial_forbidden';
+ }
+ if(!rejected||calls!==2)throw Error('trial mutation passed the verified player guard');
+}
+await fetch(url+'trial',{body:JSON.stringify({action:'status',playerId:42})});
+if(calls!==3)throw Error('read-only trial status blocked');
 })().catch(e=>{console.error(e);process.exitCode=1});
 """
     script = tmp_path / 'guard.js'
@@ -629,8 +637,45 @@ def test_upstream_source_is_pinned_and_checked_before_browser_launch():
     from tools.qingxi_quest_browser import VENDOR, browser_script
     source = browser_script(42)
     provenance = json.loads((VENDOR / 'source.json').read_text())
-    assert provenance['commit'] == '2d0c11fbaa9891a6e9a4f09751dc59bc23b56bb2'
+    assert provenance['commit'] == 'abbb2c54ef4e67ba78fce65918a5e98eba8e397b'
+    assert provenance['version'] == '2.0.78'
+    assert "(state.story?.flightLastFailure || recovery.reason)" in source
+    assert 'window.__qx.navigationFailure' in source
+    assert "if (resource === 'trial' && !readonly) stop('quest_runner_trial_forbidden')" in source
     assert source.index('const config =') < source.index('==UserScript==')
+
+
+@pytest.mark.parametrize('version', ['2.0.53', '2.0.78', '2.0.79'])
+@pytest.mark.parametrize('taint', ['', 'identity', 'unknown_defeat', 'flight_locked'])
+def test_versioned_flight_review_requires_unchanged_write_and_closure_evidence(
+        monkeypatch, tmp_path, version, taint):
+    import json
+    result = {
+        'player': 42, 'upstream_version': version, 'phase': 'held',
+        'error': 'quest_transport_unconfirmed', 'casts': 0, 'requests': 2,
+        'pending': 1, 'pending_operations': [{'resource': 'flight', 'action': 'stop'}],
+        'stored_pending': [{'resource': 'flight', 'action': 'stop'}],
+        'receipts': [{'resource': 'quests', 'action': 'status', 'ok': True},
+                     {'resource': 'flight', 'action': 'stop', 'ok': True}],
+    }
+    if taint == 'identity':
+        result['player'] = 43
+    elif taint == 'unknown_defeat':
+        result['pending_operations'].append({'resource': 'quests', 'action': 'field-defeat'})
+        result['pending'] = 2
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True,
+              'browser': {'error': result['error'], 'evidence_dir': str(tmp_path)}}
+    call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    monkeypatch.setattr(quests, 'save', Mock())
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    closed = version in {'2.0.53', '2.0.78'} and not taint
+    assert record['gameplay_uncertain'] is not closed
+    if closed:
+        assert record['browser_review']['reason'] == 'native_flight_session_closed'
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    elif taint != 'flight_locked' or version == '2.0.79':
+        call.assert_not_awaited()
 
 
 def test_legacy_review_requires_proof_no_quest_mutations_were_sent(tmp_path):

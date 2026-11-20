@@ -88,6 +88,7 @@ def test_main_retains_entry_evidence_and_requires_fresh_final_status(monkeypatch
         '--profile-dir', str(tmp_path / 'profile'), '--result', str(path), '--expected-player-id', '42', '--read-only'])
     code = worker.main()
     result = json.loads(path.read_text())
+    assert result['upstream_version'] == worker.provenance_version() == '2.0.78'
     assert code == (0 if not failure else 1)
     assert result['player'] == 42 and result['states']['qx_q06']['status'] == 'ready'
     assert result['server_checked'] is (failure in {'', 'entry'})

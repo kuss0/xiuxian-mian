@@ -1,9 +1,10 @@
 # Upstream dwelling assistant
 
-`trial-bot.user.js` is the unmodified source from wxjerry/xiuxian PR #8.
-`source.json` pins its commit, version, original path and SHA256. Runtime startup
-checks that hash; the local adapter applies four exact in-memory policy changes
-and refuses changed anchors.
+`trial-bot.user.js` is the unmodified source from wxjerry/xiuxian PR #10
+(version 2.0.78). `source.json` pins its commit, version, original path and
+SHA256. Runtime startup checks that hash; the local adapter applies exact
+in-memory policy patches and refuses changed anchors. The upstream Electron
+launcher is not part of this Linux worker.
 
 The local adapter uses the assistant's task workflow, collision/navigation,
 combat, puzzles and region travel. It does not enable its daily/trial batch
@@ -13,6 +14,9 @@ The native overworld entry waits up to 90 seconds for enemy models, verifies
 the real entry area and stops if another instance is active.
 After successful combat, active collection tasks in the same field share the
 native corpse pickup routine, so their drops are collected during kill quests.
+The local takeoff adapter retains upstream landing/roof checks and adds the
+verified native `canFly` test at the actor's current height when walkability
+would incorrectly block a valid takeoff.
 
 Before updating this source, review the upstream diff, update provenance, and
 run `tests/test_qingxi_quests.py` plus `tests/test_qingxi_quest_policy.py` and the
