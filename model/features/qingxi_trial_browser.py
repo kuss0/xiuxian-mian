@@ -56,7 +56,10 @@ def summarize_network(network):
     no_rewards = any((row.get('run') or {}).get('rewarded') is False for row in successful)
     terminal = next((row for row in reversed(successful)
                      if isinstance(row.get('result'), dict) and row['result'].get('grade')), None)
-    started = any(row.get('action') in {'start', 'checkpoint', 'end'} for row in network.get('requests') or [])
+    started = any(isinstance(row, dict) and row.get('action') in {'start', 'checkpoint', 'end'}
+                  for row in network.get('requests') or [])
+    unknown_request = any(not isinstance(row, dict) or row.get('action') not in {'status', 'start', 'checkpoint', 'end'}
+                          for row in network.get('requests') or [])
     # A pre-start status with activeRun=null cannot confirm an ambiguous start ended.
     latest_status = (successful[-1].get('status') or {}) if successful else {}
     closed = bool(started and run_id and 'activeRun' in latest_status and latest_status['activeRun'] is None)
@@ -65,6 +68,18 @@ def summarize_network(network):
                  and type(latest_status.get('used')) is int
                  and type(latest_status.get('limit')) is int
                  and latest_status['used'] == latest_status['limit'] > 0)
+    requests, receipts = network.get('requests') or [], network.get('receipts') or []
+    # Missing or undecodable request evidence is not proof that start was never
+    # sent. CDP explicitly records action='unknown' when postData parsing fails.
+    no_start_verified = bool(
+        requests and receipts
+        and all(isinstance(row, dict) and row.get('action') == 'status' for row in requests)
+        and all(isinstance(row, dict) and row.get('ok') is True
+                and isinstance(row.get('trial'), dict)
+                and not row['trial'].get('run')
+                and not row['trial'].get('pending') and not row['trial'].get('anomaly')
+                and not (row['trial'].get('status') or {}).get('activeRun') for row in receipts)
+        and 'activeRun' in latest_status and latest_status['activeRun'] is None)
     gains, cultivation, seen = {}, 0, set()
     for row in successful:
         current = row.get('run') or {}
@@ -87,7 +102,8 @@ def summarize_network(network):
         cultivation += amount
     return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed,
             'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
-            'exhausted': exhausted, 'no_rewards': no_rewards,
+            'exhausted': exhausted, 'no_rewards': no_rewards, 'no_start_verified': no_start_verified,
+            'unknown_request': unknown_request,
             'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
 
 
@@ -330,7 +346,9 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 record['day'] = day
             if scheduled and facts['run_id']:
                 record['run_id'] = facts['run_id']
-            record['phase'] = previous_phase if facts['terminal'] or facts['closed'] or (network_loaded and not facts['started']) else 'held'
+            safely_closed = (not facts['unknown_request'] and (
+                facts['terminal'] or facts['closed'] or (network_loaded and facts['no_start_verified'])))
+            record['phase'] = previous_phase if safely_closed else 'held'
             if scheduled:
                 if facts['started'] and not (facts['rewarded'] or facts['no_rewards']):
                     record['phase'] = 'held'

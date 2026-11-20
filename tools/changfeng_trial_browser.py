@@ -10,27 +10,58 @@ import sys
 import time
 
 
+START_CALL = 'return !!lw.runtime.startTownCombat(lw.startArena);'
+ATOMIC_START = """const accepted = lw.runtime.startTownCombat(lw.startArena);
+  if (accepted) {
+    const combat = lw.combat, state = combat?.stats?.();
+    const gate = {combat, arena:lw.startArena, runId:null, frozen:false, released:false};
+    lw.localTrialEntry = gate;
+    try {
+      if (!state?.active || state.overworld || state.arena !== gate.arena || state.state !== 'fighting')
+        throw Error('trial_entry_scene_changed');
+      // start() synchronously reset localPaused. Freeze after that reset, in
+      // this same JavaScript task, before any response continuation or frame.
+      if (!state.paused && combat.command('pause') !== true) throw Error('trial_entry_pause_failed');
+      if (combat.stats().paused !== true) throw Error('trial_entry_pause_unverified');
+      gate.frozen = true;
+    } catch (error) {
+      try { combat?.command?.('stop'); } catch {}
+      throw error;
+    }
+  }
+  return !!accepted;"""
+
 ENTRY_CHECK = """(() => {
   const lw = window.__lw, combat = lw?.combat, state = combat?.stats?.();
   if (!state) return null;
-  const run = state.trial?.run;
-  if (state.active && !state.overworld && state.state === 'fighting' &&
-      typeof run?.rewarded !== 'boolean' && !state.paused) {
+  const gate = lw.localTrialEntry, run = state.trial?.run;
+  const owned = gate?.combat === combat && gate.arena === state.arena && gate.frozen && !gate.released;
+  if (owned && state.active && !state.overworld && state.state === 'fighting' && !state.paused) {
     if (combat.command('pause') !== true) throw Error('trial_entry_pause_failed');
-    lw.localRewardHold = true;
   }
+  if (owned && run?.id && !gate.runId) gate.runId = run.id;
   return {arena:state.arena, active:state.active, overworld:state.overworld,
-          run_id:run?.id, rewarded:run?.rewarded, held:lw.localRewardHold === true,
+          run_id:run?.id, rewarded:run?.rewarded, held:combat.stats().paused,
+          owned:owned && (!run?.id || gate.runId === run.id),
           anomaly:state.trial?.anomaly || state.trial?.syncError || null};
 })()"""
 RESUME_ENTRY = """(() => {
-  const lw = window.__lw, combat = lw?.combat;
-  if (!lw?.localRewardHold) return true;
-  if (combat?.stats?.().paused && combat.command('pause') !== true) return false;
-  lw.localRewardHold = false;
-  return combat?.stats?.().paused !== true;
+  const lw = window.__lw, combat = lw?.combat, gate = lw?.localTrialEntry;
+  const state = combat?.stats?.(), run = state?.trial?.run;
+  if (!gate?.frozen || gate.released || gate.combat !== combat || gate.arena !== state?.arena ||
+      !state.active || !run?.id || run.id !== gate.runId || run.rewarded !== true ||
+      state.trial?.anomaly || state.trial?.syncError) return false;
+  if (state.paused && combat.command('pause') !== true) return false;
+  if (combat.stats().paused !== false) return false;
+  gate.released = true;
+  return true;
 })()"""
-STOP_ENTRY = "window.__lw.bot.stop(); window.__lw.combat.command('stop')"
+STOP_ENTRY = """(() => {
+  const lw = window.__lw, combat = lw?.combat, gate = lw?.localTrialEntry;
+  lw?.bot?.stop?.();
+  if (gate?.combat !== combat || gate.arena !== combat?.stats?.()?.arena) return false;
+  return combat.command('stop');
+})()"""
 
 
 def verify_rewarded_entry(page, arena, runner, *, clock=time.monotonic, sleeper=time.sleep):
@@ -38,7 +69,8 @@ def verify_rewarded_entry(page, arena, runner, *, clock=time.monotonic, sleeper=
     reason = 'trial_browser_reward_unverified'
     while clock() < deadline:
         entry = page.js(ENTRY_CHECK) or {}
-        if (entry.get('arena') != arena or entry.get('active') is not True
+        if (entry.get('owned') is not True or entry.get('held') is not True
+                or entry.get('arena') != arena or entry.get('active') is not True
                 or entry.get('overworld') or entry.get('anomaly')):
             break
         if entry.get('run_id') and entry.get('rewarded') is True:
@@ -64,9 +96,28 @@ def install_entry_gate(runner):
     original = runner.start_trial
 
     def start_trial(page, arena, args):
-        result = original(page, arena, args)
-        if not args.practice_only and not args.practice_ok:
-            verify_rewarded_entry(page, arena, runner)
+        if args.practice_only or args.practice_ok:
+            return original(page, arena, args)
+        original_js = page.js
+        injected = False
+
+        def atomic_js(expression, *positional, **keywords):
+            nonlocal injected
+            if START_CALL in expression:
+                if expression.count(START_CALL) != 1:
+                    raise RuntimeError('trial_entry_start_anchor_changed')
+                expression = expression.replace(START_CALL, ATOMIC_START)
+                injected = True
+            return original_js(expression, *positional, **keywords)
+
+        page.js = atomic_js
+        try:
+            result = original(page, arena, args)
+        finally:
+            page.js = original_js
+        if not injected:
+            raise SystemExit('trial_entry_start_anchor_missing')
+        verify_rewarded_entry(page, arena, runner)
         return result
 
     runner.start_trial = start_trial

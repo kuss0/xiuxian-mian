@@ -174,6 +174,9 @@ def test_terminal_server_receipt_preserves_original_and_counts_one_extra(harness
 
 
 def test_no_game_request_releases_ownership(harness):
+    harness.network.update(requests=[{'action': 'status'}], receipts=[
+        {'ok': True, 'trial': {'status': {'activeRun': None}}},
+    ])
     asyncio.run(browser._run(harness.owner, 'bamboo', True, 'fixture-job'))
     assert harness.record['phase'] == 'done'
     assert harness.record['daily_used'] == 1
@@ -200,6 +203,29 @@ def test_prestart_idle_status_does_not_release_ambiguous_start(harness):
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
     assert harness.record['phase'] == 'held'
     assert browser.snapshot()['server_closed'] is False
+
+
+@pytest.mark.parametrize('taint', ['empty', 'unknown', 'active_run', 'failed_status', 'terminal_unknown'])
+def test_incomplete_or_unknown_journal_never_proves_no_start(harness, victory_network, taint):
+    harness.record['daily_used'] = 0
+    if taint == 'unknown':
+        harness.network['requests'] = [{'action': 'unknown'}]
+    elif taint == 'active_run':
+        harness.network['receipts'] = [{'ok': True, 'trial': {
+            'run': {'id': 'capture-gap', 'status': 'active', 'rewarded': True},
+        }}]
+    elif taint == 'failed_status':
+        harness.network.update(requests=[{'action': 'status'}], receipts=[
+            {'ok': False, 'error': 'receipt_capture_failed'},
+            {'ok': True, 'trial': {'status': {'activeRun': None}}},
+        ])
+    elif taint == 'terminal_unknown':
+        harness.network.update(victory_network)
+        harness.network['requests'].append({'action': 'unknown'})
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert harness.record['phase'] == 'held'
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert len(harness.commands) == 1
 
 
 def test_unknown_started_result_is_held(harness):
