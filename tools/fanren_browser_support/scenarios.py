@@ -24,7 +24,7 @@ class NativeScenarios:
             if await item.is_visible() and await item.is_enabled():candidates.append(item)
         if len(candidates)!=1:raise RuntimeError('native_control_button_unavailable')
         await self.input.click(candidates[0])
-        await self.page.wait_for_function('window.fanrenNative.stats().controlMode==="companion"',timeout=10000)
+        await self.page.wait_for_function('() => window.fanrenNative.stats().controlMode==="companion"',timeout=10000)
         return True
 
     async def walk(self):

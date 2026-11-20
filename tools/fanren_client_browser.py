@@ -193,13 +193,13 @@ async def run(args):
                 value['stage']='loading_page';persist()
                 await page.goto(url,wait_until='domcontentloaded',timeout=90000)
                 if cache:await cache.refresh_grant(page)
-                await page.wait_for_function('window.__fanrenOwner===true',timeout=90000)
+                await page.wait_for_function('() => window.__fanrenOwner===true',timeout=90000)
                 value['identity_verified']=True;persist()
                 human=HumanInput(page)
                 value['stage']='entering_scene';persist()
                 await human.click(page.locator('#dwellingEnter'))
-                await page.wait_for_function('window.__fanrenRuntime?.stats().companion?.modelReady',timeout=600000)
-                await page.wait_for_function('window.__fanrenRuntime.stats().draws>2',timeout=600000)
+                await page.wait_for_function('() => window.__fanrenRuntime?.stats().companion?.modelReady',timeout=600000)
+                await page.wait_for_function('() => window.__fanrenRuntime.stats().draws>2',timeout=600000)
                 await page.evaluate('''() => {window.fanrenNative=window.createFanren3DBridge({runtime:window.__fanrenRuntime,ownerCheck:()=>window.__fanrenOwner===true});}''')
                 buttons=await page.locator('button:visible').evaluate_all('items=>items.map(e=>({id:e.id,text:e.textContent.trim().slice(0,70)}))')
                 value['visible_buttons']=buttons
@@ -210,7 +210,7 @@ async def run(args):
                     town=page.locator('#worldTownEntry')
                     if await town.is_visible() and (await town.inner_text()).strip()=='前往青溪坊':
                         await human.click(town)
-                        await page.wait_for_function('window.__fanrenRuntime.stats().environment?.tier===4 && window.__fanrenRuntime.stats().companion?.modelReady',timeout=600000)
+                        await page.wait_for_function('() => window.__fanrenRuntime.stats().environment?.tier===4 && window.__fanrenRuntime.stats().companion?.modelReady',timeout=600000)
                 if args.scenario=='inspect':value['scenario_result']={'kind':'inspect','loaded':True}
                 elif args.scenario=='walk':value['scenario_result']=await scenarios.walk()
                 elif args.scenario=='fishing':value['scenario_result']=await scenarios.fishing()
