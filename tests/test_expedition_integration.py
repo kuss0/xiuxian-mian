@@ -3,7 +3,7 @@ import asyncio
 import copy
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -87,6 +87,121 @@ def test_trial_adapter_full_flow_and_daily_consumption(trial_env):
     assert "fixture-init" not in repr(record) and "fixture-token" not in repr(record)
     assert not asyncio.run(trial.run_changfeng_once(1, manual=True))[0]
     assert len(trial_env) == 6
+
+
+@pytest.mark.parametrize("outcome", [True, False, "exception", "cancelled"])
+def test_reward_notice_awaits_transport_without_reclassifying_completed_trial(trial_env, monkeypatch, outcome):
+    durable = []
+    monkeypatch.setattr(trial, "_save", lambda: durable.append(copy.deepcopy(state.get_expedition_run_state())))
+
+    async def notify(message, **kwargs):
+        record = state.get_expedition_run_state()["changfeng"]["1"]
+        assert record["phase"] == "done"
+        assert durable[-1]["changfeng"]["1"]["reward_notice"]["state"] == "queued"
+        assert kwargs == {"scope": "identity", "send_as_id": 1, "limit": 700, "priority": "normal"}
+        assert "第1重·乙" in message and "灵石×8" in message
+        if outcome == "exception":
+            raise TimeoutError("notification timeout")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return outcome
+
+    sender = AsyncMock(side_effect=notify)
+    monkeypatch.setattr(trial, "send_audit_log", sender)
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(trial.run_changfeng_once(1, manual=True))
+    else:
+        assert asyncio.run(trial.run_changfeng_once(1, manual=True))[0]
+    record = state.get_expedition_run_state()["changfeng"]["1"]
+    assert record["phase"] == "done" and record["daily_used"] == 1
+    expected = "confirmed" if outcome is True else "unknown" if outcome == "cancelled" else "unconfirmed"
+    assert record["reward_notice"]["state"] == expected
+    assert durable[-1]["changfeng"]["1"]["reward_notice"]["state"] == expected
+    assert not asyncio.run(trial.notify_rewards(1, record))
+    sender.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure_stage", ["queued", "confirmed"])
+def test_notice_checkpoint_failure_keeps_completion_and_never_resends(trial_env, monkeypatch, failure_stage):
+    def save():
+        record = state.get_expedition_run_state().get("changfeng", {}).get("1", {})
+        if record.get("reward_notice", {}).get("state") == failure_stage:
+            raise RuntimeError("disk unavailable")
+
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(trial, "_save", save)
+    monkeypatch.setattr(trial, "send_audit_log", sender)
+    assert asyncio.run(trial.run_changfeng_once(1, manual=True))[0]
+    record = state.get_expedition_run_state()["changfeng"]["1"]
+    assert record["phase"] == "done" and record["daily_used"] == 1
+    assert record["reward_notice"]["state"] == ("unconfirmed" if failure_stage == "queued" else "confirmed")
+    assert sender.await_count == int(failure_stage == "confirmed")
+    assert not asyncio.run(trial.notify_rewards(1, record))
+
+
+@pytest.mark.parametrize("phase,rewarded", [("held", True), ("done", False), ("running", True)])
+def test_reward_notice_requires_a_rewarded_terminal_record(monkeypatch, phase, rewarded):
+    sender = AsyncMock(return_value=True)
+    monkeypatch.setattr(trial, "send_audit_log", sender)
+    monkeypatch.setattr(trial, "_save", Mock())
+    record = {"phase": phase, "rewarded": rewarded, "run_id": "fixture", "completed_at": 100, "grade": "乙"}
+    assert not asyncio.run(trial.notify_rewards(1, record))
+    sender.assert_not_awaited()
+    assert "reward_notice" not in record
+
+
+def test_normal_reward_notice_uses_runtime_transport_and_keeps_account_visible(trial_env, monkeypatch):
+    from model import runtime
+    transport = AsyncMock(return_value=True)
+    enqueue = Mock(side_effect=AssertionError("reward notice entered summary queue"))
+    monkeypatch.setattr(runtime, "_send_log_group_message", transport)
+    monkeypatch.setattr(runtime, "_queue_low_priority_audit", enqueue)
+    monkeypatch.setattr(runtime, "LOG_GROUP_STRUCTURED_SUMMARY", True)
+    monkeypatch.setattr(runtime, "get_send_as_label", lambda _: "@fixture")
+    monkeypatch.setattr(trial, "send_audit_log", runtime.send_audit_log)
+    assert asyncio.run(trial.run_changfeng_once(1, manual=True))[0]
+    transport.assert_awaited_once()
+    text = transport.await_args.args[0]
+    assert "@fixture" in text and "第1重·乙" in text and "灵石×8" in text
+    enqueue.assert_not_called()
+    assert state.get_expedition_run_state()["changfeng"]["1"]["reward_notice"]["state"] == "confirmed"
+
+
+def test_completed_historical_run_status_read_does_not_backfill_reward_notice(trial_env):
+    old = {"phase": "done", "run_id": "historical", "rewarded": True, "completed_at": 100,
+           "grade": "乙", "tier": 2, "arena": "bamboo", "daily_used": 1, "result": "灵石×8"}
+    state.set_expedition_run_state({"changfeng": {"1": old}})
+    assert asyncio.run(trial.run_changfeng_once(1, manual=True, status_only=True))[0]
+    assert "reward_notice" not in old
+    assert trial.send_audit_log.await_args.kwargs.get("priority") != "normal"
+    assert "游戏状态" in trial.send_audit_log.await_args.args[0]
+
+
+def test_inflight_reward_notice_cannot_be_started_twice(trial_env, monkeypatch):
+    async def run():
+        record = {"phase": "done", "run_id": "fixture", "rewarded": True, "completed_at": 100,
+                  "grade": "乙", "tier": 2, "arena": "bamboo", "result": "灵石×8"}
+        state.set_expedition_run_state({"changfeng": {"1": record}})
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def transport(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return True
+
+        sender = AsyncMock(side_effect=transport)
+        monkeypatch.setattr(trial, "send_audit_log", sender)
+        task = asyncio.create_task(trial.notify_rewards(1, record))
+        await entered.wait()
+        assert record["reward_notice"]["state"] == "queued"
+        assert not await trial.notify_rewards(1, record)
+        release.set()
+        assert await task
+        sender.assert_awaited_once()
+        assert record["reward_notice"]["state"] == "confirmed"
+
+    asyncio.run(run())
 
 
 def test_trial_held_status_only_never_starts_or_clears_uncertainty(trial_env):

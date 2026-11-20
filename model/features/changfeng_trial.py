@@ -218,6 +218,44 @@ def confirm_changfeng_finished(identity_id, receipt_key):
     return True, "已记录人工确认，保留原回执；本次不会重放，次日再安排"
 
 
+async def notify_rewards(identity_id, record):
+    """Attempt one immediate notice for a newly confirmed rewarded run."""
+    run_id = record.get("run_id")
+    if (record.get("phase") != "done" or record.get("rewarded") is not True
+            or not run_id or not record.get("completed_at") or not record.get("grade")):
+        return False
+    previous = record.get("reward_notice")
+    if isinstance(previous, dict) and previous.get("run_id") == run_id:
+        return False
+    notice = {"run_id": run_id, "state": "queued", "queued_at": time.time()}
+    record["reward_notice"] = notice
+    try:
+        _save()
+    except Exception as exc:
+        notice.update(state="unconfirmed", error=f"intent_not_saved:{type(exc).__name__}")
+        return False
+
+    sent = False
+    try:
+        sent = await send_audit_log(
+            f"⚔️ 长风试炼·{TRIAL_ARENAS[record['arena']]}·第{record['tier']}重·{record['grade']}｜{record['result']}",
+            scope="identity", send_as_id=identity_id, limit=700, priority="normal",
+        )
+        # Normal priority awaits the existing Telegram transport, not the summary queue.
+        notice["state"] = "confirmed" if sent is True else "unconfirmed"
+    except Exception as exc:
+        notice.update(state="unconfirmed", error=type(exc).__name__)
+    finally:
+        if notice["state"] == "queued":
+            notice["state"] = "unknown"
+        notice["attempted_at"] = time.time()
+        try:
+            _save()
+        except Exception as exc:
+            print(f"Changfeng reward notice checkpoint failed: {type(exc).__name__}")
+    return sent is True
+
+
 async def run_changfeng_once(identity_id, arena="longwind", *, manual=False, status_only=False):
     from . import cave_treasure_runtime as cave
     identity_id = int(identity_id)
@@ -314,9 +352,6 @@ async def run_changfeng_once(identity_id, arena="longwind", *, manual=False, sta
                                  or record.get("daily_used", 0) >= int(config.get("daily_limit", 1))
                                  else time.time() + 15 * 60)
             _save()
-            await send_audit_log(f"⚔️ 长风试炼·{TRIAL_ARENAS[arena]}｜{record['result']}",
-                                 scope="identity", send_as_id=identity_id, limit=500)
-            return True, record["result"]
         except asyncio.CancelledError:
             if not status_only:
                 if record.get("operation_id"):
@@ -336,6 +371,15 @@ async def run_changfeng_once(identity_id, arena="longwind", *, manual=False, sta
             _save()
             await send_audit_log(f"⚔️ 长风试炼已停止，保留记录待核对：{code}", scope="identity", send_as_id=identity_id, limit=300)
             return False, "试炼未获完整确认，已保留记录待核对"
+        if record.get("rewarded") is True:
+            await notify_rewards(identity_id, record)
+        else:
+            try:
+                await send_audit_log(f"⚔️ 长风试炼·{TRIAL_ARENAS[arena]}｜{record['result']}",
+                                     scope="identity", send_as_id=identity_id, limit=500)
+            except Exception as exc:
+                print(f"Changfeng status notice failed: {type(exc).__name__}")
+        return True, record["result"]
 
 
 async def run_changfeng_scheduler(now):
