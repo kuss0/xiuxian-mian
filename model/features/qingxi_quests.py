@@ -968,6 +968,38 @@ def reward_batch_verified(result, identity_id):
     return True
 
 
+async def inspect_reward_statuses(call, identity_id):
+    """Bounded native status envelopes, with no scene entry or gameplay writes."""
+    resources = (
+        ('moonpalace', 'moon-palace', 'moonPalace', 'moon'), ('bloodland', 'blood-land', 'bloodLand', 'blood'),
+        ('southgate', 'south-gate', 'southGate', 'siege'), ('escort', 'refugee-escort', 'refugeeEscort', 'escort'),
+        ('mulanshrine', 'mulan-shrine', 'mulanShrine', 'shrine'), ('bqpuppet', 'baiqiao-puppet', 'baiqiaoPuppet', 'puppet'),
+        ('jianzhong', 'jianzhong-trial', 'jianzhongTrial', 'jianzhong'),
+    )
+    final = {'verified': True, 'player': identity_id, 'day': None, 'daily': [], 'trials': {}, 'checked_at': time.time()}
+    for identity, resource, envelope, key in resources:
+        response = await call('status', _api_path='/api/miniapp/xianxia-dwelling/' + resource)
+        payload = response.get(envelope) or {}
+        status = payload.get(key) or {}
+        if (response.get('ok') is not True or payload.get('ok') is False or payload.get('error')
+                or 'run' not in status or status['run'] is not None
+                or type(status.get('claimed')) is not bool or type(status.get('hasKey')) is not bool):
+            raise RuntimeError('qingxi_reward_daily_status_unverified')
+        final['day'] = final['day'] or status.get('day')
+        final['daily'].append({'id': identity, 'day': status.get('day'), 'claimed': status['claimed'],
+            'hasKey': status['hasKey'], 'activeRun': None,
+            'exhausted': identity == 'moonpalace' and status.get('failClaimed') is True and not status['claimed'] and status['hasKey']})
+    for arena in ('longwind', 'bamboo'):
+        response = await call('status', _api_path='/api/miniapp/xianxia-dwelling/trial', arena=arena)
+        if response.get('ok') is not True:
+            raise RuntimeError('qingxi_reward_trial_status_unverified')
+        final['trials'][arena] = copy.deepcopy((response.get('trial') or {}).get('status'))
+    proof = {'reward_batch': {'phase': 'partial', 'running': False, 'before': {'day': final['day']}, 'final': final}}
+    if not reward_batch_verified(proof, identity_id):
+        raise RuntimeError('qingxi_reward_status_requires_review')
+    return final
+
+
 async def run_once(identity_id, *, status_only=False, reward_batch=False):
     from . import cave_treasure_runtime as cave
     owner = MiniAppIdentityOwner.capture(identity_id)
@@ -976,6 +1008,10 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
         return False, '身份不可用或正在参加其他活动'
     if reward_batch and owner.account_id != identity_id:
         return False, '每日副本和试炼仅支持本人账号'
+    if reward_batch and not status_only:
+        from .qingxi_rewards import defeated_today
+        if defeated_today(identity_id, time.time()):
+            return False, '最近试炼未通关，请先手动验证单场，暂不执行整批'
     lock = cave._public_entry_lock(identity_id)
     if lock.locked():
         return False, '洞府公共入口操作执行中'
@@ -983,7 +1019,7 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
     config = get_expedition_config().get('qingxi_quests', {})
     reward_config = copy.deepcopy(get_expedition_config().get('qingxi_rewards', {}))
     record = records().setdefault(str(identity_id), {})
-    if (reward_batch and status_only and record.get('gameplay_uncertain')
+    if (reward_batch and status_only and any(record.get(key) for key in ('gameplay_uncertain', 'pending', 'gather'))
             and (record.get('browser') or {}).get('workflow') != 'rewards'):
         return False, '旧青溪任务仍待原任务证据核对，不能用奖励状态解除占用'
     if not status_only and (record.get('gather') or record.get('gameplay_uncertain')
@@ -1032,19 +1068,29 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
                         verified_player_id=identity_id, observed_at=time.time())
                 return result.data
             if reward_batch:
+                if status_only:
+                    inspection = await inspect_reward_statuses(call, identity_id)
+                    record['reward_inspection'] = inspection
+                    if any(record.get(key) for key in ('gameplay_uncertain', 'pending', 'gather')) or record.get('phase') == 'held':
+                        old = _browser_evidence(record)
+                        if ((record.get('browser') or {}).get('cleanup_error') or not reward_batch_verified(old, identity_id)
+                                or old.get('server_checked') is not True or old.get('pending') != 0
+                                or old.get('stored_pending') != [] or any(old.get(key) for key in ('error', 'status_error', 'cleanup_error'))):
+                            raise RuntimeError('qingxi_reward_journal_requires_review')
+                    flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+                    if not server_flight_closed(flight):
+                        raise RuntimeError('qingxi_flight_requires_review')
+                    record.update(phase='idle', gameplay_uncertain=False, last_error='', rewards_block_reason='',
+                                  rewards_reviewed_at=time.time(), rewards_next_at=time.time() + 1800)
+                    save()
+                    return True, '九项奖励、原任务证据与飞行状态已只读核对'
                 await run_gameplay(owner, token, url, record, allowed, reward_batch=True, inspection_only=status_only,
                     verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))
                 record.update(phase='idle', last_error='')
-                if status_only:
-                    record['reward_inspection'] = copy.deepcopy(record['browser']['reward_inspection'])
-                    record['rewards_reviewed_at'] = time.time()
-                    record['rewards_next_at'] = time.time() + 1800
-                    save()
-                    return True, '九项奖励、未决记录与飞行状态已只读核对'
                 record['reward_batch'] = copy.deepcopy(record['browser']['reward_batch'])
                 batch = record['reward_batch']
                 from .changfeng_trial import _next_day
-                record['rewards_next_at'] = (_next_day(time.time(), identity_id) if batch.get('remaining') == 0
+                record['rewards_next_at'] = (_next_day(time.time(), identity_id) if batch.get('remaining') == 0 or batch.get('stop_for_day')
                                              else time.time() + 1800)
                 save()
                 await notify_rewards(identity_id, record)

@@ -89,6 +89,34 @@ def test_new_scheduler_ownership_excludes_old_automatic_trial_paths(environment,
     scheduled.assert_not_awaited()
 
 
+def test_confirmed_daily_defeat_preserves_remaining_slots(environment):
+    _config, action, notice = environment
+    trial._records()['42'] = {'browser_trial': {'kind': 'defeat', 'server_closed': True,
+                                               'rewarded': True, 'finished_at': 50}}
+    asyncio.run(rewards.scheduler(100))
+    action.assert_not_awaited()
+    assert quests.records()['42']['rewards_next_at'] > 3600
+    assert '保留剩余奖励次数' in notice.call_args.args[0]
+
+
+def test_batch_stop_survives_readonly_review_rescheduling(environment):
+    _config, action, notice = environment
+    quests.records()['42'] = {'phase': 'idle', 'rewards_next_at': 0, 'reward_batch': {
+        'stop_for_day': True, 'before': {'day': rewards._day(100)}}}
+    asyncio.run(rewards.scheduler(100))
+    action.assert_not_awaited()
+    assert '结算需复核' in notice.call_args.args[0]
+    assert quests.records()['42']['rewards_next_at'] > 3600
+
+
+def test_failure_review_pause_is_not_erased_by_calendar_rollover(environment):
+    _config, action, _notice = environment
+    trial._records()['42'] = {'auto_pause': {'reason': 'confirmed_defeat', 'run_id': 'old-loss'}}
+    asyncio.run(rewards.scheduler(100000))
+    action.assert_not_awaited()
+    assert rewards.snapshots()['42']['auto_paused'] is True
+
+
 def test_direct_queued_trial_cannot_bypass_new_scheduler_ownership(environment):
     ok, message = asyncio.run(browser.run_scheduled_once(42))
     assert not ok and '接管' in message

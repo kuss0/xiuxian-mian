@@ -149,6 +149,12 @@ def reconcile_persisted_records():
         status = record.get('browser_trial')
         if not isinstance(status, dict) or not status.get('run_id'):
             continue
+        if (status.get('kind') == 'defeat' and status.get('server_closed') is True
+                and status.get('rewarded') is True and not status.get('server_cleared')
+                and (record.get('auto_pause') or {}).get('run_id') != status['run_id']):
+            record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': status['run_id'],
+                                    'at': status.get('finished_at'), 'requires_verified_win': True}
+            changed = True
         probe = copy.deepcopy(record)
         if not _sync_main_result(probe, status) or probe == record:
             continue
@@ -269,7 +275,9 @@ async def _notify_result(record):
     status = record.get('browser_trial') or {}
     run_id = status.get('run_id')
     gains, cultivation = status.get('gains') or {}, status.get('cultivation') or 0
-    if (not run_id or not (gains or cultivation)
+    confirmed_defeat = (status.get('kind') == 'defeat' and status.get('server_closed') is True
+                        and status.get('rewarded') is True and not status.get('server_cleared'))
+    if (not run_id or not (gains or cultivation or confirmed_defeat)
             or (record.get('browser_trial_notice') or {}).get('run_id') == run_id):
         return
     arena = trial.TRIAL_ARENAS[status['arena']]
@@ -279,13 +287,16 @@ async def _notify_result(record):
     summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
     if cultivation:
         summary += ('，' if summary else '') + f'修为+{cultivation}'
+    message = f'{title}{outcome}｜已确认收获：{summary}'
+    if confirmed_defeat and not (gains or cultivation):
+        message = f'{title}未通关，已结束｜本局未确认物品或修为收获；保留剩余次数待复核'
     notice = {'run_id': run_id, 'attempted_at': time.time(), 'state': 'attempted'}
     record['browser_trial_notice'] = notice
     # Persist intent before sending. An unknown Telegram outcome must not cause
     # another notice or, more importantly, another game run.
     trial._save()
     try:
-        delivered = await send_audit_log(f'{title}{outcome}｜已确认收获：{summary}',
+        delivered = await send_audit_log(message,
                                          scope='identity', send_as_id=status['identity_id'], priority='normal', limit=700)
         notice['state'] = 'sent' if delivered else 'unconfirmed'
     except Exception as error:
@@ -298,6 +309,21 @@ async def action(payload):
     global _TASK
     if payload.get('action') == 'status':
         return True, '浏览器单次试跑状态', {'browser_trial': snapshot()}
+    if payload.get('action') == 'notify':
+        try:
+            identity_id = int(payload.get('send_as_id') or 0)
+        except (ValueError, TypeError, OverflowError):
+            return False, '身份无效', {}
+        record = trial._records().get(str(identity_id), {})
+        status = record.get('browser_trial') or {}
+        if (not payload.get('job_id') or status.get('job_id') != payload['job_id']
+                or status.get('identity_id') != identity_id or status.get('server_closed') is not True
+                or not status.get('run_id') or (_TASK is not None and not _TASK.done())):
+            return False, '缺少同一已结束任务的确认回执', {}
+        await _notify_result(record)
+        notice = record.get('browser_trial_notice') or {}
+        message = '本局通报已确认' if notice.get('state') == 'sent' else '通报未确认，已保留记录且不自动重发'
+        return True, message, {'browser_trial': {**copy.deepcopy(status), 'notice': copy.deepcopy(notice)}}
     if payload.get('action') != 'start':
         return False, '仅支持 start/status', {}
     if _TASK is not None and not _TASK.done():
@@ -355,6 +381,8 @@ async def run_scheduled_once(identity_id, arena='longwind'):
         return False, '身份正在参加其他活动'
     record = trial._records().get(str(identity_id), {})
     now = time.time()
+    if record.get('auto_pause'):
+        return False, '已确认战败，自动试炼暂停，等待手动验证通过'
     if record.get('phase') not in {None, 'done', 'idle'}:
         return False, '旧试炼尚待核对'
     used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(now) else 0
@@ -548,6 +576,11 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
             if facts['run_id'] and type(facts['tier']) is int and facts['tier'] != tier:
                 record['phase'] = 'held'
                 record['last_error'] = '浏览器试炼回执重数不符，结果待核对'
+            if facts['closed'] and facts['rewarded'] and _STATUS.get('kind') == 'defeat':
+                record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': facts['run_id'],
+                                        'at': _STATUS.get('finished_at'), 'requires_verified_win': True}
+            elif facts['cleared'] and facts['rewarded'] and facts['run_id'] and record.get('phase') != 'held':
+                record.pop('auto_pause', None)
             if record['phase'] == 'held':
                 record['last_error'] = record.get('last_error') or '浏览器试跑已发开局但结果待核对'
     except asyncio.CancelledError:

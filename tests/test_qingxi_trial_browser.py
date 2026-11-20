@@ -290,6 +290,49 @@ def test_local_victory_without_server_rewards_never_notifies(harness):
     harness.notice.assert_not_awaited()
 
 
+def test_confirmed_zero_reward_defeat_notifies_once_for_exact_job(harness):
+    harness.record['browser_trial'] = {
+        'job_id': 'defeat-job', 'identity_id': harness.owner.identity_id, 'arena': 'longwind', 'tier': 1,
+        'kind': 'defeat', 'server_closed': True, 'server_cleared': False, 'rewarded': True,
+        'run_id': 'defeated-run', 'gains': {}, 'cultivation': 0,
+    }
+    payload = {'action': 'notify', 'send_as_id': harness.owner.identity_id, 'job_id': 'defeat-job'}
+    ok, _message, result = asyncio.run(browser.action({**payload, 'job_id': 'other'}))
+    assert not ok
+    harness.notice.assert_not_awaited()
+    ok, _message, result = asyncio.run(browser.action(payload))
+    assert ok and result['browser_trial']['notice']['state'] == 'sent'
+    text = harness.notice.call_args.args[0]
+    assert '未通关' in text and '未确认物品或修为收获' in text
+    assert '已确认收获' not in text and 'defeated-run' not in text
+    asyncio.run(browser.action(payload))
+    harness.notice.assert_awaited_once()
+
+
+def test_confirmed_defeat_pause_survives_restart_without_replaying_notice(harness, monkeypatch):
+    harness.record['daily_used'] = 0
+    harness.record['browser_trial'] = {'job_id': 'defeat-job', 'identity_id': harness.owner.identity_id,
+        'arena': 'longwind', 'run_id': 'defeated-run', 'kind': 'defeat', 'rewarded': True,
+        'server_closed': True, 'server_cleared': False, 'finished_at': 100, 'tier': 1}
+    dirty = Mock()
+    monkeypatch.setattr(browser.trial, 'mark_dirty', dirty)
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record['phase'] == 'done'
+    assert harness.record['auto_pause']['run_id'] == 'defeated-run'
+    browser.trial.reset_changfeng_runtime_on_startup()
+    dirty.assert_called_once()
+    harness.notice.assert_not_awaited()
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert not harness.commands
+
+
+def test_only_verified_manual_win_clears_defeat_pause(harness, victory_network):
+    harness.record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': 'previous-loss'}
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'manual-retest'))
+    assert 'auto_pause' not in harness.record
+
+
 def test_terminal_server_receipt_preserves_original_and_counts_one_extra(harness):
     h = harness
     h.network.update(requests=[{'action': 'start'}], receipts=[

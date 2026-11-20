@@ -71,6 +71,7 @@
         ['overview', 'details', 'section', 'town/review'].includes(resource));
     if (resource === 'trial' && !readonly) {
       if (!config.rewardBatch) stop('quest_runner_trial_forbidden');
+      if (body.action === 'start' && q.rewardStop) stop('reward_batch_defeat_stop');
       if (!['start','checkpoint','end'].includes(body.action)) stop('reward_batch_trial_action');
       if (body.action === 'start' && (body.tier !== 1 || !Object.hasOwn(trialStarts, body.arena)))
         stop('reward_batch_first_tier_only');
@@ -117,6 +118,8 @@
       shape: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [],
       at: Date.now() / 1000};
     q.receipts.push(row);
+    if (config.rewardBatch && resource === 'trial' && row.ok && payload?.run?.status === 'defeated')
+      q.rewardStop = {reason:'confirmed_defeat',run_id:payload.run.id,arena:payload.run.arena};
     // The native client releases leashed enemies while leaving the field. A
     // distance rejection is a confirmed no-op, not an unknown reward/write.
     const rejectedRelease = resource === 'quests' && body.action === 'field-release' &&

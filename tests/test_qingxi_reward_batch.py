@@ -127,6 +127,43 @@ def test_only_explicit_reward_workflow_installs_the_batch():
     assert '"rewardBatch": true' in script
 
 
+@pytest.mark.parametrize('taint', ['', 'active_daily', 'missing_run', 'active_trial', 'wrong_day', 'wrong_quota'])
+def test_protocol_reward_inspection_uses_nine_status_only_requests(taint):
+    fixture = json.loads((Path(__file__).parent / 'fixtures/qingxi-native-reward-readers-20261120.json').read_text())
+    specs = [
+        ('moon-palace', 'moonPalace', 'moon'), ('blood-land', 'bloodLand', 'blood'),
+        ('south-gate', 'southGate', 'siege'), ('refugee-escort', 'refugeeEscort', 'escort'),
+        ('mulan-shrine', 'mulanShrine', 'shrine'), ('baiqiao-puppet', 'baiqiaoPuppet', 'puppet'),
+        ('jianzhong-trial', 'jianzhongTrial', 'jianzhong'), ('trial', 'trial', 'status')]
+    async def call(action, *, _api_path, **body):
+        assert action == 'status' and set(body) <= {'arena'}
+        resource = _api_path.rsplit('/', 1)[-1]
+        row = next(row for row in fixture['reward_statuses'] if row['resource'] == resource and row['arena'] == body.get('arena'))
+        status = copy.deepcopy(row['status'])
+        if resource == 'moon-palace':
+            if taint == 'active_daily':
+                status['run'] = {'id': 'old'}
+            if taint == 'missing_run':
+                status.pop('run')
+        if resource == 'trial' and body['arena'] == 'bamboo':
+            if taint == 'active_trial':
+                status['activeRun'] = {'id': 'old'}
+            if taint == 'wrong_day':
+                status['day'] = '2026-11-19'
+            if taint == 'wrong_quota':
+                status['remaining'] = 3
+        _resource, envelope, key = next(spec for spec in specs if spec[0] == resource)
+        return {'ok': True, envelope: {key: status}}
+    reader = AsyncMock(side_effect=call)
+    if taint:
+        with pytest.raises(RuntimeError):
+            asyncio.run(quests.inspect_reward_statuses(reader, 42))
+    else:
+        result = asyncio.run(quests.inspect_reward_statuses(reader, 42))
+        assert reader.await_count == 9
+        assert len(result['daily']) == 7 and result['trials']['bamboo']['remaining'] == 2
+
+
 @pytest.fixture
 def verified_batch():
     day = '2026-11-20'
