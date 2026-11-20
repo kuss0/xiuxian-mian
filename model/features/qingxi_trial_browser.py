@@ -103,6 +103,8 @@ def _sync_main_result(record, status):
 
     if run_id:
         record['run_id'] = run_id
+    if status.get('job_id'):
+        record['operation_id'] = 'browser-' + str(status['job_id'])
     arena = status.get('arena')
     if isinstance(arena, str) and arena in trial.TRIAL_ARENAS:
         record['arena'] = arena
@@ -130,7 +132,10 @@ def _sync_main_result(record, status):
     record['exhausted'] = bool(status.get('exhausted') or status.get('no_rewards'))
     record['server_cleared'] = status.get('server_cleared') is True
     finished_at = status.get('finished_at')
-    record['completed_at'] = finished_at if type(finished_at) in (int, float) and finished_at > 0 else time.time()
+    if type(finished_at) in (int, float) and finished_at > 0:
+        record['completed_at'] = finished_at
+    elif type(record.get('completed_at')) not in (int, float) or record['completed_at'] <= 0:
+        record['completed_at'] = time.time()
     record['phase'] = 'done'
     record['last_error'] = None
     return True
@@ -145,20 +150,25 @@ def reconcile_persisted_records():
         status = record.get('browser_trial')
         if not isinstance(status, dict) or not status.get('run_id'):
             continue
+        probe = copy.deepcopy(record)
+        if not _sync_main_result(probe, status) or probe == record:
+            continue
+        # Once the result belongs to this native run, repairing metadata must
+        # not archive that same run over the actual previous HTTP attempt.
         if (record.get('run_id') == status.get('run_id')
-                and (status.get('finished_at') is None
-                     or record.get('completed_at') == status.get('finished_at'))
                 and isinstance(record.get('result'), str)
-                and record['result'].startswith(('已通关｜', '已结束｜'))):
+                and record['result'].startswith(('已通关｜', '已结束｜', '今日有奖次数已用完'))):
+            record.update(probe)
+            for key in _ATTEMPT_FIELDS:
+                if key not in probe:
+                    record.pop(key, None)
+            changed = True
             continue
         previous = _previous_attempt(record)
         if record.get('run_id') == status.get('run_id') and record.get('previous_run_id'):
             previous['run_id'] = record['previous_run_id']
             for key in ('operation_id', 'browser_trial', 'browser_trial_notice', 'execution_engine', 'started_at'):
                 previous.pop(key, None)
-        probe = copy.deepcopy(record)
-        if not _sync_main_result(probe, status):
-            continue
         notice = copy.deepcopy(record.get('browser_trial_notice'))
         active = {}
         if status.get('job_id'):

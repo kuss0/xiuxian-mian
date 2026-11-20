@@ -241,6 +241,42 @@ def test_startup_reconciles_legacy_browser_result_once(harness, monkeypatch):
     dirty.assert_called_once()
 
 
+@pytest.mark.parametrize('finished_at', [None, 200])
+@pytest.mark.parametrize('completed_at', [None, 100])
+def test_startup_repairs_current_result_metadata_without_rearchiving(harness, monkeypatch, finished_at, completed_at):
+    import copy
+
+    dirty = Mock()
+    monkeypatch.setattr(browser.trial, 'mark_dirty', dirty)
+    harness.record.update(
+        run_id='browser-run', operation_id='legacy-http-operation', result='已结束｜灵石×8',
+        previous_attempt={'run_id': 'http-run', 'result': 'HTTP previous result'},
+        browser_trial_notice={'run_id': 'browser-run', 'state': 'sent'},
+        browser_trial={'run_id': 'browser-run', 'job_id': 'browser-job', 'scheduled': True,
+                       'arena': 'longwind', 'rewarded': True, 'server_closed': True,
+                       'gains': {'灵石': 8}},
+    )
+    if completed_at is not None:
+        harness.record['completed_at'] = completed_at
+    if finished_at is not None:
+        harness.record['browser_trial']['finished_at'] = finished_at
+    previous = copy.deepcopy(harness.record['previous_attempt'])
+    notice = copy.deepcopy(harness.record['browser_trial_notice'])
+
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record['operation_id'] == 'browser-browser-job'
+    assert harness.record['execution_engine'] == 'browser-m19'
+    assert harness.record['previous_attempt'] == previous
+    assert harness.record['browser_trial_notice'] == notice
+    if finished_at is not None or completed_at is not None:
+        assert harness.record['completed_at'] == (finished_at or completed_at)
+    after = copy.deepcopy(harness.record)
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record == after
+    dirty.assert_called_once()
+    harness.notice.assert_not_awaited()
+
+
 def test_local_victory_without_server_rewards_never_notifies(harness):
     harness.network['requests'] = [{'action': 'start'}]
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
