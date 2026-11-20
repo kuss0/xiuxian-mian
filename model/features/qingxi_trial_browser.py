@@ -1,6 +1,7 @@
-"""Manual, one-game browser canary using the already registered account client."""
+"""Bounded native-browser trials using the already registered account client."""
 import asyncio
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,12 +18,29 @@ from .cave_treasure_miniapp import request_cave_treasure_miniapp_init_data
 from .miniapp_common import MiniAppIdentityOwner
 
 TOOL_ROOT = Path('/root/2026/qingxi-trial-v13-20261105')
+# NPC automation imports TOOL_ROOT for its shared Linux/CDP helpers. Keep that
+# installation stable; only trials select the independently verified m19 bot.
+TRIAL_TOOL_ROOT = Path('/root/2026/qingxi-trial-m19-wa-canary-20261116')
+TRIAL_STRATEGY_SHA256 = '67d98870f531ae2642cf645054e0dd67cf9cf92441f74e7d7f617ed321a04e71'
+TRIAL_RUNNER_SHA256 = 'f5f113bb168f7327ec2af2a699e96a22505da928090d5df67ad591072ba738ec'
 _TASK = None
 _STATUS = {}
 
 
 def snapshot():
     return copy.deepcopy(_STATUS)
+
+
+def _trial_tool_root():
+    root = TRIAL_TOOL_ROOT
+    if not all((root / part).is_file() for part in (
+            '.venv/bin/python', 'tools/longwind_trial_bot.py', 'tools/longwind_trial_bot.js')):
+        raise RuntimeError('trial_browser_dependency_missing')
+    if hashlib.sha256((root / 'tools/longwind_trial_bot.js').read_bytes()).hexdigest() != TRIAL_STRATEGY_SHA256:
+        raise RuntimeError('trial_browser_strategy_changed')
+    if hashlib.sha256((root / 'tools/longwind_trial_bot.py').read_bytes()).hexdigest() != TRIAL_RUNNER_SHA256:
+        raise RuntimeError('trial_browser_runner_changed')
+    return root
 
 
 def summarize_network(network):
@@ -35,12 +53,18 @@ def summarize_network(network):
     run_id = run.get('id')
     successful = [row for row in successful if (row.get('run') or {}).get('id') in (None, run_id)]
     rewarded = any((row.get('run') or {}).get('rewarded') is True for row in successful)
+    no_rewards = any((row.get('run') or {}).get('rewarded') is False for row in successful)
     terminal = next((row for row in reversed(successful)
                      if isinstance(row.get('result'), dict) and row['result'].get('grade')), None)
     started = any(row.get('action') in {'start', 'checkpoint', 'end'} for row in network.get('requests') or [])
     # A pre-start status with activeRun=null cannot confirm an ambiguous start ended.
     latest_status = (successful[-1].get('status') or {}) if successful else {}
     closed = bool(started and run_id and 'activeRun' in latest_status and latest_status['activeRun'] is None)
+    exhausted = (latest_status.get('remaining') == 0
+                 and type(latest_status.get('remaining')) is int
+                 and type(latest_status.get('used')) is int
+                 and type(latest_status.get('limit')) is int
+                 and latest_status['used'] == latest_status['limit'] > 0)
     gains, cultivation, seen = {}, 0, set()
     for row in successful:
         current = row.get('run') or {}
@@ -63,6 +87,7 @@ def summarize_network(network):
         cultivation += amount
     return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed,
             'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
+            'exhausted': exhausted, 'no_rewards': no_rewards,
             'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
 
 
@@ -116,7 +141,9 @@ async def action(payload):
     reason = get_activity_block_reason(identity_id)
     if not get_global_enabled() or reason:
         return False, reason or '全局已暂停', {}
-    if not (TOOL_ROOT / '.venv/bin/python').is_file() or not (TOOL_ROOT / 'local-qingxi/run_dungeon.py').is_file():
+    try:
+        _trial_tool_root()
+    except (OSError, RuntimeError):
         return False, '本地试炼工具未安装', {}
     from . import cave_treasure_runtime as cave
     if cave._public_entry_lock(identity_id).locked():
@@ -128,7 +155,55 @@ async def action(payload):
     return True, '已安排单次浏览器试跑，不启用自动化', {'browser_trial': snapshot()}
 
 
-async def _run(owner, arena, practice_only, job_id):
+async def run_scheduled_once(identity_id, arena='longwind'):
+    """One scheduled native game, sharing manual ownership and local daily caps."""
+    global _TASK
+    identity_id = int(identity_id)
+    config = copy.deepcopy(trial.get_expedition_config().get('changfeng', {}))
+    if (not config.get('enabled') or identity_id not in config.get('participant_identity_ids', [])
+            or arena not in trial.TRIAL_ARENAS or not get_global_enabled()):
+        return False, '长风试炼未启用或场地不可用'
+    if _TASK is not None and not _TASK.done():
+        return False, '已有浏览器试跑执行中'
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if (owner is None or owner.account_id != identity_id
+            or not is_cave_public_identity_available(identity_id)):
+        return False, '浏览器试炼仅支持可用的本人账号'
+    if get_activity_block_reason(identity_id):
+        return False, '身份正在参加其他活动'
+    record = trial._records().get(str(identity_id), {})
+    now = time.time()
+    if record.get('phase') not in {None, 'done', 'idle'}:
+        return False, '旧试炼尚待核对'
+    used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(now) else 0
+    if used >= int(config.get('daily_limit', 1)):
+        return False, '已达到本地每日试炼限额'
+    if float(record.get('next_at') or 0) > now:
+        return False, '尚未到试炼时间'
+    from . import cave_treasure_runtime as cave
+    if cave._public_entry_lock(identity_id).locked():
+        return False, '身份洞府入口忙'
+    try:
+        _trial_tool_root()
+    except (OSError, RuntimeError) as error:
+        return False, str(error)
+    current = asyncio.current_task()
+    _TASK = current
+    job_id = uuid.uuid4().hex
+    _STATUS.clear()
+    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena,
+                   phase='preparing', started_at=now, scheduled=True)
+    try:
+        await _run(owner, arena, False, job_id, scheduled_config=config)
+    finally:
+        if _TASK is current:
+            _TASK = None
+    record = trial._records().get(str(identity_id), {})
+    ok = record.get('phase') in {'idle', 'done'} and snapshot().get('phase') != 'failed'
+    return ok, '本次浏览器试炼已结束' if ok else '浏览器试炼待核对'
+
+
+async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
     from . import cave_treasure_runtime as cave
     identity_id = owner.identity_id
     _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena)
@@ -138,14 +213,23 @@ async def _run(owner, arena, practice_only, job_id):
         record = {'phase': 'idle', 'identity_id': identity_id}
         trial._records()[str(identity_id)] = record
     previous_phase = record.get('phase', 'idle')
+    scheduled = scheduled_config is not None
+    tool_root = _trial_tool_root()
+    started_at = time.time()
+    entry_url = trial._entry_url()
     process = None
+    launch_requested = False
+    reserved = False
     url_file = None
-    directory = TOOL_ROOT / '.runtime' / str(identity_id) / job_id
+    directory = tool_root / '.runtime' / str(identity_id) / job_id
     network = {}
     network_loaded = False
 
     def allowed():
         return (owner.is_current() and is_cave_public_identity_available(identity_id) and get_global_enabled()
+                and not get_activity_block_reason(identity_id, include_changfeng=False)
+                and cave._public_entry_allowed() and trial._entry_url() == entry_url
+                and (not scheduled or trial.get_expedition_config().get('changfeng', {}) == scheduled_config)
                 and trial._records().get(str(identity_id)) is record and record.get('phase') == 'browser_trial')
 
     async def stop_process():
@@ -161,10 +245,20 @@ async def _run(owner, arena, practice_only, job_id):
         async with lock:
             if not owner.is_current() or get_activity_block_reason(identity_id) or not get_global_enabled():
                 raise RuntimeError('identity_became_busy')
+            if record.get('phase', 'idle') not in {'idle', 'done'}:
+                raise RuntimeError('trial_requires_review')
+            if scheduled:
+                used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(started_at) else 0
+                if used >= int(scheduled_config.get('daily_limit', 1)):
+                    raise RuntimeError('trial_local_daily_limit')
+                if record.get('run_id'):
+                    record['previous_run_id'] = record.pop('run_id')
+                record.update(execution_engine='browser-m19', started_at=started_at, arena=arena,
+                              operation_id='browser-' + job_id)
             record['phase'] = 'browser_trial'
+            reserved = True
             record['browser_trial'] = snapshot()
             trial._save()
-            entry_url = trial._entry_url()
             token, webview_url, error = cave._parse_public_cave_entry_url(entry_url)
             if error:
                 raise RuntimeError('entry_unavailable')
@@ -180,8 +274,9 @@ async def _run(owner, arena, practice_only, job_id):
             with os.fdopen(os.open(url_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
                 stream.write(launch_url)
             log_file = directory / 'runs.jsonl'
-            command = [str(TOOL_ROOT / '.venv/bin/python'), str(TOOL_ROOT / 'local-qingxi/run_dungeon.py'),
-                       arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
+            launcher = Path(__file__).resolve().parents[2] / 'tools/changfeng_trial_browser.py'
+            command = [str(tool_root / '.venv/bin/python'), str(launcher), '--tool-root', str(tool_root),
+                       '--arena', arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
                        '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
                        '--log', str(log_file), '--go', '--runs', '1', '--tier', 'best', '--retries', '1',
                        '--max-run-seconds', '1500', '--wait-login', '60']
@@ -191,7 +286,16 @@ async def _run(owner, arena, practice_only, job_id):
             record['browser_trial'] = snapshot()
             trial._save()
             with (directory / 'runner.log').open('w') as output:
-                process = await asyncio.create_subprocess_exec(*command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                launch_requested = True
+                spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+                    *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True))
+                try:
+                    process = await asyncio.shield(spawn)
+                except asyncio.CancelledError:
+                    # Recover the exact child before unwinding so cancellation
+                    # cannot leave a newly created browser process unowned.
+                    process = await spawn
+                    raise
                 waiter = asyncio.create_task(process.wait())
                 # Keep the runner's normal 25-minute fight budget plus scene-loading time.
                 # CPU rendering can make a valid one-game run much slower than the simulator.
@@ -208,34 +312,50 @@ async def _run(owner, arena, practice_only, job_id):
             if network_path.is_file():
                 network = json.loads(network_path.read_text())
                 network_loaded = True
+            if any(row.get('playerId') is not None and str(row['playerId']) != str(identity_id)
+                   for field in ('requests', 'receipts') for row in network.get(field, [])):
+                raise RuntimeError('trial_browser_player_mismatch')
             facts = summarize_network(network)
             results = [json.loads(line) for line in log_file.read_text().splitlines()] if log_file.is_file() else []
             _STATUS.update(phase='done' if facts['terminal'] else 'stopped', returncode=process.returncode,
                            finished_at=time.time(), kind=(results[-1].get('kind') if results else 'not_started'),
                            rewarded=facts['rewarded'], server_closed=facts['closed'],
+                           exhausted=facts['exhausted'], strategy_sha256=TRIAL_STRATEGY_SHA256,
                            server_cleared=facts['cleared'], run_id=facts['run_id'], tier=facts['tier'],
                            gains=facts['gains'], cultivation=facts['cultivation'],
                            server_result=(facts['terminal'] or {}).get('result'))
             if facts['rewarded']:
-                day = trial._day(time.time())
+                day = trial._day(started_at)
                 record['daily_used'] = (int(record.get('daily_used') or 0) if record.get('day') == day else 0) + 1
                 record['day'] = day
+            if scheduled and facts['run_id']:
+                record['run_id'] = facts['run_id']
             record['phase'] = previous_phase if facts['terminal'] or facts['closed'] or (network_loaded and not facts['started']) else 'held'
+            if scheduled:
+                if facts['started'] and not (facts['rewarded'] or facts['no_rewards']):
+                    record['phase'] = 'held'
+                record['next_at'] = (trial._next_day(time.time(), identity_id) if facts['exhausted'] or facts['rewarded'] or facts['no_rewards']
+                                     else time.time() + 1800)
+                record['exhausted'] = facts['exhausted'] or facts['no_rewards']
+                if record['phase'] != 'held':
+                    record['phase'] = 'done'
+                    record['last_error'] = None
             if record['phase'] == 'held':
                 record['last_error'] = '浏览器试跑已发开局但结果待核对'
     except asyncio.CancelledError:
         _STATUS.update(phase='interrupted')
-        record['phase'] = 'held' if process is not None else previous_phase
+        if reserved:
+            record['phase'] = 'held' if launch_requested else previous_phase
         raise
     except Exception as error:
         _STATUS.update(phase='failed', error=type(error).__name__, finished_at=time.time())
         if record.get('phase') == 'browser_trial':
-            record['phase'] = 'held' if process is not None else previous_phase
+            record['phase'] = 'held' if launch_requested else previous_phase
     finally:
         await stop_process()
         if url_file:
             url_file.unlink(missing_ok=True)
-        if trial._records().get(str(identity_id)) is record:
+        if reserved and trial._records().get(str(identity_id)) is record:
             record['browser_trial'] = snapshot()
             trial._save()
     if trial._records().get(str(identity_id)) is record:

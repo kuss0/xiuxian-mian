@@ -220,7 +220,8 @@ def test_changfeng_busy_first_account_does_not_starve_other_participants(trial_e
         monkeypatch.setattr(trial, "get_activity_block_reason", lambda i, **kw: "busy" if i == 1 else "")
         monkeypatch.setattr(trial, "_TASKS", {})
         once = AsyncMock(return_value=(True, "done"))
-        monkeypatch.setattr(trial, "run_changfeng_once", once)
+        from model.features import qingxi_trial_browser
+        monkeypatch.setattr(qingxi_trial_browser, "run_scheduled_once", once)
         await trial.run_changfeng_scheduler(time.time())
         await asyncio.gather(*trial._TASKS.values())
         assert once.await_args.args[0] == 2

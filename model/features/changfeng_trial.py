@@ -398,7 +398,8 @@ async def run_changfeng_scheduler(now):
             continue
         arenas = config.get("arenas") or ["longwind", "bamboo"]
         arena = arenas[(int(record.get("daily_used") or 0) + abs(identity_id)) % len(arenas)]
-        task = track_background_task(asyncio.create_task(run_changfeng_once(identity_id, arena)))
+        from .qingxi_trial_browser import run_scheduled_once
+        task = track_background_task(asyncio.create_task(run_scheduled_once(identity_id, arena)))
         _TASKS[identity_id] = task
 
         def done(completed, identity=identity_id):

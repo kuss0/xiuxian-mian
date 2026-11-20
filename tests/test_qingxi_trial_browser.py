@@ -19,19 +19,24 @@ def harness(monkeypatch, tmp_path):
                 'receipts': [{'original': True}], 'run_id': 'original-run'}
     records = {str(identity_id): original}
     monkeypatch.setattr(browser, 'TOOL_ROOT', tmp_path)
+    monkeypatch.setattr(browser, '_trial_tool_root', lambda: tmp_path)
     monkeypatch.setattr(browser.trial, '_records', lambda: records)
     monkeypatch.setattr(browser.trial, '_save', Mock())
     monkeypatch.setattr(browser.trial, '_entry_url', lambda: 'fixture-entry')
     monkeypatch.setattr(browser, 'get_global_enabled', lambda: True)
     monkeypatch.setattr(browser, 'is_cave_public_identity_available', lambda _id: True)
-    monkeypatch.setattr(browser, 'get_activity_block_reason', lambda _id: '')
+    monkeypatch.setattr(browser, 'get_activity_block_reason', lambda _id, **_kwargs: '')
     monkeypatch.setattr(browser.MiniAppIdentityOwner, 'capture', lambda _id: owner)
     monkeypatch.setattr(browser, '_TASK', None)
     monkeypatch.setattr(browser, '_STATUS', {'job_id': 'fixture-job'})
+    config = {'enabled': True, 'participant_identity_ids': [identity_id], 'daily_limit': 1,
+              'arenas': ['longwind', 'bamboo']}
+    monkeypatch.setattr(browser.trial, 'get_expedition_config', lambda: {'changfeng': config})
     notice = AsyncMock(return_value=True)
     monkeypatch.setattr(browser, 'send_audit_log', notice, raising=False)
     lock = asyncio.Lock()
     monkeypatch.setattr(cave, '_public_entry_lock', lambda _id: lock)
+    monkeypatch.setattr(cave, '_public_entry_allowed', lambda: True)
     monkeypatch.setattr(cave, '_parse_public_cave_entry_url', lambda _url: ('fixture-token', 'fixture-url', ''))
     init_data = urlencode({'user': json.dumps({'id': identity_id}), 'auth_date': '1', 'hash': 'fixture'})
     url = 'https://asc.aiopenai.app/miniapp/xianxia-dwelling#' + urlencode({'tgWebAppData': init_data})
@@ -47,8 +52,8 @@ def harness(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', spawn)
-    return SimpleNamespace(owner=owner, record=original, network=network, commands=commands,
-                           launch=launch, lock=lock, notice=notice)
+    return SimpleNamespace(owner=owner, record=original, records=records, config=config,
+                           network=network, commands=commands, launch=launch, lock=lock, notice=notice)
 
 
 @pytest.fixture
@@ -242,3 +247,214 @@ def test_unverified_client_victory_is_not_server_completion():
     facts = browser.summarize_network({'requests': [{'action': 'start'}], 'receipts': []})
     assert {key: facts[key] for key in ('started', 'rewarded', 'terminal', 'closed')} == {
         'started': True, 'rewarded': False, 'terminal': None, 'closed': False}
+
+
+def test_scheduled_browser_uses_native_m19_and_stops_at_local_daily_limit(harness, victory_network, monkeypatch):
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+    synthetic = Mock(side_effect=AssertionError('scheduled browser must never synthesize a report'))
+    monkeypatch.setattr(browser.trial, '_trial_report', synthetic)
+    ok, _message = asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))
+    assert ok
+    assert harness.record['daily_used'] == 1
+    assert harness.record['execution_engine'] == 'browser-m19'
+    assert harness.record['run_id'] == 'browser-run'
+    assert harness.record['previous_run_id'] == 'original-run'
+    command = harness.commands[0]
+    assert Path(command[1]).name == 'changfeng_trial_browser.py'
+    assert command[command.index('--runs') + 1] == '1'
+    assert command[command.index('--tier') + 1] == 'best'
+    assert command[command.index('--retries') + 1] == '1'
+    assert '--practice-only' not in command and '--practice-ok' not in command
+    assert browser._TASK is None
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert len(harness.commands) == 1
+    synthetic.assert_not_called()
+
+
+def test_scheduler_routes_to_browser_and_never_to_legacy_http(harness, victory_network, monkeypatch):
+    trial = browser.trial
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+    legacy = AsyncMock(side_effect=AssertionError('legacy HTTP route must not run'))
+    monkeypatch.setattr(trial, 'run_changfeng_once', legacy)
+    monkeypatch.setattr(trial, 'get_identity_ids', lambda: [harness.owner.identity_id])
+    monkeypatch.setattr(trial, 'is_cave_public_identity_available', lambda _id: True)
+    monkeypatch.setattr(trial, 'get_global_enabled', lambda: True)
+    monkeypatch.setattr(trial, 'get_activity_block_reason', lambda *_args, **_kwargs: '')
+    monkeypatch.setattr(trial, '_TASKS', {})
+
+    async def run():
+        await trial.run_changfeng_scheduler(browser.time.time())
+        await asyncio.gather(*list(trial._TASKS.values()))
+        await trial.run_changfeng_scheduler(browser.time.time())
+
+    asyncio.run(run())
+    assert len(harness.commands) == 1
+    assert harness.record['daily_used'] == 1
+    legacy.assert_not_awaited()
+
+
+@pytest.mark.parametrize('blocked', ['held', 'limit', 'busy', 'disabled', 'foreign_owner', 'entry_lock', 'future'])
+def test_scheduled_browser_rejects_before_launch(harness, monkeypatch, blocked):
+    harness.record['daily_used'] = 0
+    if blocked == 'held':
+        harness.record['phase'] = 'held'
+    elif blocked == 'limit':
+        harness.record['daily_used'] = 1
+    elif blocked == 'busy':
+        monkeypatch.setattr(browser, 'get_activity_block_reason', lambda *_a, **_k: '青溪旧局待核对')
+    elif blocked == 'disabled':
+        harness.config['enabled'] = False
+    elif blocked == 'foreign_owner':
+        harness.owner.account_id += 1
+    elif blocked == 'future':
+        harness.record['next_at'] = browser.time.time() + 1800
+
+    async def run():
+        if blocked == 'entry_lock':
+            await harness.lock.acquire()
+        try:
+            assert not (await browser.run_scheduled_once(harness.owner.identity_id))[0]
+        finally:
+            if harness.lock.locked():
+                harness.lock.release()
+
+    asyncio.run(run())
+    assert not harness.commands
+    harness.launch.assert_not_awaited()
+
+
+def test_real_exhausted_status_without_start_defers_to_next_day(harness):
+    harness.record['daily_used'] = 0
+    harness.network.update(requests=[{'action': 'status'}], receipts=[{
+        'ok': True, 'trial': {'status': {'remaining': 0, 'used': 3, 'limit': 3, 'activeRun': None}},
+    }])
+    assert asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert harness.record['phase'] == 'done'
+    assert harness.record['daily_used'] == 0
+    assert harness.record['exhausted'] is True
+    assert harness.record['next_at'] > browser.time.time() + 3600
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert len(harness.commands) == 1
+    harness.notice.assert_not_awaited()
+
+
+def test_no_reward_start_closed_natively_never_reopens_same_day(harness):
+    harness.record['daily_used'] = 0
+    harness.network.update(requests=[{'action': 'start'}, {'action': 'end'}], receipts=[
+        {'ok': True, 'trial': {'run': {'id': 'practice-run', 'rewarded': False}}},
+        {'ok': True, 'trial': {'status': {'activeRun': None}}},
+    ])
+    assert asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert harness.record['daily_used'] == 0
+    assert harness.record['exhausted'] is True
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert len(harness.commands) == 1
+    harness.notice.assert_not_awaited()
+
+
+@pytest.mark.parametrize('problem', ['unknown_start', 'unknown_reward', 'wrong_player', 'cancel', 'save_before_launch'])
+def test_scheduled_browser_uncertain_outcomes_remain_held_without_replay(harness, monkeypatch, problem):
+    harness.record['daily_used'] = 0
+    harness.network['requests'] = [{'action': 'start'}]
+    if problem == 'unknown_reward':
+        harness.network['receipts'] = [
+            {'ok': True, 'trial': {'run': {'id': 'unknown-run'}}},
+            {'ok': True, 'trial': {'status': {'activeRun': None}}},
+        ]
+    elif problem == 'wrong_player':
+        harness.network['receipts'] = [{'ok': True, 'playerId': 999, 'trial': {
+            'run': {'id': 'wrong-player', 'rewarded': True}, 'result': {'grade': '甲'},
+        }}]
+    elif problem == 'cancel':
+        async def cancelled(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+        monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', cancelled)
+    elif problem == 'save_before_launch':
+        calls = [0]
+        def save():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError('disk unavailable')
+        monkeypatch.setattr(browser.trial, '_save', save)
+
+    async def run():
+        if problem == 'cancel':
+            with pytest.raises(asyncio.CancelledError):
+                await browser.run_scheduled_once(harness.owner.identity_id)
+        else:
+            assert not (await browser.run_scheduled_once(harness.owner.identity_id))[0]
+
+    asyncio.run(run())
+    if problem != 'save_before_launch':
+        assert harness.record['phase'] == 'held'
+        assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert harness.record['daily_used'] == 0
+    assert browser._TASK is None and not harness.lock.locked()
+    if problem == 'save_before_launch':
+        assert not harness.commands
+        harness.launch.assert_not_awaited()
+
+
+def test_trial_restart_marks_browser_record_held_before_scheduling(harness, monkeypatch):
+    harness.record.update(phase='browser_trial', operation_id='browser-running', daily_used=0)
+    monkeypatch.setattr(browser.trial, 'mark_dirty', Mock())
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record['phase'] == 'held'
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert not harness.commands
+
+
+def test_trial_root_is_pinned_and_does_not_replace_npc_helper_root(tmp_path, monkeypatch):
+    root = tmp_path / 'm19'
+    for part in ('.venv/bin/python', 'tools/longwind_trial_bot.py', 'tools/longwind_trial_bot.js'):
+        path = root / part
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    npc_root = browser.TOOL_ROOT
+    monkeypatch.setattr(browser, 'TRIAL_TOOL_ROOT', root)
+    with pytest.raises(RuntimeError, match='strategy_changed'):
+        browser._trial_tool_root()
+    assert browser.TOOL_ROOT == npc_root
+
+
+def test_scheduled_browser_config_change_aborts_before_process_launch(harness):
+    harness.record['daily_used'] = 0
+    launch_url = harness.launch.return_value
+    async def changed(*_args, **_kwargs):
+        harness.config['enabled'] = False
+        return launch_url
+    harness.launch.side_effect = changed
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert not harness.commands
+    assert harness.record['phase'] == 'done'
+    assert browser._TASK is None and not harness.lock.locked()
+
+
+def test_cancelling_spawn_recovers_and_stops_own_child_before_holding(harness, monkeypatch):
+    harness.record['daily_used'] = 0
+    async def run():
+        spawned, stopped = asyncio.Event(), asyncio.Event()
+        class Child:
+            returncode = None
+            def send_signal(self, _signal):
+                self.returncode = 130
+                stopped.set()
+            async def wait(self):
+                await stopped.wait()
+                return self.returncode
+        child = Child()
+        async def spawn(*_args, **_kwargs):
+            spawned.set()
+            return child
+        monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', spawn)
+        task = asyncio.create_task(browser.run_scheduled_once(harness.owner.identity_id))
+        await spawned.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stopped.is_set()
+    asyncio.run(run())
+    assert harness.record['phase'] == 'held'
+    assert browser._TASK is None and not harness.lock.locked()
