@@ -58,6 +58,7 @@ def request_fact(url,body,player):
         if session and duration is not None:operation=str(session)+':'+str(duration)
     return {'key':f'{family}:{action}:{operation}','player_id':actor,'family':family,'action':action,
             'operation_id':operation,'session_id':body.get('sessionId'),'run_id':body.get('runId'),
+            'gather_id':body.get('gatherId'),
             'identity_matches':actor==player}
 
 
@@ -77,7 +78,7 @@ def response_fact(intent,data,status):
         trial=data.get('trial') or {};run=trial.get('run') or {}
         row.update(run_id=run.get('id'),terminal=bool((trial.get('result') or {}).get('grade')) and not trial.get('pending') and not trial.get('anomaly'))
         if row['terminal']:row.update(result=trial['result'],grants=trial.get('grants') or [],cultivation=trial.get('cultivation') or 0)
-    else:row['terminal']=True
+    else:row.update(terminal=intent['action']!='gather-start',gather_id=data.get('gatherId') or intent.get('gather_id'))
     return row
 
 
@@ -90,7 +91,11 @@ def server_terminal(intents,receipts,scenario):
     if scenario=='combat':
         runs={r.get('run_id') for r in successful if r.get('action')=='start' and r.get('run_id')}
         return len(runs)==1 and any(r.get('terminal') and r.get('run_id') in runs for r in successful)
-    return scenario=='npc' and all(r.get('family')=='npc' for r in successful)
+    if scenario=='npc' and all(r.get('family')=='npc' for r in successful):
+        gathers={r.get('gather_id') for r in successful if r.get('action')=='gather-start'}
+        closed={r.get('gather_id') for r in successful if r.get('action') in {'gather-finish','gather-cancel'}}
+        return not gathers or None not in gathers and gathers.issubset(closed)
+    return False
 
 
 def init_script(player,scenario):
@@ -201,7 +206,9 @@ async def run(args):
                                 return s?{draws:s.draws,mode:s.mode,control:s.controlMode,tier:s.environment?.tier,
                                     position:s.actorPosition,modelReady:s.companion?.modelReady,
                                     loading:s.companion?.modelLoading,modelError:s.companion?.modelError,
-                                    failures:s.assetFailures,performance:s.performance}:null;
+                                    failures:s.assetFailures,performance:s.performance,
+                                    controls:[...document.querySelectorAll('#worldSystemMenu button')].map(e=>({id:e.id,text:e.textContent.trim().slice(0,45)})),
+                                    loadingOverlay:document.querySelector('#worldLoading')?.hidden===false}:null;
                             }'''),timeout=4)
                         except Exception:pass
                         persist()

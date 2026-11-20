@@ -87,6 +87,16 @@ def test_terminal_receipt_must_belong_to_the_started_fish():
     assert worker.server_terminal(intents,receipts,'fishing')
 
 
+def test_gather_start_receipt_does_not_close_collection():
+    intents=[{'family':'npc','action':'gather-start'}]
+    receipts=[{'ok':True,'family':'npc','action':'gather-start','gather_id':'owned'}]
+    assert not worker.server_terminal(intents,receipts,'npc')
+    receipts.append({'ok':True,'family':'npc','action':'gather-finish','gather_id':'other'})
+    assert not worker.server_terminal(intents,receipts,'npc')
+    receipts[-1]['gather_id']='owned'
+    assert worker.server_terminal(intents,receipts,'npc')
+
+
 def test_wrong_player_response_is_not_a_receipt():
     intent=worker.request_fact('https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/fishing/cast',
                              {'playerId':'42','operationId':'actual-client-generated'},42)
