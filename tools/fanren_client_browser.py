@@ -182,7 +182,7 @@ async def run(args):
     try:
         async with async_playwright() as p:
             context=await p.chromium.launch_persistent_context(str(args.profile_dir),executable_path='/usr/bin/chromium',headless=False,
-                viewport={'width':960,'height':640},device_scale_factor=1,
+                viewport={'width':800,'height':560},device_scale_factor=1,locale='zh-CN',timezone_id='Asia/Shanghai',
                 args=['--no-sandbox','--use-gl=angle','--use-angle=gl-egl','--ignore-gpu-blocklist','--disable-dev-shm-usage',
                       '--disable-background-timer-throttling','--disable-renderer-backgrounding'])
             try:
@@ -212,16 +212,16 @@ async def run(args):
                 value['stage']='loading_page';persist()
                 await page.goto(url,wait_until='domcontentloaded',timeout=90000)
                 if cache:await cache.refresh_grant(page)
-                await page.wait_for_function('() => window.__fanrenOwner===true',timeout=90000)
+                await page.wait_for_function('() => window.__fanrenOwner===true',timeout=90000,polling=1000)
                 value['identity_verified']=True;persist()
                 human=HumanInput(page)
                 value['stage']='entering_scene';persist()
                 await human.click(page.locator('#dwellingEnter'))
-                await page.wait_for_function('() => window.__fanrenRuntime?.stats().companion?.modelReady',timeout=600000)
+                await page.wait_for_function('() => window.__fanrenRuntime?.stats().companion?.modelReady',timeout=600000,polling=1000)
                 await page.wait_for_function('''() => {
                     const s=window.__fanrenRuntime.stats(),loading=document.querySelector('#worldLoading');
                     return s.draws>2 && (!loading || loading.hidden) && document.querySelector('#dwellingWorldCanvas')?.getAttribute('aria-busy')!=='true';
-                }''',timeout=600000)
+                }''',timeout=600000,polling=1000)
                 await page.evaluate('''() => {window.fanrenNative=window.createFanren3DBridge({runtime:window.__fanrenRuntime,ownerCheck:()=>window.__fanrenOwner===true});}''')
                 buttons=await page.locator('button:visible').evaluate_all('items=>items.map(e=>({id:e.id,text:e.textContent.trim().slice(0,70)}))')
                 value['visible_buttons']=buttons
@@ -234,7 +234,7 @@ async def run(args):
                     town=page.locator('#worldTownEntry')
                     if await town.is_visible() and (await town.inner_text()).strip()=='前往青溪坊':
                         await human.click(town)
-                        await page.wait_for_function('() => window.__fanrenRuntime.stats().environment?.tier===4 && window.__fanrenRuntime.stats().companion?.modelReady',timeout=600000)
+                        await page.wait_for_function('() => window.__fanrenRuntime.stats().environment?.tier===4 && window.__fanrenRuntime.stats().companion?.modelReady',timeout=600000,polling=1000)
                 if args.scenario=='inspect':value['scenario_result']={'kind':'inspect','loaded':True}
                 elif args.scenario=='walk':value['scenario_result']=await scenarios.walk()
                 elif args.scenario=='fishing':value['scenario_result']=await scenarios.fishing()

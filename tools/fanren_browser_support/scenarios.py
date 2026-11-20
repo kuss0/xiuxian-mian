@@ -51,7 +51,7 @@ class NativeScenarios:
         if len(candidates)!=1:raise RuntimeError('native_control_button_unavailable')
         await self.input.click(candidates[0])
         await self.close_menu()
-        await self.page.wait_for_function('() => window.fanrenNative.stats().controlMode==="companion"',timeout=10000)
+        await self.page.wait_for_function('() => window.fanrenNative.stats().controlMode==="companion"',timeout=10000,polling=1000)
         return True
 
     async def walk(self):

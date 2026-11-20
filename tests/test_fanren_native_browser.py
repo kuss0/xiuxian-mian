@@ -179,3 +179,42 @@ def test_worker_cancellation_drains_under_account_lock_and_removes_launch_secret
         assert records['42']['stop_requested']
         assert not list(tmp_path.rglob('launch.url'))
     asyncio.run(exercise())
+
+
+def test_real_chromium_csp_and_page_guard_preserve_original_inputs():
+    from playwright.async_api import async_playwright
+    async def exercise():
+        forwarded=[];journal=[]
+        async with async_playwright() as p:
+            browser=await p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
+            try:
+                context=await browser.new_context()
+                async def handle(route):
+                    request=route.request
+                    if request.resource_type=='document':
+                        await route.fulfill(status=200,content_type='text/html',headers={'Content-Security-Policy':"script-src 'self'"},body='<title>CSP integration fixture</title>')
+                    elif request.url.endswith('/start'):
+                        await route.fulfill(json={'ok':True,'account':{'playerId':42}})
+                    else:
+                        forwarded.append(request.post_data_json)
+                        await route.fulfill(json={'ok':True})
+                await context.route('**/*',handle)
+                await context.expose_binding('__fanrenBeforeWrite',lambda _source,value:journal.append(value))
+                await context.add_init_script(script=worker.init_script(42,'fishing'))
+                page=await context.new_page()
+                await page.goto('https://asc.aiopenai.app/miniapp/xianxia-dwelling')
+                denied=await page.evaluate('''async () => {
+                    try{await fetch('/api/miniapp/xianxia-dwelling/fishing/cast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({playerId:42,operationId:'not-dispatched'})});return false;}
+                    catch{return true;}
+                }''')
+                assert denied and not forwarded and not journal
+                await page.evaluate('''async () => {
+                    await fetch('/api/miniapp/xianxia-dwelling/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                }''')
+                await page.wait_for_function('() => window.__fanrenOwner===true')
+                payload={'playerId':42,'operationId':'original','position':[1,0,2],'fishingProof':{'durationMs':5200,'events':[{'t':100,'holding':True}]}}
+                await page.evaluate('''body => fetch('/api/miniapp/xianxia-dwelling/fishing/cast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})''',payload)
+                assert forwarded==[payload]
+                assert journal[0]['body']==payload
+            finally:await browser.close()
+    asyncio.run(exercise())
