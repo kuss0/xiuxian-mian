@@ -395,6 +395,8 @@ async def run_changfeng_scheduler(now):
         if get_activity_block_reason(identity_id, include_changfeng=False):
             continue
         record = _records().get(str(identity_id), {})
+        if record.get('auto_pause'):
+            continue
         if record.get("phase") not in {None, "done", "idle"} or float(record.get("next_at") or 0) > now:
             continue
         if record.get("day") == _day(now) and int(record.get("daily_used") or 0) >= int(config.get("daily_limit", 1)):

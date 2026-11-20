@@ -132,6 +132,7 @@
       state.trial_used = arenas.reduce((sum, arena) => sum + state.final.trials[arena].used, 0);
       state.remaining = state.final.daily.filter(row => row.hasKey && !row.claimed && !row.exhausted).length +
         arenas.reduce((sum, arena) => sum + state.final.trials[arena].remaining, 0);
+      state.stop_for_day = !!window.__qx.rewardStop || !!state.trials?.skipped?.length;
       // Used trial entries are consumption evidence, not proof of victory or
       // rewards. Retain both counts; a partial batch never becomes 13 victories.
       state.phase = state.claimed === 7 && state.remaining === 0 &&

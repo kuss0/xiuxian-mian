@@ -527,7 +527,7 @@ function renderQingxiRewardConfig(config, identities, members) {
         }).join('') + '</ul>'
         + (progress.blocked_reason ? '<p>' + escapeHtml(progress.blocked_reason) + '</p>' : '')
         + '<button type="button" class="btn" data-qingxi-reward-action="rewards_refresh" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">只读核对</button>'
-        + '<button type="button" class="btn" data-qingxi-reward-action="rewards" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">执行一批</button></details>';
+        + '<button type="button" class="btn" data-qingxi-reward-action="rewards" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '"' + (progress.auto_paused ? ' disabled' : '') + '>执行一批</button></details>';
     }).join('') + '</div>';
 }
 

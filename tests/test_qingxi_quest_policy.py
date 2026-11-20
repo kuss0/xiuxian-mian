@@ -41,6 +41,8 @@ async function check(scenario){
    if(resource==='trial'){
     if(body.action==='status')return {ok:true,playerId:scenario==='reward_wrong_player'?99:42,
      trial:{status:{...quotas[body.arena]}}};
+    if(scenario==='reward_defeat'&&body.action==='end')return {ok:true,trial:{
+      run:{id:'defeated-one',arena:body.arena,status:'defeated',rewarded:true},grants:[]}};
     if(scenario==='reward_unknown_start')throw Error('network');
     const q=quotas[body.arena];q.used++;q.remaining--;
     return {ok:true,trial:{run:{id:body.arena+'-'+q.used,rewarded:true,cleared:0},grants:[{name:'灵石',quantity:1}]}};
@@ -50,7 +52,12 @@ async function check(scenario){
   });
   if(scenario==='reward_day_anchor')e.c.__qx.rewardDay='2026-11-19';
   const start=arena=>e.send('trial',{action:'start',arena,tier:1});
-  if(scenario==='reward_six'){
+  if(scenario==='reward_defeat'){
+   await start('longwind');await e.send('trial',{action:'end',arena:'longwind',runId:'defeated-one'});
+   await assert.rejects(start('bamboo'),/defeat_stop/);
+   assert.equal(e.calls.filter(row=>row.resource==='trial'&&row.body.action==='start').length,1);
+   assert.equal(e.c.__qx.pending.size,0);assert.equal(e.c.__qx.error,'');
+  }else if(scenario==='reward_six'){
    for(const arena of ['longwind','bamboo']){
     for(let n=0;n<3;n++)await start(arena);
     await assert.rejects(start(arena),/trial_exhausted/);
@@ -422,7 +429,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'quest_body_once', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
     'reward_six', 'reward_default_denied', 'reward_escort', 'reward_failed_moon', 'reward_npc_denied',
     'reward_high_tier', 'reward_cross_day', 'reward_unknown_start', 'reward_unknown_active',
-    'reward_bad_quota', 'reward_wrong_player', 'reward_day_anchor',
+    'reward_bad_quota', 'reward_wrong_player', 'reward_day_anchor', 'reward_defeat',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:

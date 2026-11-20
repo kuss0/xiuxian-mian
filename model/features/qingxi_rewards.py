@@ -5,7 +5,7 @@ import math
 from ..activity_occupancy import get_activity_block_reason
 from ..runtime import send_audit_log
 from ..state import get_expedition_config, get_global_enabled, is_cave_public_identity_available
-from .changfeng_trial import _day, _entry_url
+from .changfeng_trial import _day, _entry_url, _next_day
 
 DAILY = {
     'moonpalace': '月殿血誓', 'bloodland': '血色禁地', 'southgate': '南门守城', 'escort': '护民出关',
@@ -19,12 +19,28 @@ def owns_identity(identity_id):
     return config.get('enabled') is True and identity_id in config.get('participant_identity_ids', [])
 
 
+def defeated_today(identity_id, now):
+    from . import changfeng_trial as trial
+    record = trial._records().get(str(identity_id), {}) or {}
+    if (record.get('auto_pause') or {}).get('reason') == 'confirmed_defeat':
+        return True
+    status = record.get('browser_trial') or {}
+    finished = status.get('finished_at')
+    return (status.get('kind') == 'defeat' and status.get('server_closed') is True
+            and status.get('rewarded') is True and type(finished) in (int, float)
+            and math.isfinite(finished) and _day(finished) == _day(now))
+
+
 def progress(record):
     """Consumption is visible but is never presented as a verified victory."""
     browser = record.get('browser') or {}
     batch = browser.get('reward_batch') or record.get('reward_batch') or {}
-    observation = (batch.get('final') or batch.get('before') or browser.get('reward_inspection')
-                   or record.get('reward_inspection') or {})
+    observations = [row for row in (batch.get('final'), batch.get('before'), browser.get('reward_inspection'),
+                                    record.get('reward_inspection')) if isinstance(row, dict)]
+    def checked_at(row):
+        value = row.get('checked_at')
+        return value if type(value) in (int, float) and math.isfinite(value) else 0
+    observation = max(observations, key=checked_at, default={})
     rows = {row.get('id'): row for row in observation.get('daily', []) if isinstance(row, dict)}
     phase = (record['phase'] if record.get('phase') in {'loading', 'running'}
              else 'held' if record.get('gameplay_uncertain') else batch.get('phase', 'idle'))
@@ -89,6 +105,15 @@ async def scheduler(now):
             continue
         if not is_cave_public_identity_available(identity_id):
             continue
+        batch = record.get('reward_batch') or {}
+        stopped = batch.get('stop_for_day') and (batch.get('before') or {}).get('day') == _day(now)
+        defeat = defeated_today(identity_id, now)
+        if defeat or stopped:
+            record['rewards_next_at'] = _next_day(now, identity_id)
+            reason = ('试炼已确认战败' if defeat else '今日试炼结算需复核') + '，自动批次暂缓，保留剩余奖励次数待手动验证'
+            await _blocked(identity_id, record, reason, now)
+            quests.save()
+            continue
         reason = get_activity_block_reason(identity_id)
         if reason or record.get('phase') == 'held' or record.get('pending') or record.get('gameplay_uncertain'):
             record['rewards_next_at'] = now + 1800
@@ -112,8 +137,17 @@ async def scheduler(now):
 
 def snapshots():
     from . import qingxi_quests as quests
+    from . import changfeng_trial as trial
     selected = {str(identity) for identity in get_expedition_config().get('qingxi_rewards', {}).get('participant_identity_ids', [])}
     records = quests.records()
-    return {key: progress(records.get(key, {})) for key in sorted(set(records) | selected)
-            if isinstance(records.get(key, {}), dict) and (key in selected or records[key].get('reward_batch')
-                or records[key].get('reward_inspection') or (records[key].get('browser') or {}).get('workflow') == 'rewards')}
+    result = {}
+    for key in sorted(set(records) | selected):
+        record = records.get(key, {})
+        if not isinstance(record, dict) or not (key in selected or record.get('reward_batch')
+                or record.get('reward_inspection') or (record.get('browser') or {}).get('workflow') == 'rewards'):
+            continue
+        item = progress(record)
+        if (trial._records().get(key) or {}).get('auto_pause'):
+            item.update(auto_paused=True, blocked_reason='试炼已确认战败，自动试炼暂停，需手动单场验证通过')
+        result[key] = item
+    return result
