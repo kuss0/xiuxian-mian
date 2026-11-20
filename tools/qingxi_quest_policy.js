@@ -38,6 +38,16 @@
       status: response.status, statusText: response.statusText, headers: response.headers});
     return {data, parseError, buffered};
   }
+  // The native deadline (about 8s) covers fetch and body consumption. On a
+  // stalled frame it can fire after the server answered a write, turning a
+  // confirmed result into an unknown one. A write that has been sent keeps a
+  // separate bounded deadline so its answer is still read and journaled.
+  function sent(options) {
+    const {signal, ...rest} = options || {};
+    const own = typeof AbortSignal === 'function' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(60000) : undefined;
+    return {options: own ? {...rest, signal: own} : rest, expired: () => signal?.aborted === true};
+  }
   const nativeCleanup = row => row?.resource === 'location' ||
     (row?.resource === 'flight' && ['tick', 'stop'].includes(row.action));
   const stored = JSON.parse(localStorage.getItem(journalKey) || '[]');
@@ -176,10 +186,12 @@
     q.castSending = true;
     let recorded = false;
     try {
-      const response = await original(input, options);
+      const wire = sent(options);
+      const response = await original(input, wire.options);
       const {data, parseError, buffered} = await readResponse(response);
       const acknowledged = receipt('field-cast', body, response, data, key, parseError);
       recorded = true;
+      if (wire.expired()) q.receipts.at(-1).native_expired = true;
       if (acknowledged) {
         q.pending.delete(key);
         persist();
@@ -302,8 +314,10 @@
       }
       let response, decoded;
       try {
-        response = await original(input, options);
+        const wire = key ? sent(options) : null;
+        response = await original(input, wire ? wire.options : options);
         decoded = await readResponse(response);
+        if (wire?.expired()) decoded.nativeExpired = true;
       } catch (error) {
         if (key) q.error = 'quest_transport_unconfirmed';
         else q.statusError = 'quest_status_unavailable';
@@ -321,7 +335,9 @@
         if (q.player !== config.player) q.error = 'quest_player_mismatch';
       }
       if (control || key || instances[resource]) {
-        if (receipt(resource, body, response, data, key, parseError)) {
+        const accepted = receipt(resource, body, response, data, key, parseError);
+        if (decoded.nativeExpired) q.receipts.at(-1).native_expired = true;
+        if (accepted) {
           if (statusKey) {
             q.statusError = '';
             q.statusCache.set(statusKey, {at: performance.now(), response: buffered.clone()});
