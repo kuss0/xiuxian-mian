@@ -416,6 +416,226 @@ def test_unconfirmed_opening_council_is_not_cancelled(env):
     asyncio.run(run())
 
 
+def _seed_owned_unstarted_qipai(env, *, collision=False):
+    opened_at = env.now[0]
+    run = {
+        "id": "1795106473722",
+        "kind": "qipai",
+        "key": "qipai",
+        "members": copy.deepcopy(env.members),
+        "started_at": opened_at,
+        "deadline": opened_at + 120,
+        "chat_id": -1002083016447,
+        "topic_id": 0,
+        "phase": "opening",
+        "stage": 0,
+        "observed_stage": 0,
+        "bound": False,
+        "requires_reconciliation": False,
+        "attempts": {
+            "0:1:.开密议": {
+                "status": "sent", "identity_id": 1, "command": ".开密议", "stage": 0,
+                "at": opened_at, "tries": 1, "msg_id": 1634921, "confirmed_at": opened_at + 1,
+            },
+        },
+    }
+    if collision:
+        run.update(collision=True, collision_names=["huakaifugui2002"], collision_message_id=1635592)
+    env.records["runs"] = {"qipai": run}
+    env.records["quotas"] = {"qipai": {"1": {"day": "2026-11-19", "used": 1, "source_msg_id": 1625612}}}
+    return run
+
+
+def _council_attempt(command, msg_id, at):
+    return {"status": "sent", "identity_id": 1, "command": command, "stage": 0,
+            "at": at, "tries": 1, "msg_id": msg_id, "confirmed_at": at + 1}
+
+
+def test_fresh_qipai_group_busy_refusal_waits_without_sending_dismissal(env):
+    async def run_test():
+        run = _seed_owned_unstarted_qipai(env)
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        before_attempts = copy.deepcopy(run["attempts"])
+        before_quotas = copy.deepcopy(env.records["quotas"])
+        assert await weekly.game_event(env.ctx, event(
+            env, "本群还有天澜草原进行中或等待播报，请等结束后再发起。",
+            reply=1634921, mid=1634922, at=env.now[0] + 2,
+            chat=run["chat_id"], topic=run["topic_id"]))
+        assert run["phase"] == "waiting_room"
+        assert run["requires_reconciliation"] is False
+        assert run["foreign_busy"] is True
+        assert not run.get("cancel_unstarted")
+        assert run["opening_refusal"]["reply_id"] == 1634922
+        env.now[0] = run["deadline"] + 46
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert env.sends == []
+        assert run["attempts"] == before_attempts
+        assert env.records["quotas"] == before_quotas
+        env.ctx.notice.assert_not_awaited()
+    asyncio.run(run_test())
+
+
+def test_startup_replays_exact_unstarted_qipai_refusals_without_using_daily_quota(
+        env, monkeypatch, tmp_path):
+    async def run_test():
+        opening_at = datetime.fromisoformat("2026-11-20T00:41:14+08:00").timestamp()
+        env.now[0] = opening_at
+        run = _seed_owned_unstarted_qipai(env, collision=True)
+        opening_refusal = "本群还有天澜草原进行中或等待播报，请等结束后再发起。"
+        dismissal_refusal = "眼下没有密议。.开密议 发起一局。"
+        # Match the persisted production state: both commands are owned, but
+        # the earlier opening refusal has not yet been attached to this run.
+        run.update(phase="held", requires_reconciliation=True, cancel_unstarted=True,
+                   last_error="未收到下一阶段或结算回执，不重新开局")
+        run["attempts"]["0:1:.散议"] = _council_attempt(
+            ".散议", 1634985, datetime.fromisoformat("2026-11-20T00:44:02+08:00").timestamp())
+        before_attempts = copy.deepcopy(run["attempts"])
+        quotas = copy.deepcopy(env.records["quotas"])
+        env.now[0] = datetime.fromisoformat("2026-11-20T02:04:00+08:00").timestamp()
+        events = [
+            {"event_type": "message", "chat_id": -1002083016447, "topic_id": 0,
+             "sender_id": 99, "message_id": 1634922, "reply_to_msg_id": 1634921,
+             "server_event_at": datetime.fromisoformat("2026-11-20T00:41:17+08:00").timestamp(),
+             "text": opening_refusal},
+            {"event_type": "message", "chat_id": -1002083016447, "topic_id": 0,
+             "sender_id": 99, "message_id": 1634988, "reply_to_msg_id": 1634985,
+             "server_event_at": datetime.fromisoformat("2026-11-20T00:44:08+08:00").timestamp(),
+             "text": dismissal_refusal},
+            {"event_type": "message", "chat_id": -1002083016447, "topic_id": 0,
+             "sender_id": 99, "message_id": 1635592, "reply_to_msg_id": 1635590,
+             "server_event_at": datetime.fromisoformat("2026-11-20T01:37:33+08:00").timestamp(),
+             "text": "【七派密议·开议】主帅 @huakaifugui2002 请 .点将。"},
+            {"event_type": "message", "chat_id": -1002083016447, "topic_id": 0,
+             "sender_id": 99, "message_id": 1635716, "reply_to_msg_id": 1635714,
+             "server_event_at": datetime.fromisoformat("2026-11-20T02:04:00+08:00").timestamp(),
+             "text": "【七派密议·散议】外队结算。\n3 位长老各得修为、灵石。"},
+        ]
+        day = datetime.fromtimestamp(opening_at, app_weekly_adventures.TZ_LOCAL).strftime("%Y-%m-%d")
+        (tmp_path / (day + ".log")).write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in events))
+        monkeypatch.setattr(app_weekly_adventures, "MESSAGES_DIR", tmp_path)
+        monkeypatch.setattr(app_weekly_adventures, "_context", lambda _name="": env.ctx)
+        monkeypatch.setattr(app_weekly_adventures, "_config", lambda: {"enabled": True})
+        monkeypatch.setattr(app_weekly_adventures, "_backfill_weekly_receipts", lambda: None)
+        monkeypatch.setattr(app_weekly_adventures, "get_expedition_run_state", lambda: {"weekly": env.records})
+        monkeypatch.setattr(app_weekly_adventures.dungeon_openings, "ensure_loaded", AsyncMock())
+        monkeypatch.setattr(app_weekly_adventures, "_RECOVERY_PENDING", False)
+
+        env.enabled.clear()
+        app_weekly_adventures.reset_weekly_on_startup()
+        await app_weekly_adventures.run_weekly_scheduler(env.now[0])
+
+        retry_at = weekly.next_opening_day(datetime.fromisoformat("2026-11-20T00:44:08+08:00").timestamp())
+        assert run["phase"] == "cancelled"
+        assert run["requires_reconciliation"] is False
+        assert run["next_at"] == run["cooldown_until"] == retry_at
+        assert datetime.fromtimestamp(retry_at, app_weekly_adventures.TZ_LOCAL).isoformat() == "2026-11-21T00:05:00+08:00"
+        assert run["attempts"] == before_attempts
+        assert run["collision"] is True
+        assert run["collision_names"] == ["huakaifugui2002"]
+        assert run["collision_message_id"] == 1635592
+        assert env.records["quotas"]["qipai"] == quotas["qipai"]
+        assert run["opening_refusal"]["reply_id"] == 1634922
+        assert run["cancellation_evidence"]["dismissal_refusal_id"] == 1634988
+        assert run["cancellation_evidence"]["opening_refusal_id"] == 1634922
+        assert env.records["reconciliations"][-1]["run_id"] == run["id"]
+        assert env.records["reconciliations"][-1]["cancellation_evidence"] == run["cancellation_evidence"]
+
+        env.enabled.clear()
+        env.enabled.add("qipai")
+        env.now[0] = retry_at - 1
+        send_count = len(env.sends)
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert len(env.sends) == send_count
+        assert env.records["quotas"]["qipai"] == quotas["qipai"]
+        env.now[0] = retry_at + 1
+        await weekly.scheduler(env.ctx, env.now[0])
+        assert env.sends[-1][0] == ".开密议"
+        assert env.records["runs"]["qipai"] is not run
+        assert env.records["reconciliations"][-1]["original_run"]["collision_message_id"] == 1635592
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.parametrize("taint", [
+    "wrong_open_reply", "changed_open_text", "wrong_dismiss_reply", "changed_dismiss_text",
+    "missing_open_refusal", "wrong_open_refusal_command", "open_not_sent", "extra_attempt",
+    "not_cancelled", "already_bound", "observed_stage", "pending_actions", "wrong_chat",
+    "wrong_topic", "untrusted_sender", "other_team", "foreign_terminal",
+])
+def test_unstarted_qipai_reducer_rejects_cross_run_and_incomplete_proof(env, taint):
+    async def run_test():
+        run = _seed_owned_unstarted_qipai(env, collision=True)
+        # Exercise the real held record shape so a rejected proof cannot make
+        # the test pass merely by leaving default reconciliation fields unset.
+        run.update(phase="held", requires_reconciliation=True, cancel_unstarted=True)
+        run["attempts"]["0:1:.散议"] = _council_attempt(".散议", 1634985, env.now[0] + 170)
+        opening_refusal = "本群还有天澜草原进行中或等待播报，请等结束后再发起。"
+        dismissal_refusal = "眼下没有密议。.开密议 发起一局。"
+        opening_reply = 1634922
+        opening_reply_to = 1634921
+        dismissal_reply = 1634988
+        dismissal_reply_to = 1634985
+
+        if taint == "wrong_open_reply":
+            opening_reply_to += 1
+        if taint == "changed_open_text":
+            opening_refusal = "本群还有其他玩法进行中，请等结束后再发起。"
+        if taint == "untrusted_sender":
+            env.ctx.bot_ids = lambda: [98]
+        await weekly.game_event(env.ctx, event(env, opening_refusal, reply=opening_reply_to,
+                                               mid=opening_reply, at=env.now[0] + 2,
+                                               chat=-1002083016447, topic=0))
+
+        run["phase"] = "dissolving"
+        run["attempts"]["0:1:.散议"] = _council_attempt(".散议", 1634985, env.now[0] + 170)
+        if taint == "wrong_dismiss_reply":
+            dismissal_reply_to += 1
+        elif taint == "changed_dismiss_text":
+            dismissal_refusal = "本场密议已经解散。"
+        elif taint == "missing_open_refusal":
+            run.pop("opening_refusal", None)
+        elif taint == "wrong_open_refusal_command":
+            run["opening_refusal"]["command_id"] += 1
+        elif taint == "open_not_sent":
+            run["attempts"]["0:1:.开密议"]["status"] = "unknown"
+        elif taint == "extra_attempt":
+            run["attempts"]["0:1:.开议"] = _council_attempt(".开议", 1634923, env.now[0] + 3)
+        elif taint == "not_cancelled":
+            run["cancel_unstarted"] = False
+        elif taint == "already_bound":
+            run["bound"] = True
+        elif taint == "observed_stage":
+            run["observed_stage"] = 1
+        elif taint == "pending_actions":
+            run["pending_actions"] = {"actions": [[1, ".准"]], "stage": 1, "deadline": env.now[0] + 200}
+        elif taint == "wrong_chat":
+            pass
+        elif taint == "wrong_topic":
+            pass
+        elif taint == "foreign_terminal":
+            dismissal_refusal = "【七派密议·散议】\n第 5 关失守。\n3 位长老各得修为、灵石。"
+
+        before = copy.deepcopy(run)
+        quotas = copy.deepcopy(env.records.get("quotas"))
+        event_chat = -101 if taint == "wrong_chat" else -100
+        event_topic = 43 if taint == "wrong_topic" else 42
+        sender = 98 if taint == "untrusted_sender" else 99
+        if taint == "other_team":
+            env.ctx.accept_run = lambda _run: False
+        handled = await weekly.game_event(env.ctx, event(
+            env, dismissal_refusal, reply=dismissal_reply_to, mid=dismissal_reply,
+            at=env.now[0] + 174, chat=event_chat if taint == "wrong_chat" else -1002083016447,
+            topic=event_topic if taint == "wrong_topic" else 0, sender=sender))
+        assert run["phase"] != "cancelled", taint
+        assert run["requires_reconciliation"] is True, taint
+        assert run.get("attempts") == before.get("attempts"), taint
+        assert env.records.get("quotas") == quotas, taint
+
+    asyncio.run(run_test())
+
+
 def test_real_foreign_council_full_replay_never_votes_or_claims_rewards(env):
     rows = json.loads((Path(__file__).parent / "fixtures/qipai_live_20261113.json").read_text())
     async def run():

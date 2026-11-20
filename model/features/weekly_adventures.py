@@ -1,5 +1,6 @@
 """Receipt-driven weekly adventures. No purchases, guessed retries, or hidden APIs."""
 import asyncio
+import copy
 import itertools
 import re
 import time
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from .hunt_weekly import week_key
 from . import council
-from .dungeon_limits import rejection as opening_rejection
+from .dungeon_limits import next_day as next_opening_day, rejection as opening_rejection
 
 KINDS = {
     "tianlan": {"label": "天澜草原", "open": ".天澜草原", "join": ".同行", "minimum": 3, "realm": "元婴初期"},
@@ -217,6 +218,150 @@ def _route(ctx, run, event):
 def _reply(event):
     return int(getattr(event, "reply_to_msg_id", 0) or
                getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0)
+
+
+_QIPAI_GROUP_BUSY_REFUSAL = "本群还有天澜草原进行中或等待播报，请等结束后再发起。"
+_QIPAI_NO_ACTIVE_COUNCIL_REFUSAL = "眼下没有密议。.开密议 发起一局。"
+
+
+def _unstarted_qipai_attempts(run):
+    attempts = list((run.get("attempts") or {}).values())
+    captain_id = (run.get("members") or [{}])[0].get("identity_id")
+    if not attempts or not captain_id or any(
+        not isinstance(item, dict)
+        or item.get("command") not in {".开密议", ".散议"}
+        or item.get("identity_id") != captain_id
+        or item.get("stage") != 0
+        or item.get("status") != "sent"
+        or type(item.get("msg_id")) is not int or item["msg_id"] <= 0
+        or type(item.get("at")) not in (int, float)
+        for item in attempts
+    ):
+        return None, None
+    openings = [item for item in attempts if item.get("command") == ".开密议"]
+    dismissals = [item for item in attempts if item.get("command") == ".散议"]
+    if len(openings) != 1 or len(dismissals) > 1 or len(attempts) != len(openings) + len(dismissals):
+        return None, None
+    return openings[0], dismissals[0] if dismissals else None
+
+
+def _capture_unstarted_qipai_refusal(run, ctx, event, text, owned):
+    opening, dismissal = _unstarted_qipai_attempts(run)
+    at = ctx.event_time(event)
+    if (run.get("kind") != "qipai" or run.get("bound")
+            or int(run.get("observed_stage") or 0) != 0
+            or run.get("departure_pending") or run.get("terminal_pending")
+            or run.get("pending_actions") or opening is None
+            or owned is not opening or text.strip() != _QIPAI_GROUP_BUSY_REFUSAL
+            or getattr(event, "sender_id", 0) not in ctx.bot_ids()
+            or getattr(event, "chat_id", 0) != run.get("chat_id")
+            or ctx.topic(event) != run.get("topic_id")
+            or int(getattr(event, "id", 0) or 0) <= opening["msg_id"]
+            or at < float(opening["at"])
+            or dismissal is not None and float(dismissal["at"]) <= at):
+        return False
+    evidence = {
+        "command_id": opening["msg_id"],
+        "reply_id": int(getattr(event, "id", 0) or 0),
+        "chat_id": int(getattr(event, "chat_id", 0) or 0),
+        "topic_id": ctx.topic(event),
+        "sender_id": int(getattr(event, "sender_id", 0) or 0),
+        "at": at,
+        "text": text.strip(),
+    }
+    previous = copy.deepcopy(run.get("opening_refusal"))
+    if previous is not None and previous != evidence:
+        return False
+    run_before = copy.deepcopy(run)
+    run["opening_refusal"] = evidence
+    if dismissal is None:
+        # A direct refusal proves no room was created. Wait for the shared
+        # room instead of deriving a pointless dissolve from the old deadline.
+        run.update(phase="waiting_room", requires_reconciliation=False, foreign_busy=True,
+                   next_at=time.time() + 900, cooldown_until=time.time() + 300,
+                   last_error=None, result=text.strip())
+        run.pop("cancel_unstarted", None)
+        run.pop("pending_actions", None)
+    else:
+        run.update(phase="held", requires_reconciliation=True, cancel_unstarted=True,
+                   last_error="开议被游戏拒绝，保留原命令等待散议核对")
+    try:
+        ctx.save()
+    except BaseException:
+        run.clear()
+        run.update(run_before)
+        raise
+    return True
+
+
+def _cancelled_unstarted_qipai(ctx, run, event, text, owned):
+    opening, dismissal = _unstarted_qipai_attempts(run)
+    refusal = run.get("opening_refusal")
+    if (run.get("kind") != "qipai" or run.get("cancel_unstarted") is not True
+            or run.get("phase") not in {"dissolving", "held", "interrupted"}
+            or run.get("bound") or int(run.get("observed_stage") or 0) != 0
+            or run.get("departure_pending") or run.get("terminal_pending")
+            or run.get("pending_actions") or opening is None or dismissal is None
+            or owned is not dismissal or not isinstance(refusal, dict)
+            or refusal.get("command_id") != opening.get("msg_id")
+            or refusal.get("text") != _QIPAI_GROUP_BUSY_REFUSAL
+            or refusal.get("chat_id") != run.get("chat_id")
+            or refusal.get("topic_id") != run.get("topic_id")
+            or refusal.get("sender_id") not in ctx.bot_ids()
+            or type(refusal.get("reply_id")) is not int
+            or refusal["reply_id"] <= opening["msg_id"]
+            or int(getattr(event, "id", 0) or 0) <= dismissal["msg_id"]
+            or text.strip() != _QIPAI_NO_ACTIVE_COUNCIL_REFUSAL
+            or getattr(event, "chat_id", 0) != run.get("chat_id")
+            or ctx.topic(event) != run.get("topic_id")
+            or getattr(event, "sender_id", 0) not in ctx.bot_ids()
+            or ctx.event_time(event) < float(dismissal["at"])
+            or float(refusal.get("at") or 0) < float(opening["at"])):
+        return False
+
+    completed_at = ctx.event_time(event)
+    retry_at = next_opening_day(completed_at)
+    run_before = copy.deepcopy(run)
+    records = ctx.records()
+    archive_before = copy.deepcopy(records.get("reconciliations"))
+    if archive_before is not None and not isinstance(archive_before, list):
+        return False
+    evidence = {
+        "kind": "qipai_unstarted_cancelled",
+        "opening_command_id": opening["msg_id"],
+        "opening_refusal_id": refusal["reply_id"],
+        "dismissal_command_id": dismissal["msg_id"],
+        "dismissal_refusal_id": int(getattr(event, "id", 0) or 0),
+        "chat_id": int(run["chat_id"]),
+        "topic_id": int(run["topic_id"]),
+        "at": completed_at,
+        "opening_refusal": refusal["text"],
+        "dismissal_refusal": text.strip(),
+    }
+    reconciliations = list(archive_before or [])
+    reconciliations.append({
+        "run_id": str(run.get("id") or ""),
+        "original_run": run_before,
+        "cancellation_evidence": evidence,
+    })
+    records["reconciliations"] = reconciliations[-50:]
+    run.update(
+        phase="cancelled", requires_reconciliation=False, last_error=None,
+        result=text.strip(), cancelled_at=completed_at, cancellation_evidence=evidence,
+        next_at=retry_at, cooldown_until=retry_at,
+    )
+    run.pop("pending_actions", None)
+    try:
+        ctx.save()
+    except BaseException:
+        run.clear()
+        run.update(run_before)
+        if archive_before is None:
+            records.pop("reconciliations", None)
+        else:
+            records["reconciliations"] = archive_before
+        raise
+    return True
 
 
 def _owned(run, event, text):
@@ -526,6 +671,12 @@ async def game_event(ctx, event):
             attempts = run.get("attempts", {}).values()
             owned = next((a for a in attempts if reply and a.get("msg_id") == reply), None)
             party = departure(run, text)
+            if owned and owned.get("command") == ".开密议" and _capture_unstarted_qipai_refusal(run, ctx, event, text, owned):
+                # The direct rejection persists the held/cancel-unstarted state
+                # without emitting a notice on every startup log replay.
+                return True
+            if _cancelled_unstarted_qipai(ctx, run, event, text, owned):
+                return True
             refusal = opening_rejection(text, ctx.event_time(event))
             if (refusal
                     and owned and owned["command"] == KINDS[kind]["open"]
