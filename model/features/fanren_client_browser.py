@@ -64,6 +64,19 @@ async def action(payload):
     global _TASK
     kind=payload.get('action','status')
     if kind=='status':return True,'客户端浏览器状态',{'client_browser':copy.deepcopy(_STATUS)}
+    if kind=='review_closed':
+        try:identity_id=int(payload.get('send_as_id') or 0)
+        except (TypeError,ValueError):return False,'身份无效',{}
+        if _TASK is not None and not _TASK.done():return False,'浏览器仍在运行',{}
+        record=records().get(str(identity_id),{})
+        directory=Path(STATE_DIR)/'fanren_browser'/str(identity_id)/str(record.get('job_id') or '')
+        if record.get('phase')!='held' or str(directory)!=record.get('evidence_dir') or not (directory/'result.json').is_file():
+            return False,'缺少本轮浏览器结束证据',{}
+        value=json.loads((directory/'result.json').read_text())
+        if not outcome_closed(value,identity_id):return False,'原操作或浏览器仍待核对',{}
+        record.update(phase='done',reviewed_at=time.time(),review_reason='verified_closed_worker_receipts')
+        persist();_STATUS.update(copy.deepcopy(record))
+        return True,'已按本轮浏览器与原操作回执完成核对',{'client_browser':copy.deepcopy(_STATUS)}
     if kind=='review_unstarted_inspect':
         try:identity_id=int(payload.get('send_as_id') or 0)
         except (TypeError,ValueError):return False,'身份无效',{}
@@ -160,6 +173,11 @@ async def run(owner,scenario,job_id):
     finally:
         await stop()
         if url_file is not None:url_file.unlink(missing_ok=True)
+        result_file=directory/'result.json'
+        if record.get('stop_requested') and result_file.is_file():
+            try:value=json.loads(result_file.read_text())
+            except (OSError,ValueError):value={}
+            if outcome_closed(value,identity_id):record.update(phase='done',review_reason='cancelled_worker_closed_with_verified_receipts')
         # The task owns only its own record; never replace a later controller's state.
         if records().get(str(identity_id)) is record:persist()
         _STATUS.update(copy.deepcopy(record))

@@ -186,6 +186,7 @@ async def run(args):
                 args=['--no-sandbox','--use-gl=angle','--use-angle=gl-egl','--ignore-gpu-blocklist','--disable-dev-shm-usage',
                       '--disable-background-timer-throttling','--disable-renderer-backgrounding'])
             try:
+                context.set_default_timeout(90000)
                 await context.expose_binding('__fanrenBeforeWrite',before_write)
                 await context.add_init_script(script=init_script(args.expected_player_id,args.scenario))
                 await context.add_init_script(path=str(SUPPORT/'control_bridge.js'))

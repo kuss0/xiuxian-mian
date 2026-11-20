@@ -16,7 +16,7 @@ class NativeScenarios:
         menu=self.page.locator('#worldSystemMenu')
         if await menu.count() and not await menu.is_visible():
             await self.input.press('Escape')
-            await menu.wait_for(state='visible',timeout=15000)
+            await menu.wait_for(state='visible',timeout=90000)
         return menu
 
     async def close_menu(self):
