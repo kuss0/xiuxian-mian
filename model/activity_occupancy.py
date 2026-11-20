@@ -9,6 +9,9 @@ from .features.hunt import ACTIVE_PHASES
 def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=True, include_changfeng=True, include_replica=True, include_weekly=True, include_zhengmo=True, include_paired=True, include_qingxi=True, include_qingxi_review=True, now=None):
     now = time.time() if now is None else float(now)
     identity_id = int(identity_id)
+    client = get_expedition_run_state().get('fanren_browser', {}).get(str(identity_id), {})
+    if client.get('phase') in {'loading', 'running', 'held'}:
+        return '客户端浏览器执行中或结果待核对'
     if include_qingxi:
         quest = get_expedition_run_state().get('qingxi_quests', {}).get(str(identity_id), {})
         # A live run owns the account everywhere. A stopped run awaiting review
