@@ -75,13 +75,16 @@ def victory_network():
         (0, 105, [('回灵丹', 1)]), (1, 124, [('天雷竹', 2)]),
         (2, 124, [('天雷竹', 1)]), (3, 229, [('回灵丹', 1), ('回灵丹', 2)]),
     ):
-        trial = {'run': {'id': 'browser-run', 'rewarded': True, 'tier': 1, 'cleared': wave,
+        trial = {'run': {'id': 'browser-run', 'arena': 'longwind', 'rewarded': True, 'tier': 1, 'cleared': wave,
                          'status': 'cleared' if wave == 3 else 'active'},
                  'grants': [{'name': name, 'quantity': quantity}
                             for name, quantity in [('灵石', stones), *extras]],
                  'cultivation': 400000 if wave == 3 else 0}
         if wave == 3:
-            trial.update(result={'grade': '丙', 'score': 0}, status={'activeRun': None})
+            trial.update(result={'grade': '丙', 'score': 0}, status={
+                'activeRun': None, 'arena': 'longwind', 'day': browser.trial._day(browser.time.time()),
+                'used': 1, 'remaining': 2, 'limit': 3, 'swordBox': 8, 'swordBoxTarget': 20,
+            })
         network['receipts'].append({'ok': True, 'trial': trial})
     return network
 
@@ -93,6 +96,42 @@ def test_server_rewards_are_summed_once_per_wave(victory_network):
     assert facts['cultivation'] == 400000
     assert facts['run_id'] == 'browser-run'
     assert facts['tier'] == 1
+    assert facts['quota'] == {
+        'arena': 'longwind', 'day': browser.trial._day(browser.time.time()),
+        'used': 1, 'remaining': 2, 'limit': 3,
+    }
+    assert facts['sword_box'] == {'count': 8, 'target': 20}
+
+
+def test_server_quota_is_retained_only_from_closed_matching_status(victory_network):
+    facts = browser.summarize_network(victory_network)
+    assert facts['quota'] == {
+        'arena': 'longwind', 'day': browser.trial._day(browser.time.time()),
+        'used': 1, 'remaining': 2, 'limit': 3,
+    }
+    assert facts['sword_box'] == {'count': 8, 'target': 20}
+    victory_network['receipts'][-1]['trial']['status']['arena'] = 'bamboo'
+    assert browser.summarize_network(victory_network)['quota'] is None
+
+
+def test_trial_notification_details_find_exact_run_in_same_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser, 'TRIAL_TOOL_ROOT', tmp_path)
+    directory = tmp_path / '.runtime' / '42' / 'job_1'
+    directory.mkdir(parents=True)
+    (directory / 'runs.jsonl').write_text('\n'.join((
+        json.dumps({'runId': 'target', 'arena': 'longwind', 'tier': 1, 'wave': 1}),
+        json.dumps({'runId': 'other', 'arena': 'longwind', 'tier': 1, 'wave': 3}),
+        '{broken json',
+    )), encoding='utf-8')
+    (directory / 'doufa-profile-longwind.json').write_text(
+        json.dumps({'companion': {'name': '南宫婉'}}), encoding='utf-8')
+
+    report, profile = browser._load_trial_notification_details({
+        'identity_id': 42, 'job_id': 'job_1', 'arena': 'longwind', 'tier': 1, 'run_id': 'target',
+    })
+
+    assert report['wave'] == 1
+    assert profile['companion']['name'] == '南宫婉'
 
 
 def test_rewards_ignore_failed_pending_anomalous_and_other_run_receipts(victory_network):
@@ -120,15 +159,71 @@ def test_browser_completion_notifies_original_identity_once(harness, victory_net
     harness.network.update(victory_network)
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
     text = harness.notice.call_args.args[0]
-    assert '长风试炼·麦田试炼' in text and '青溪试炼' not in text
-    assert '第1重' in text and '通关' in text
-    assert all(piece in text for piece in ('灵石×582', '回灵丹×4', '天雷竹×3', '修为+400000'))
+    assert '【长风原 · 麦田试炼 · 一重】' in text and '青溪试炼' not in text
+    assert '结果：通关（4/4波）；评级：丙' in text
+    assert all(piece in text for piece in ('灵石×582', '回灵丹×4', '天雷竹×3', '修为：+400000'))
+    assert '该场地今日剩余有奖次数：2' in text
     assert 'score' not in text and 'fixture-job' not in text and 'browser-run' not in text
     assert harness.notice.call_args.kwargs['send_as_id'] == harness.owner.identity_id
     assert harness.record['browser_trial']['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
     assert harness.record['browser_trial_notice']['state'] == 'sent'
     asyncio.run(browser._notify_result(harness.record))
     harness.notice.assert_awaited_once()
+
+
+def test_trial_notification_formats_only_verified_battle_and_reward_fields():
+    status = {
+        'identity_id': 42, 'arena': 'longwind', 'tier': 1, 'kind': 'victory',
+        'server_closed': True, 'server_cleared': True, 'server_result': {'grade': '丙'},
+        'confirmed_wave': 3, 'gains': {'灵石': 380, '天雷竹': 3, '回灵丹': 3},
+        'cultivation': 4000, 'finished_at': 1795189948,
+        'quota': {'arena': 'longwind', 'day': '2026-11-20', 'used': 1, 'remaining': 2, 'limit': 3},
+        'sword_box': {'count': 1, 'target': 20},
+    }
+    run_report = {
+        'runId': 'server-run', 'arena': 'longwind', 'tier': 1, 'kind': 'victory', 'wave': 3,
+        'wallSeconds': 308, 'metrics': {'enemyHits': 12, 'parries': 0, 'blocks': 4, 'dodges': 7, 'potions': 3},
+        'swordBox': {'count': 1, 'target': 20},
+    }
+    battle_profile = {
+        'companion': {'name': '南宫婉', 'isNangongWan': True},
+        'swords': [{'name': '玄铁剑'}],
+        'slots': [{'name': '金蚨子母刃'}, {'name': '青竹蜂云剑'}],
+    }
+
+    text = browser._format_trial_notification(
+        status, run_report, battle_profile, {'username': 'LongWeikaishui', 'label': 'ignored'},
+    )
+
+    assert '【长风原 · 麦田试炼 · 一重】 @LongWeikaishui' in text
+    assert '驭侍妾南宫婉出战。' in text
+    assert '通关（4/4波）；评级：丙' in text
+    assert '战报用时：5分8秒 · 受击 12 · 精准格挡 0 · 格挡 4 · 翻滚 7 · 用药 3' in text
+    assert '飞剑：玄铁剑；法宝：金蚨子母刃、青竹蜂云剑' in text
+    assert '奖励：灵石×380、天雷竹×3、回灵丹×3（剑匣 1/20）' in text
+    assert '修为：+4000' in text
+    assert '该场地今日剩余有奖次数：2' in text
+    assert '结算时间：2026-11-20 23:52:28 北京时间' in text
+    assert 'server-run' not in text
+
+
+def test_trial_notification_omits_unobserved_metrics_equipment_and_quota():
+    status = {
+        'identity_id': 42, 'arena': 'bamboo', 'tier': 2, 'kind': 'defeat',
+        'server_closed': True, 'server_cleared': False, 'rewarded': True, 'server_result': None,
+        'confirmed_wave': 0, 'gains': {}, 'cultivation': 0, 'quota': None,
+    }
+
+    text = browser._format_trial_notification(
+        status, {}, {}, {'username': '', 'label': 'Test identity'},
+    )
+
+    assert '【长风原 · 竹林试炼 · 二重】 Test identity' in text
+    assert '战败（1/4波）；评级：无' in text
+    assert '奖励：无确认物品' in text and '修为：+0' in text
+    assert '精准格挡' not in text
+    assert '法宝：' not in text and '飞剑：' not in text
+    assert '剩余有奖次数' not in text
 
 
 @pytest.mark.parametrize('raises', [False, True])
@@ -154,7 +249,7 @@ def test_closed_timeout_reports_only_confirmed_partial_rewards(harness, victory_
     ]
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
     text = harness.notice.call_args.args[0]
-    assert '通关' not in text and '已结束' in text
+    assert '结果：通关' not in text and '结果：未通关（3/4波）' in text
     assert '灵石×353' in text and '回灵丹×1' in text and '天雷竹×3' in text
     assert '修为+' not in text
 
@@ -303,7 +398,7 @@ def test_confirmed_zero_reward_defeat_notifies_once_for_exact_job(harness):
     ok, _message, result = asyncio.run(browser.action(payload))
     assert ok and result['browser_trial']['notice']['state'] == 'sent'
     text = harness.notice.call_args.args[0]
-    assert '未通关' in text and '未确认物品或修为收获' in text
+    assert '结果：战败（波次待核）；评级：无' in text and '奖励：无确认物品' in text
     assert '已确认收获' not in text and 'defeated-run' not in text
     asyncio.run(browser.action(payload))
     harness.notice.assert_awaited_once()

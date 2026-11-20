@@ -3,14 +3,18 @@ import asyncio
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 import time
 import uuid
+from datetime import datetime
 
+from ..config import TZ_LOCAL
 from ..activity_occupancy import get_activity_block_reason
 from ..runtime import send_audit_log, track_background_task
-from ..state import get_global_enabled, is_cave_public_identity_available
+from ..state import get_global_enabled, get_send_as_profile, is_cave_public_identity_available
 from ..webapp_core import extract_miniapp_init_data_from_url, parse_miniapp_init_data
 from . import changfeng_trial as trial
 from .cave_treasure_miniapp import request_cave_treasure_miniapp_init_data
@@ -229,6 +233,21 @@ def summarize_network(network):
                  and type(latest_status.get('used')) is int
                  and type(latest_status.get('limit')) is int
                  and latest_status['used'] == latest_status['limit'] > 0)
+    quota = None
+    if (latest_status.get('arena') == run.get('arena')
+            and isinstance(latest_status.get('day'), str)
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}', latest_status['day'])
+            and all(type(latest_status.get(key)) is int for key in ('used', 'remaining', 'limit'))
+            and latest_status['limit'] > 0 and latest_status['used'] >= 0
+            and latest_status['remaining'] >= 0
+            and latest_status['used'] + latest_status['remaining'] == latest_status['limit']
+            and latest_status.get('activeRun') is None):
+        quota = {key: latest_status[key] for key in ('day', 'arena', 'used', 'remaining', 'limit')}
+    sword_box = None
+    if (quota and type(latest_status.get('swordBox')) is int
+            and type(latest_status.get('swordBoxTarget')) is int
+            and 0 <= latest_status['swordBox'] <= latest_status['swordBoxTarget']):
+        sword_box = {'count': latest_status['swordBox'], 'target': latest_status['swordBoxTarget']}
     requests, receipts = network.get('requests') or [], network.get('receipts') or []
     # Missing or undecodable request evidence is not proof that start was never
     # sent. CDP explicitly records action='unknown' when postData parsing fails.
@@ -268,7 +287,185 @@ def summarize_network(network):
             'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
             'exhausted': exhausted, 'no_rewards': no_rewards, 'no_start_verified': no_start_verified,
             'unknown_request': unknown_request, 'confirmed_wave': confirmed_wave,
-            'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
+            'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared'),
+            'quota': quota, 'sword_box': sword_box}
+
+
+def _safe_display_name(value, *, limit=80):
+    if not isinstance(value, str):
+        return ''
+    value = ' '.join(value.split()).strip()
+    return value[:limit] if value else ''
+
+
+def _named_items(value):
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        name for row in value if isinstance(row, dict)
+        if (name := _safe_display_name(row.get('name')))[:1]
+    ))[:16]
+
+
+def _load_trial_notification_details(status):
+    """Read only bounded reports belonging to this exact identity and job."""
+    identity_id, job_id = status.get('identity_id'), status.get('job_id')
+    if (type(identity_id) is not int or identity_id <= 0 or not isinstance(job_id, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id)):
+        return {}, {}
+    try:
+        root = (TRIAL_TOOL_ROOT / '.runtime').resolve()
+        identity_directory = (root / str(identity_id)).resolve()
+        directory = (identity_directory / job_id).resolve()
+        arena = status.get('arena')
+        if (identity_directory.parent != root or directory.parent != identity_directory
+                or arena not in trial.TRIAL_ARENAS):
+            return {}, {}
+        if status.get('evidence_dir') and Path(status['evidence_dir']).resolve() != directory:
+            return {}, {}
+        log_path = directory / 'runs.jsonl'
+        profile_path = directory / f"doufa-profile-{arena}.json"
+        run_report = {}
+        if log_path.is_file() and log_path.stat().st_size <= 12 * 1024 * 1024:
+            for line in reversed(log_path.read_text(encoding='utf-8').splitlines()):
+                if not line.strip():
+                    continue
+                try:
+                    candidate = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(candidate, dict) and candidate.get('runId') == status.get('run_id')
+                        and candidate.get('arena') == status.get('arena')
+                        and candidate.get('tier') == status.get('tier')):
+                    run_report = candidate
+                    break
+        profile = {}
+        if profile_path.is_file() and profile_path.stat().st_size <= 256 * 1024:
+            candidate = json.loads(profile_path.read_text(encoding='utf-8'))
+            if isinstance(candidate, dict):
+                profile = candidate
+        return run_report, profile
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}, {}
+
+
+def _tier_label(tier):
+    if type(tier) is not int or tier <= 0:
+        return '重数待核'
+    numerals = ('零', '一', '二', '三', '四', '五', '六', '七', '八', '九')
+    return f'{numerals[tier]}重' if tier < len(numerals) else f'第{tier}重'
+
+
+def _format_elapsed(seconds):
+    if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
+        return ''
+    minutes, remainder = divmod(int(round(seconds)), 60)
+    return f'{minutes}分{remainder}秒' if minutes else f'{remainder}秒'
+
+
+def _format_trial_notification(status, run_report, battle_profile, send_profile):
+    identity_id = status.get('identity_id')
+    username = _safe_display_name(send_profile.get('username'), limit=32).lstrip('@')
+    username = username if re.fullmatch(r'[A-Za-z0-9_]{1,32}', username) else ''
+    identity = '@' + username if username else (
+        _safe_display_name(send_profile.get('label')) or str(identity_id or '身份未知'))
+    arena = trial.TRIAL_ARENAS.get(status.get('arena'), '试炼')
+    tier = status.get('tier')
+    title = f'【长风原 · {arena} · {_tier_label(tier)}】 {identity}'
+
+    lines = [title]
+    companion = battle_profile.get('companion')
+    if isinstance(companion, dict):
+        companion_name = _safe_display_name(companion.get('name'))
+        if companion_name:
+            if companion.get('isNangongWan') is True:
+                lines.append(f'驭侍妾{companion_name}出战。')
+            else:
+                lines.append(f'助战：{companion_name}')
+
+    progress = None
+    wave = run_report.get('wave')
+    if type(wave) is int and 0 <= wave <= 3:
+        progress = wave + 1
+    confirmed_wave = status.get('confirmed_wave')
+    if type(confirmed_wave) is int and 0 <= confirmed_wave <= 3:
+        progress = max(progress or 0, confirmed_wave + 1)
+    if status.get('server_cleared') is True:
+        progress = 4
+    progress_text = f'{progress}/4波' if progress is not None else '波次待核'
+    confirmed_defeat = (status.get('kind') == 'defeat' and status.get('server_closed') is True
+                        and status.get('rewarded') is True and not status.get('server_cleared'))
+    if status.get('server_cleared') is True:
+        outcome = '通关'
+    elif confirmed_defeat:
+        outcome = '战败'
+    elif status.get('server_closed') is True:
+        outcome = '未通关'
+    else:
+        outcome = '结算待核对'
+    server_result = status.get('server_result') or {}
+    grade = _safe_display_name(server_result.get('grade')) if isinstance(server_result, dict) else ''
+    lines.append(f'结果：{outcome}（{progress_text}）；评级：{grade or "无"}')
+
+    report_parts = []
+    elapsed = _format_elapsed(run_report.get('wallSeconds'))
+    if elapsed:
+        report_parts.append(f'战报用时：{elapsed}')
+    metrics = run_report.get('metrics')
+    if isinstance(metrics, dict):
+        for key, label in (('enemyHits', '受击'), ('parries', '精准格挡'), ('blocks', '格挡'),
+                           ('dodges', '翻滚'), ('potions', '用药')):
+            value = metrics.get(key)
+            if type(value) is int and value >= 0:
+                report_parts.append(f'{label} {value}')
+    if report_parts:
+        lines.append(' · '.join(report_parts))
+
+    weapons = _named_items(battle_profile.get('swords'))
+    treasures = _named_items(battle_profile.get('slots'))
+    if weapons or treasures or isinstance(battle_profile.get('slots'), list):
+        configured = []
+        if weapons:
+            configured.append('飞剑：' + '、'.join(weapons))
+        if treasures:
+            configured.append('法宝：' + '、'.join(treasures))
+        elif isinstance(battle_profile.get('slots'), list):
+            configured.append('法宝：无')
+        if configured:
+            lines.append('斗法配置：' + '；'.join(configured))
+
+    raw_gains = status.get('gains') or {}
+    gains = {}
+    if isinstance(raw_gains, dict):
+        for name, amount in raw_gains.items():
+            display_name = _safe_display_name(name)
+            if display_name and type(amount) is int and amount > 0:
+                gains[display_name] = gains.get(display_name, 0) + amount
+    reward_text = '、'.join(f'{name}×{amount}' for name, amount in gains.items()) or '无确认物品'
+    sword_box = status.get('sword_box') or run_report.get('swordBox')
+    if (isinstance(sword_box, dict) and type(sword_box.get('count')) is int
+            and type(sword_box.get('target')) is int and 0 <= sword_box['count'] <= sword_box['target']):
+        reward_text += f'（剑匣 {sword_box["count"]}/{sword_box["target"]}）'
+    lines.append('奖励：' + reward_text)
+    cultivation = status.get('cultivation')
+    if type(cultivation) is int and cultivation >= 0:
+        lines.append(f'修为：+{cultivation}')
+
+    quota = status.get('quota')
+    finished_at = status.get('finished_at')
+    settled_day = (datetime.fromtimestamp(finished_at, TZ_LOCAL).date().isoformat()
+                   if type(finished_at) in (int, float) and math.isfinite(finished_at) and finished_at > 0
+                   else None)
+    if (isinstance(quota, dict) and quota.get('arena') == status.get('arena')
+            and quota.get('day') == settled_day
+            and all(type(quota.get(key)) is int for key in ('used', 'remaining', 'limit'))
+            and quota['limit'] > 0 and quota['used'] >= 0 and quota['remaining'] >= 0
+            and quota['used'] + quota['remaining'] == quota['limit']):
+        lines.append(f'该场地今日剩余有奖次数：{quota["remaining"]}')
+    if type(finished_at) in (int, float) and math.isfinite(finished_at) and finished_at > 0:
+        settled = datetime.fromtimestamp(finished_at, TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S')
+        lines.append(f'结算时间：{settled} 北京时间')
+    return '\n'.join(lines)
 
 
 async def _notify_result(record):
@@ -280,16 +477,9 @@ async def _notify_result(record):
     if (not run_id or not (gains or cultivation or confirmed_defeat)
             or (record.get('browser_trial_notice') or {}).get('run_id') == run_id):
         return
-    arena = trial.TRIAL_ARENAS[status['arena']]
-    tier = status.get('tier')
-    title = f"⚔️ 长风试炼·{arena}" + (f"·第{tier}重" if type(tier) is int and tier > 0 else '')
-    outcome = '已通关' if status.get('server_cleared') else ('已结束' if status.get('server_closed') else '结算待核对')
-    summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
-    if cultivation:
-        summary += ('，' if summary else '') + f'修为+{cultivation}'
-    message = f'{title}{outcome}｜已确认收获：{summary}'
-    if confirmed_defeat and not (gains or cultivation):
-        message = f'{title}未通关，已结束｜本局未确认物品或修为收获；保留剩余次数待复核'
+    run_report, battle_profile = _load_trial_notification_details(status)
+    send_profile = get_send_as_profile(status.get('identity_id'))
+    message = _format_trial_notification(status, run_report, battle_profile, send_profile)
     notice = {'run_id': run_id, 'attempted_at': time.time(), 'state': 'attempted'}
     record['browser_trial_notice'] = notice
     # Persist intent before sending. An unknown Telegram outcome must not cause
@@ -550,6 +740,8 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
                            server_started=facts['started'], no_rewards=facts['no_rewards'],
                            no_start_verified=facts['no_start_verified'], unknown_request=facts['unknown_request'],
                            confirmed_wave=facts['confirmed_wave'],
+                           quota=facts['quota'],
+                           sword_box=facts['sword_box'],
                            server_result=(facts['terminal'] or {}).get('result'))
             if scheduled and (facts['started'] or facts['unknown_request'] or not facts['no_start_verified']):
                 _archive_previous_attempt(record, previous_attempt, facts['run_id'])
