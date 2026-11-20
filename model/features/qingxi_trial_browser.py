@@ -151,6 +151,9 @@ async def action(payload):
     arena = payload.get('arena', 'longwind')
     if arena not in trial.TRIAL_ARENAS or type(payload.get('practice_only', False)) is not bool:
         return False, '场地或练习模式无效', {}
+    tier = payload.get('tier')
+    if tier is not None and (type(tier) is not int or not 1 <= tier <= 30):
+        return False, '重数须为1到30的整数', {}
     owner = MiniAppIdentityOwner.capture(identity_id)
     if owner is None or owner.account_id != identity_id or not is_cave_public_identity_available(identity_id):
         return False, '单次浏览器试跑仅支持可用的本人账号', {}
@@ -166,8 +169,10 @@ async def action(payload):
         return False, '身份洞府入口忙', {}
     job_id = uuid.uuid4().hex
     _STATUS.clear()
-    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena, phase='preparing', started_at=time.time())
-    _TASK = track_background_task(asyncio.create_task(_run(owner, arena, payload.get('practice_only', False), job_id)))
+    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena, tier=tier,
+                   phase='preparing', started_at=time.time())
+    _TASK = track_background_task(asyncio.create_task(
+        _run(owner, arena, payload.get('practice_only', False), job_id, tier=tier)))
     return True, '已安排单次浏览器试跑，不启用自动化', {'browser_trial': snapshot()}
 
 
@@ -219,7 +224,7 @@ async def run_scheduled_once(identity_id, arena='longwind'):
     return ok, '本次浏览器试炼已结束' if ok else '浏览器试炼待核对'
 
 
-async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
+async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, tier=None):
     from . import cave_treasure_runtime as cave
     identity_id = owner.identity_id
     _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena)
@@ -291,10 +296,11 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 stream.write(launch_url)
             log_file = directory / 'runs.jsonl'
             launcher = Path(__file__).resolve().parents[2] / 'tools/changfeng_trial_browser.py'
+            tier_arg = str(tier) if tier is not None and not scheduled else 'best'
             command = [str(tool_root / '.venv/bin/python'), str(launcher), '--tool-root', str(tool_root),
                        '--arena', arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
                        '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
-                       '--log', str(log_file), '--go', '--runs', '1', '--tier', 'best', '--retries', '1',
+                       '--log', str(log_file), '--go', '--runs', '1', '--tier', tier_arg, '--retries', '1',
                        '--max-run-seconds', '1500', '--wait-login', '60']
             if practice_only:
                 command.append('--practice-only')

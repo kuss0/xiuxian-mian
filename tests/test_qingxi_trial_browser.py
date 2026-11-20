@@ -264,6 +264,32 @@ def test_invalid_arena_is_rejected(harness):
     assert not ok
 
 
+@pytest.mark.parametrize('tier', [0, 31, True, '1', 1.0])
+def test_manual_action_rejects_invalid_tier_before_browser_launch(harness, tier):
+    ok, message, _extra = asyncio.run(browser.action({
+        'action': 'start', 'send_as_id': harness.owner.identity_id, 'tier': tier,
+    }))
+    assert not ok and message == '重数须为1到30的整数'
+    assert not harness.commands
+
+
+def test_manual_action_pins_explicit_tier_and_scheduler_keeps_best(harness, victory_network):
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+
+    async def start():
+        ok, _message, _extra = await browser.action({
+            'action': 'start', 'send_as_id': harness.owner.identity_id, 'tier': 1,
+        })
+        assert ok
+        await browser._TASK
+
+    asyncio.run(start())
+    command = harness.commands[0]
+    assert command[command.index('--tier') + 1] == '1'
+    assert harness.record['browser_trial']['tier'] == 2
+
+
 def test_snapshot_does_not_return_login_url(harness):
     ok, _message, extra = asyncio.run(browser.action({'action': 'status'}))
     assert ok
