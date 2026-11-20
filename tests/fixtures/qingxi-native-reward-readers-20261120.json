@@ -1,0 +1,270 @@
+{
+  "source": "public game page fetched without authentication",
+  "source_sha256": "2ee30976f4e218417bd8d9be0cda67652fb2f0417610f5cb02c4a74dac076726",
+  "date": "2026-11-20",
+  "functions": [
+    "async function worldInstancePost(route,body,context={}){\n      const controller=new AbortController(),external=context?.signal,cancel=()=>controller.abort();\n      const timeout=setTimeout(cancel,12000);\n      if(external?.aborted)cancel();else external?.addEventListener('abort',cancel,{once:true});\n      try{return await postJson(route,body,{retries:0,signal:controller.signal});}\n      catch(error){if(controller.signal.aborted)throw Error(external?.aborted?'request_cancelled':'request_timeout');throw error;}\n      finally{clearTimeout(timeout);external?.removeEventListener('abort',cancel);}\n    }",
+    "async function worldTrialRequest(action,extra={}){\n      const preview=state.preview,route=preview?new URL(\"/api/preview/dwelling/trial\",location.origin).toString():\"/api/miniapp/xianxia-dwelling/trial\";\n      const body={action,...extra,...(preview?{previewId:townPreviewIdentity()}:{token:state.token,initData:state.initData})};\n      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);\n      try{\n        const data=await postJson(route,body,{retries:0,signal:controller.signal});\n        if(!data?.ok||!data.trial)return null;\n        if((data.trial.grants||[]).length||data.trial.cultivation)state.sectionLoaded.inventory=false;\n        return data.trial;\n      }catch(error){console.warn(\"[trial]\",action,error);return null;}finally{clearTimeout(timeout);}\n    }",
+    "async function worldMoonRequest(action,extra={},context={}){\n      const preview=state.preview,route=preview?new URL(\"/api/preview/dwelling/moon-palace\",location.origin).toString():\"/api/miniapp/xianxia-dwelling/moon-palace\";\n      const body={action,...extra,...(preview?{previewId:questPreviewIdentity(),...(new URLSearchParams(location.search).get(\"moonkey\")===\"1\"?{previewMoonKey:true}:{})}:{token:state.token,initData:state.initData})};\n      try{\n        const data=await worldInstancePost(route,body,context);\n        if(!data?.ok||!data.moonPalace)return data?.error?{error:data.error}:null;\n        if((data.moonPalace.grants||[]).length||data.moonPalace.cultivation)state.sectionLoaded.inventory=false;\n        return data.moonPalace;\n      }catch(error){console.warn(\"[moon]\",action,error);return error?.message?{error:error.message}:null;}\n    }",
+    "async function worldBloodRequest(action,extra={},context={}){\n      const preview=state.preview,route=preview?new URL(\"/api/preview/dwelling/blood-land\",location.origin).toString():\"/api/miniapp/xianxia-dwelling/blood-land\";\n      const body={action,...extra,...(preview?{previewId:questPreviewIdentity()}:{token:state.token,initData:state.initData})};\n      try{\n        const data=await worldInstancePost(route,body,context);\n        if(!data?.ok||!data.bloodLand)return data?.error?{error:data.error}:null;\n        if((data.bloodLand.grants||[]).length||data.bloodLand.cultivation)state.sectionLoaded.inventory=false;\n        if(data.bloodLand.questStep)void worldQuests?.refresh?.(false);\n        return data.bloodLand;\n      }catch(error){console.warn(\"[blood]\",action,error);return error?.message?{error:error.message}:null;}\n    }",
+    "async function worldSiegeRequest(action,extra={},context={}){\n      const preview=state.preview,route=preview?new URL(\"/api/preview/dwelling/south-gate\",location.origin).toString():\"/api/miniapp/xianxia-dwelling/south-gate\";\n      const body={action,...extra,...(preview?{previewId:questPreviewIdentity()}:{token:state.token,initData:state.initData})};\n      try{\n        const data=await worldInstancePost(route,body,context);\n        if(!data?.ok||!data.southGate)return data?.error?{error:data.error}:null;\n        if((data.southGate.grants||[]).length||data.southGate.cultivation)state.sectionLoaded.inventory=false;\n        if(data.southGate.questStep)void worldQuests?.refresh?.(false);\n        return data.southGate;\n      }catch(error){console.warn(\"[siege]\",action,error);return error?.message?{error:error.message}:null;}\n    }",
+    "async function worldEscortRequest(action,extra={},context={}){\n      const preview=state.preview,route=preview?new URL(\"/api/preview/dwelling/refugee-escort\",location.origin).toString():\"/api/miniapp/xianxia-dwelling/refugee-escort\";\n      const body={action,...extra,...(preview?{previewId:questPreviewIdentity()}:{token:state.token,initData:state.initData})};\n      try{\n        const data=await worldInstancePost(route,body,context);\n        if(!data?.ok||!data.refugeeEscort)return data?.error?{error:data.error}:null;\n        if((data.refugeeEscort.grants||[]).length||data.refugeeEscort.cultivation)state.sectionLoaded.inventory=false;\n        if(data.refugeeEscort.questStep)void worldQuests?.refresh?.(false);\n        return data.refugeeEscort;\n      }catch(error){console.warn(\"[escort]\",action,error);return error?.message?{error:error.message}:null;}\n    }",
+    "window.qingxiInstanceRequest=async function(resource,action,extra={},context={}){\n      const keys={'mulan-shrine':'mulanShrine','baiqiao-puppet':'baiqiaoPuppet','jianzhong-trial':'jianzhongTrial'},key=keys[resource];\n      if(!key||!worldStoryContentAvailable())return {ok:false,error:'instance_not_open'};\n      try{\n        const route=state.preview?`/api/preview/dwelling/${resource}`:`/api/miniapp/xianxia-dwelling/${resource}`;\n        const data=await worldInstancePost(route,{...extra,action,...(state.preview?{previewId:questPreviewIdentity()}:{token:state.token,initData:state.initData})},context);\n        if(data?.[key]?.grants?.length||data?.[key]?.cultivation)state.sectionLoaded.inventory=false;\n        if(data?.[key]?.questStep)void worldQuests?.refresh?.(false);\n        return data;\n      }catch(error){return {ok:false,error:error.message||'instance_unavailable'};}\n    }"
+  ],
+  "reward_statuses": [
+    {
+      "resource": "moon-palace",
+      "arena": null,
+      "payload_keys": [
+        "grants",
+        "moon"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "pity",
+        "pityTarget",
+        "run",
+        "todayGrade",
+        "todayScore",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "blood-land",
+      "arena": null,
+      "payload_keys": [
+        "blood",
+        "grants"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "south-gate",
+      "arena": null,
+      "payload_keys": [
+        "grants",
+        "siege"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "refugee-escort",
+      "arena": null,
+      "payload_keys": [
+        "escort",
+        "grants"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "mulan-shrine",
+      "arena": null,
+      "payload_keys": [
+        "grants",
+        "shrine"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "baiqiao-puppet",
+      "arena": null,
+      "payload_keys": [
+        "grants",
+        "puppet"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "jianzhong-trial",
+      "arena": null,
+      "payload_keys": [
+        "grants",
+        "jianzhong"
+      ],
+      "status_keys": [
+        "best",
+        "claimed",
+        "clears",
+        "day",
+        "failClaimed",
+        "firstClear",
+        "hasKey",
+        "level",
+        "run",
+        "version"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "claimed": false,
+        "hasKey": false,
+        "failClaimed": false,
+        "run": null
+      }
+    },
+    {
+      "resource": "trial",
+      "arena": "longwind",
+      "payload_keys": [
+        "grants",
+        "status"
+      ],
+      "status_keys": [
+        "activeRun",
+        "arena",
+        "carryAvailable",
+        "celestial",
+        "cosmetics",
+        "day",
+        "limit",
+        "remaining",
+        "shares",
+        "swordBox",
+        "swordBoxTarget",
+        "tier",
+        "used"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "arena": "longwind",
+        "used": 0,
+        "remaining": 3,
+        "limit": 3,
+        "activeRun": null
+      }
+    },
+    {
+      "resource": "trial",
+      "arena": "bamboo",
+      "payload_keys": [
+        "grants",
+        "status"
+      ],
+      "status_keys": [
+        "activeRun",
+        "arena",
+        "carryAvailable",
+        "celestial",
+        "cosmetics",
+        "day",
+        "limit",
+        "remaining",
+        "shares",
+        "swordBox",
+        "swordBoxTarget",
+        "tier",
+        "used"
+      ],
+      "status": {
+        "day": "2026-11-20",
+        "arena": "bamboo",
+        "used": 1,
+        "remaining": 2,
+        "limit": 3,
+        "activeRun": null
+      }
+    }
+  ]
+}

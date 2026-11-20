@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import signal
 import time
 import uuid
 
@@ -25,10 +24,166 @@ TRIAL_STRATEGY_SHA256 = '67d98870f531ae2642cf645054e0dd67cf9cf92441f74e7d7f617ed
 TRIAL_RUNNER_SHA256 = 'f5f113bb168f7327ec2af2a699e96a22505da928090d5df67ad591072ba738ec'
 _TASK = None
 _STATUS = {}
+_ATTEMPT_FIELDS = (
+    'run_id', 'operation_id', 'arena', 'result', 'grade', 'completed_at', 'receipts', 'report',
+    'confirmed_wave', 'gains', 'cultivation', 'rewarded', 'tier', 'exhausted',
+    'report_profile', 'observed_status', 'observed_at', 'observed_arenas', 'server_cleared',
+    'browser_trial', 'browser_trial_notice', 'execution_engine', 'started_at',
+)
 
 
 def snapshot():
     return copy.deepcopy(_STATUS)
+
+
+def _previous_attempt(record):
+    return {key: copy.deepcopy(record[key]) for key in _ATTEMPT_FIELDS if key in record}
+
+
+def _archive_previous_attempt(record, previous, current_run_id=None, *, active=None):
+    if active is None:
+        active = {key: copy.deepcopy(record[key]) for key in
+                  ('operation_id', 'arena', 'execution_engine', 'started_at') if key in record}
+    if previous:
+        record['previous_attempt'] = previous
+        if previous.get('run_id') and previous.get('run_id') != current_run_id:
+            record['previous_run_id'] = previous['run_id']
+    for key in _ATTEMPT_FIELDS:
+        record.pop(key, None)
+    record.update(active)
+
+
+def _restore_previous_metadata(record, previous):
+    for key in ('operation_id', 'arena', 'execution_engine', 'started_at'):
+        if key in previous:
+            record[key] = copy.deepcopy(previous[key])
+        else:
+            record.pop(key, None)
+
+
+def _sync_main_result(record, status):
+    server_started = status.get('server_started')
+    # Records written before the state-sync fields were introduced can still
+    # be reconciled when their run, reward and server closure are explicit.
+    if server_started is None:
+        server_started = bool(status.get('run_id') and
+                              (status.get('rewarded') is True or status.get('server_closed') is True))
+    if (record.get('phase') == 'held' or status.get('unknown_request')
+            or not server_started):
+        return False
+    server_result = status.get('server_result')
+    grade = server_result.get('grade') if isinstance(server_result, dict) else None
+    terminal = isinstance(grade, str) and bool(grade)
+    closed = status.get('server_closed') is True or status.get('server_cleared') is True
+    if not (terminal or closed):
+        return False
+    run_id = status.get('run_id')
+    if not run_id and not (status.get('exhausted') or status.get('no_rewards')):
+        return False
+
+    rewarded = status.get('rewarded') is True
+    gains = status.get('gains') or {}
+    if not isinstance(gains, dict):
+        gains = {}
+    gains = {name: count for name, count in gains.items()
+             if isinstance(name, str) and type(count) is int and count > 0}
+    cultivation = status.get('cultivation')
+    cultivation = cultivation if type(cultivation) is int and cultivation > 0 else 0
+    if rewarded:
+        summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
+        if cultivation:
+            summary += ('，' if summary else '') + f'修为+{cultivation}'
+        outcome = '已通关' if status.get('server_cleared') else '已结束'
+        record['result'] = f'{outcome}｜{summary or "无物品收获"}'
+    elif status.get('exhausted') or status.get('no_rewards'):
+        record['result'] = '今日有奖次数已用完'
+    else:
+        return False
+
+    if run_id:
+        record['run_id'] = run_id
+    if status.get('job_id'):
+        record['operation_id'] = 'browser-' + str(status['job_id'])
+    arena = status.get('arena')
+    if isinstance(arena, str) and arena in trial.TRIAL_ARENAS:
+        record['arena'] = arena
+    if status.get('scheduled'):
+        record['execution_engine'] = 'browser-m19'
+    if status.get('started_at'):
+        record['started_at'] = status['started_at']
+    tier = status.get('tier')
+    if type(tier) is int and tier > 0:
+        record['tier'] = tier
+    elif 'tier' in record:
+        record.pop('tier')
+    if terminal:
+        record['grade'] = grade
+    else:
+        record.pop('grade', None)
+    confirmed_wave = status.get('confirmed_wave')
+    if type(confirmed_wave) is int and confirmed_wave >= 0:
+        record['confirmed_wave'] = confirmed_wave
+    else:
+        record.pop('confirmed_wave', None)
+    record['rewarded'] = rewarded
+    record['gains'] = gains if rewarded else {}
+    record['cultivation'] = cultivation
+    record['exhausted'] = bool(status.get('exhausted') or status.get('no_rewards'))
+    record['server_cleared'] = status.get('server_cleared') is True
+    finished_at = status.get('finished_at')
+    if type(finished_at) in (int, float) and finished_at > 0:
+        record['completed_at'] = finished_at
+    elif type(record.get('completed_at')) not in (int, float) or record['completed_at'] <= 0:
+        record['completed_at'] = time.time()
+    record['phase'] = 'done'
+    record['last_error'] = None
+    return True
+
+
+def reconcile_persisted_records():
+    """Repair completed native records left with an older HTTP result."""
+    changed = False
+    for record in trial._records().values():
+        if not isinstance(record, dict) or record.get('phase') != 'done':
+            continue
+        status = record.get('browser_trial')
+        if not isinstance(status, dict) or not status.get('run_id'):
+            continue
+        probe = copy.deepcopy(record)
+        if not _sync_main_result(probe, status) or probe == record:
+            continue
+        # Once the result belongs to this native run, repairing metadata must
+        # not archive that same run over the actual previous HTTP attempt.
+        if (record.get('run_id') == status.get('run_id')
+                and isinstance(record.get('result'), str)
+                and record['result'].startswith(('已通关｜', '已结束｜', '今日有奖次数已用完'))):
+            record.update(probe)
+            for key in _ATTEMPT_FIELDS:
+                if key not in probe:
+                    record.pop(key, None)
+            changed = True
+            continue
+        previous = _previous_attempt(record)
+        if record.get('run_id') == status.get('run_id') and record.get('previous_run_id'):
+            previous['run_id'] = record['previous_run_id']
+            for key in ('operation_id', 'browser_trial', 'browser_trial_notice', 'execution_engine', 'started_at'):
+                previous.pop(key, None)
+        notice = copy.deepcopy(record.get('browser_trial_notice'))
+        active = {}
+        if status.get('job_id'):
+            active['operation_id'] = 'browser-' + str(status['job_id'])
+        if status.get('arena') in trial.TRIAL_ARENAS:
+            active['arena'] = status['arena']
+        if status.get('scheduled'):
+            active['execution_engine'] = 'browser-m19'
+        if status.get('started_at'):
+            active['started_at'] = status['started_at']
+        _archive_previous_attempt(record, previous, status.get('run_id'), active=active)
+        record['browser_trial'] = status
+        if notice:
+            record['browser_trial_notice'] = notice
+        changed = _sync_main_result(record, status) or changed
+    return changed
 
 
 def _trial_tool_root():
@@ -81,9 +236,12 @@ def summarize_network(network):
                 and not (row['trial'].get('status') or {}).get('activeRun') for row in receipts)
         and 'activeRun' in latest_status and latest_status['activeRun'] is None)
     gains, cultivation, seen = {}, 0, set()
+    confirmed_wave = -1
     for row in successful:
         current = row.get('run') or {}
         wave = current.get('cleared')
+        if current.get('id') == run_id and type(wave) is int and wave >= 0:
+            confirmed_wave = max(confirmed_wave, wave)
         if (not run_id or current.get('id') != run_id or current.get('rewarded') is not True
                 or type(wave) is not int or not 0 <= wave <= 3 or wave in seen):
             continue
@@ -103,7 +261,7 @@ def summarize_network(network):
     return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed,
             'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
             'exhausted': exhausted, 'no_rewards': no_rewards, 'no_start_verified': no_start_verified,
-            'unknown_request': unknown_request,
+            'unknown_request': unknown_request, 'confirmed_wave': confirmed_wave,
             'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
 
 
@@ -151,6 +309,9 @@ async def action(payload):
     arena = payload.get('arena', 'longwind')
     if arena not in trial.TRIAL_ARENAS or type(payload.get('practice_only', False)) is not bool:
         return False, '场地或练习模式无效', {}
+    tier = payload.get('tier', 1)
+    if type(tier) is not int or tier != 1:
+        return False, '当前仅验证第一重，重数须为整数1', {}
     owner = MiniAppIdentityOwner.capture(identity_id)
     if owner is None or owner.account_id != identity_id or not is_cave_public_identity_available(identity_id):
         return False, '单次浏览器试跑仅支持可用的本人账号', {}
@@ -166,8 +327,10 @@ async def action(payload):
         return False, '身份洞府入口忙', {}
     job_id = uuid.uuid4().hex
     _STATUS.clear()
-    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena, phase='preparing', started_at=time.time())
-    _TASK = track_background_task(asyncio.create_task(_run(owner, arena, payload.get('practice_only', False), job_id)))
+    _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena, tier=tier,
+                   phase='preparing', started_at=time.time())
+    _TASK = track_background_task(asyncio.create_task(
+        _run(owner, arena, payload.get('practice_only', False), job_id, tier=tier)))
     return True, '已安排单次浏览器试跑，不启用自动化', {'browser_trial': snapshot()}
 
 
@@ -175,6 +338,9 @@ async def run_scheduled_once(identity_id, arena='longwind'):
     """One scheduled native game, sharing manual ownership and local daily caps."""
     global _TASK
     identity_id = int(identity_id)
+    from .qingxi_rewards import owns_identity
+    if owns_identity(identity_id):
+        return False, '每日七副本与双试炼调度已接管该身份'
     config = copy.deepcopy(trial.get_expedition_config().get('changfeng', {}))
     if (not config.get('enabled') or identity_id not in config.get('participant_identity_ids', [])
             or arena not in trial.TRIAL_ARENAS or not get_global_enabled()):
@@ -219,7 +385,15 @@ async def run_scheduled_once(identity_id, arena='longwind'):
     return ok, '本次浏览器试炼已结束' if ok else '浏览器试炼待核对'
 
 
-async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
+async def _drain_trial_process(process, owner_token):
+    from .fanren_client_browser import _stop_native_process_group
+    await _stop_native_process_group(process, owner_token)
+
+
+async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, tier=1):
+    from .fanren_client_browser import _PROCESS_OWNER_ENV, _await_uncancelled
+    if type(tier) is not int or tier != 1:
+        raise ValueError('trial_browser_tier_one_only')
     from . import cave_treasure_runtime as cave
     identity_id = owner.identity_id
     _STATUS.update(job_id=job_id, identity_id=identity_id, arena=arena)
@@ -229,11 +403,14 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
         record = {'phase': 'idle', 'identity_id': identity_id}
         trial._records()[str(identity_id)] = record
     previous_phase = record.get('phase', 'idle')
+    previous_attempt = _previous_attempt(record)
     scheduled = scheduled_config is not None
     tool_root = _trial_tool_root()
     started_at = time.time()
     entry_url = trial._entry_url()
     process = None
+    cleanup_task = None
+    owner_token = uuid.uuid4().hex
     launch_requested = False
     reserved = False
     url_file = None
@@ -242,20 +419,23 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
     network_loaded = False
 
     def allowed():
+        from .qingxi_rewards import owns_identity
         return (owner.is_current() and is_cave_public_identity_available(identity_id) and get_global_enabled()
                 and not get_activity_block_reason(identity_id, include_changfeng=False)
                 and cave._public_entry_allowed() and trial._entry_url() == entry_url
                 and (not scheduled or trial.get_expedition_config().get('changfeng', {}) == scheduled_config)
+                and (not scheduled or not owns_identity(identity_id))
                 and trial._records().get(str(identity_id)) is record and record.get('phase') == 'browser_trial')
 
     async def stop_process():
-        if process is not None and process.returncode is None:
-            process.send_signal(signal.SIGTERM)
-            try:
-                await asyncio.wait_for(process.wait(), 15)
-            except TimeoutError:
-                os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+        nonlocal cleanup_task
+        if process is None:
+            return
+        if cleanup_task is None:
+            cleanup_task = asyncio.create_task(_drain_trial_process(process, owner_token))
+        _, cancelled = await _await_uncancelled(cleanup_task)
+        if cancelled:
+            raise asyncio.CancelledError
 
     try:
         async with lock:
@@ -267,8 +447,6 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(started_at) else 0
                 if used >= int(scheduled_config.get('daily_limit', 1)):
                     raise RuntimeError('trial_local_daily_limit')
-                if record.get('run_id'):
-                    record['previous_run_id'] = record.pop('run_id')
                 record.update(execution_engine='browser-m19', started_at=started_at, arena=arena,
                               operation_id='browser-' + job_id)
             record['phase'] = 'browser_trial'
@@ -291,10 +469,11 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 stream.write(launch_url)
             log_file = directory / 'runs.jsonl'
             launcher = Path(__file__).resolve().parents[2] / 'tools/changfeng_trial_browser.py'
+            tier_arg = str(tier)
             command = [str(tool_root / '.venv/bin/python'), str(launcher), '--tool-root', str(tool_root),
                        '--arena', arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
                        '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
-                       '--log', str(log_file), '--go', '--runs', '1', '--tier', 'best', '--retries', '1',
+                       '--log', str(log_file), '--go', '--runs', '1', '--tier', tier_arg, '--retries', '1',
                        '--max-run-seconds', '1500', '--wait-login', '60']
             if practice_only:
                 command.append('--practice-only')
@@ -304,13 +483,14 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
             with (directory / 'runner.log').open('w') as output:
                 launch_requested = True
                 spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-                    *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True))
+                    *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                    env={**os.environ, _PROCESS_OWNER_ENV: owner_token}))
                 try:
                     process = await asyncio.shield(spawn)
                 except asyncio.CancelledError:
                     # Recover the exact child before unwinding so cancellation
                     # cannot leave a newly created browser process unowned.
-                    process = await spawn
+                    process, _ = await _await_uncancelled(spawn)
                     raise
                 waiter = asyncio.create_task(process.wait())
                 # Keep the runner's normal 25-minute fight budget plus scene-loading time.
@@ -339,7 +519,14 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                            exhausted=facts['exhausted'], strategy_sha256=TRIAL_STRATEGY_SHA256,
                            server_cleared=facts['cleared'], run_id=facts['run_id'], tier=facts['tier'],
                            gains=facts['gains'], cultivation=facts['cultivation'],
+                           server_started=facts['started'], no_rewards=facts['no_rewards'],
+                           no_start_verified=facts['no_start_verified'], unknown_request=facts['unknown_request'],
+                           confirmed_wave=facts['confirmed_wave'],
                            server_result=(facts['terminal'] or {}).get('result'))
+            if scheduled and (facts['started'] or facts['unknown_request'] or not facts['no_start_verified']):
+                _archive_previous_attempt(record, previous_attempt, facts['run_id'])
+            elif scheduled:
+                _restore_previous_metadata(record, previous_attempt)
             if facts['rewarded']:
                 day = trial._day(started_at)
                 record['daily_used'] = (int(record.get('daily_used') or 0) if record.get('day') == day else 0) + 1
@@ -358,23 +545,40 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 if record['phase'] != 'held':
                     record['phase'] = 'done'
                     record['last_error'] = None
+            if facts['run_id'] and type(facts['tier']) is int and facts['tier'] != tier:
+                record['phase'] = 'held'
+                record['last_error'] = '浏览器试炼回执重数不符，结果待核对'
             if record['phase'] == 'held':
-                record['last_error'] = '浏览器试跑已发开局但结果待核对'
+                record['last_error'] = record.get('last_error') or '浏览器试跑已发开局但结果待核对'
     except asyncio.CancelledError:
         _STATUS.update(phase='interrupted')
         if reserved:
+            if scheduled and launch_requested:
+                _archive_previous_attempt(record, previous_attempt, snapshot().get('run_id'))
             record['phase'] = 'held' if launch_requested else previous_phase
         raise
     except Exception as error:
         _STATUS.update(phase='failed', error=type(error).__name__, finished_at=time.time())
         if record.get('phase') == 'browser_trial':
+            if scheduled and launch_requested:
+                _archive_previous_attempt(record, previous_attempt, snapshot().get('run_id'))
             record['phase'] = 'held' if launch_requested else previous_phase
     finally:
-        await stop_process()
-        if url_file:
-            url_file.unlink(missing_ok=True)
-        if reserved and trial._records().get(str(identity_id)) is record:
-            record['browser_trial'] = snapshot()
-            trial._save()
+        try:
+            await stop_process()
+        except BaseException as error:
+            if reserved:
+                record['phase'] = 'held'
+                record['last_error'] = '浏览器进程清理待核对'
+                _STATUS.update(cleanup_error=type(error).__name__)
+            raise
+        finally:
+            if url_file:
+                url_file.unlink(missing_ok=True)
+            if reserved and trial._records().get(str(identity_id)) is record:
+                record['browser_trial'] = snapshot()
+                if scheduled:
+                    _sync_main_result(record, record['browser_trial'])
+                trial._save()
     if trial._records().get(str(identity_id)) is record:
         await _notify_result(record)

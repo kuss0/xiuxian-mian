@@ -387,6 +387,9 @@ async def run_changfeng_scheduler(now):
     if not config.get("enabled") or not get_global_enabled() or not _entry_url() or _TASKS:
         return
     for identity_id in config.get("participant_identity_ids", []):
+        from .qingxi_rewards import owns_identity
+        if owns_identity(identity_id):
+            continue
         if identity_id not in get_identity_ids() or not is_cave_public_identity_available(identity_id):
             continue
         if get_activity_block_reason(identity_id, include_changfeng=False):
@@ -417,5 +420,10 @@ def reset_changfeng_runtime_on_startup():
         if isinstance(record, dict) and record.get("phase") not in {None, "done", "idle", "held"}:
             record.update(phase="held", last_error="程序重启，试炼结果待核对")
             changed = True
+    try:
+        from .qingxi_trial_browser import reconcile_persisted_records
+        changed = reconcile_persisted_records() or changed
+    except Exception as exc:
+        print(f"Changfeng browser state reconciliation failed: {type(exc).__name__}")
     if changed:
         mark_dirty()

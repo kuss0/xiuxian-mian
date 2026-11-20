@@ -30,7 +30,55 @@ function environment(config={},handler=null,stored=[]){
 }
 async function ready(config={},handler=null){const env=environment(config,handler);await env.send('start',{});return env;}
 async function check(scenario){
- if(scenario==='acknowledged_disk_journal'){
+ if(scenario.startsWith('reward_')){
+  const quotas={longwind:{arena:'longwind',day:'2026-11-20',used:0,remaining:3,limit:3,activeRun:null},
+   bamboo:{arena:'bamboo',day:'2026-11-20',used:0,remaining:3,limit:3,activeRun:null}};
+  if(scenario==='reward_unknown_active')quotas.longwind.activeRun={id:'old'};
+  if(scenario==='reward_bad_quota')quotas.longwind.remaining=4;
+  if(scenario==='reward_cross_day')quotas.bamboo.day='2026-11-21';
+  const e=await ready({rewardBatch:scenario!=='reward_default_denied'},(resource,body)=>{
+   if(resource==='start')return {ok:true,account:{playerId:42}};
+   if(resource==='trial'){
+    if(body.action==='status')return {ok:true,playerId:scenario==='reward_wrong_player'?99:42,
+     trial:{status:{...quotas[body.arena]}}};
+    if(scenario==='reward_unknown_start')throw Error('network');
+    const q=quotas[body.arena];q.used++;q.remaining--;
+    return {ok:true,trial:{run:{id:body.arena+'-'+q.used,rewarded:true,cleared:0},grants:[{name:'灵石',quantity:1}]}};
+   }
+   const status={day:'2026-11-20',hasKey:true,claimed:false,run:null,failClaimed:scenario==='reward_failed_moon'};
+   return resource==='refugee-escort'?{ok:true,refugeeEscort:{escort:status}}:{ok:true,moonPalace:{moon:status}};
+  });
+  if(scenario==='reward_day_anchor')e.c.__qx.rewardDay='2026-11-19';
+  const start=arena=>e.send('trial',{action:'start',arena,tier:1});
+  if(scenario==='reward_six'){
+   for(const arena of ['longwind','bamboo']){
+    for(let n=0;n<3;n++)await start(arena);
+    await assert.rejects(start(arena),/trial_exhausted/);
+   }
+   assert.equal(e.calls.filter(row=>row.resource==='trial'&&row.body.action==='start').length,6);
+   assert.equal(e.c.__qx.rewards.size,6);
+  }else if(scenario==='reward_escort'){
+   await e.send('refugee-escort',{action:'start'});
+   assert.equal(e.calls.filter(row=>row.resource==='refugee-escort'&&row.body.action==='start').length,1);
+  }else if(scenario==='reward_failed_moon'){
+   await assert.rejects(e.send('moon-palace',{action:'start'}),/daily_reward_exhausted/);
+  }else if(scenario==='reward_npc_denied'){
+   await assert.rejects(e.send('quests',{action:'accept',operationId:'one'}),/npc_mutation_forbidden/);
+  }else if(scenario==='reward_high_tier'){
+   await assert.rejects(e.send('trial',{action:'start',arena:'longwind',tier:2}),/first_tier_only/);
+  }else if(scenario==='reward_cross_day'){
+   await start('longwind');await assert.rejects(start('bamboo'),/day_changed/);
+  }else if(scenario==='reward_unknown_start'){
+   await assert.rejects(start('longwind'),/network/);
+   assert.equal(e.c.__qx.pending.size,1);
+   await assert.rejects(start('longwind'),/unconfirmed/);
+   assert.equal(e.calls.filter(row=>row.resource==='trial'&&row.body.action==='start').length,1);
+  }else{
+   const code={reward_default_denied:'trial_forbidden',reward_unknown_active:'trial_pending',
+    reward_bad_quota:'trial_status_unverified',reward_wrong_player:'player_mismatch',reward_day_anchor:'day_changed'}[scenario];
+   assert.ok(code);await assert.rejects(start('longwind'),new RegExp(code));
+  }
+ } else if(scenario==='acknowledged_disk_journal'){
   const row={resource:'field-cast',action:'events',operation_id:'field-cast:begin:123',at:10,
    events:[{k:'begin',s:123,key:'a:火弹',pos:[1,2]}]};
   for(const receipt of [null,{operation_id:'other',at:11},{operation_id:row.operation_id,at:9},
@@ -372,6 +420,9 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
     'release_rejection', 'release_journal', 'preparation_journal',
     'quest_body_once', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
+    'reward_six', 'reward_default_denied', 'reward_escort', 'reward_failed_moon', 'reward_npc_denied',
+    'reward_high_tier', 'reward_cross_day', 'reward_unknown_start', 'reward_unknown_active',
+    'reward_bad_quota', 'reward_wrong_player', 'reward_day_anchor',
 ])
 def test_browser_policy(scenario, tmp_path):
     if shutil.which('node') is None:

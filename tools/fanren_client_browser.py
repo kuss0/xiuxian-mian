@@ -183,11 +183,15 @@ async def run(args):
         persist();return
     cache_path=Path(os.environ.get('FANREN_ASSET_BUNDLE','/root/fanren-research-20261120/analysis/local-3d/bundle'))
     cache=VerifiedAssetCache(cache_path) if (cache_path/'verified-assets.json').is_file() else None
+    browser_env=os.environ.copy()
     persist()
     try:
+        if not browser_env.get('XIUXIAN_FANREN_PROCESS_OWNER'):
+            raise RuntimeError('native_process_owner_missing')
         async with async_playwright() as p:
             context=await p.chromium.launch_persistent_context(str(args.profile_dir),executable_path='/usr/bin/chromium',headless=False,
                 viewport={'width':800,'height':560},device_scale_factor=1,locale='zh-CN',timezone_id='Asia/Shanghai',
+                env=browser_env,
                 args=['--no-sandbox','--use-gl=angle','--use-angle=gl-egl','--ignore-gpu-blocklist','--disable-dev-shm-usage',
                       '--disable-background-timer-throttling','--disable-renderer-backgrounding'])
             try:

@@ -86,12 +86,14 @@ QUEST_NAVIGATION_EVIDENCE = """if (!path) {
 
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None,
-                   reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None):
+                   reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None,
+                   reward_batch=False):
     source = (VENDOR / 'trial-bot.user.js').read_bytes()
     provenance = json.loads((VENDOR / 'source.json').read_text())
     if hashlib.sha256(source).hexdigest() != provenance['sha256']:
         raise RuntimeError('qingxi_upstream_source_changed')
     config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
+              'rewardBatch': reward_batch,
               'reviewedCastPending': reviewed_cast_pending or [],
               'reviewedReleasePending': reviewed_release_pending or [],
               'reviewedPreparationPending': reviewed_preparation_pending or [],
@@ -131,7 +133,10 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         if script.count(before) != 1:
             raise RuntimeError('qingxi_upstream_policy_anchor_changed')
         script = script.replace(before, after)
-    return GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + script
+    source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + script
+    if reward_batch:
+        source += '\n' + Path(__file__).with_name('qingxi_reward_batch.js').read_text().replace('__PLAYER__', str(player))
+    return source
 
 
 SNAPSHOT = r"""(() => {
@@ -147,9 +152,10 @@ SNAPSHOT = r"""(() => {
     catch{return null}})(),
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
+  reward_batch:window.__qingxiRewardBatch?.state,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
-    recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry}:null,
-  run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value}:null};
+    recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
+  run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};
 })()"""
 
 
@@ -172,7 +178,8 @@ def finished_phase(snapshot):
 
 
 def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None,
-                reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None):
+                reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None,
+                reward_batch=False):
     target = cdp.call('Target.createTarget', {'url': 'about:blank', 'newWindow': True})['targetId']
     session = cdp.attach(target)
     for method in ('Page.enable', 'Runtime.enable', 'Network.enable', 'Page.bringToFront'):
@@ -182,7 +189,7 @@ def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=
                                        confirmed_cast_receipts=confirmed_cast_receipts,
                                        reviewed_release_pending=reviewed_release_pending,
                                        reviewed_preparation_pending=reviewed_preparation_pending,
-                                       reviewed_flight_pending=reviewed_flight_pending)}, session)
+                                       reviewed_flight_pending=reviewed_flight_pending, reward_batch=reward_batch)}, session)
     return browser.Page(cdp, session, target)
 
 
@@ -265,12 +272,14 @@ def main():
     parser.add_argument('--arena', default='longwind')
     parser.add_argument('--max-seconds', type=int, default=900)
     parser.add_argument('--read-only', action='store_true')
+    parser.add_argument('--workflow', choices=('quests', 'rewards'), default='quests')
     args = parser.parse_args()
     sys.path.insert(0, str(args.tool_root / 'tools'))
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
     result = {'phase': 'preparing', 'upstream_version': provenance_version(), 'navigation_policy': 4, 'transport_policy': 1}
+    result['workflow'] = args.workflow
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)
@@ -283,7 +292,7 @@ def main():
                 page = create_page(browser, cdp, args.expected_player_id, options.get('choices', {}),
                                    args.read_only, options.get('reviewed_cast_pending'), options.get('confirmed_cast_receipts'),
                                    options.get('reviewed_release_pending'), options.get('reviewed_preparation_pending'),
-                                   options.get('reviewed_flight_pending'))
+                                   options.get('reviewed_flight_pending'), reward_batch=args.workflow == 'rewards')
                 result['entry_started_at'] = time.time()
                 write_result(args.result, result)
                 try:
@@ -291,24 +300,38 @@ def main():
                 except BaseException as exc:
                     result['entry_error'] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
                     raise
-                page.js('window.__autobot.inspectQuests("全部任务")', timeout=60)
+                if args.workflow == 'quests':
+                    page.js('window.__autobot.inspectQuests("全部任务")', timeout=60)
                 if args.read_only:
+                    if args.workflow == 'rewards':
+                        inspection = page.js('window.__qingxiRewardBatch.inspect()', timeout=300)
+                        result['reward_inspection'] = inspection
                     result['phase'] = 'inspected'
                 else:
                     opts = {'kind': '全部任务', 'maxMinutes': min(15, max(.5, args.max_seconds / 60)),
                             'maxTasks': 8, 'rewardChoices': options.get('choices', {})}
                     result['mainline_started_at'] = time.time()
                     write_result(args.result, result)
-                    page.js('window.__qingxiRun={done:false};window.__autobot.mainline(' + json.dumps(opts)
-                            + ').then(value=>{window.__qingxiRun={done:true,value}});void 0')
+                    workflow = ('window.__qingxiRewardBatch.run()' if args.workflow == 'rewards'
+                                else 'window.__autobot.mainline(' + json.dumps(opts) + ')')
+                    page.js('window.__qingxiRun={done:false};' + workflow
+                            + '.then(value=>{window.__qingxiRun={done:true,value}},error=>{'
+                            'window.__qingxiRun={done:true,error:String(error.message||error)}});void 0')
                     started = time.monotonic()
-                    while time.monotonic() - started < min(900, max(30, args.max_seconds)) + 60:
+                    budget = min(10800 if args.workflow == 'rewards' else 900, max(30, args.max_seconds))
+                    while time.monotonic() - started < budget + 60:
                         snap = page.js(SNAPSHOT)
                         result.update(phase='running', **snap)
                         write_result(args.result, result)
                         if snap.get('error'):
                             raise RuntimeError(snap['error'])
                         if (snap.get('run') or {}).get('done'):
+                            if (snap.get('run') or {}).get('error'):
+                                raise RuntimeError(snap['run']['error'])
+                            if args.workflow == 'rewards':
+                                batch = snap.get('reward_batch') or {}
+                                if batch.get('phase') not in {'complete', 'partial'} or not (batch.get('final') or {}).get('verified'):
+                                    raise RuntimeError('qingxi_reward_batch_requires_review')
                             if snap.get('status_error') and (snap.get('report') or {}).get('error'):
                                 result['stop_reason'] = {'reason': 'status_query_failed'}
                             result['phase'] = finished_phase({**snap, 'stop_reason': result.get('stop_reason')})
@@ -339,6 +362,10 @@ def main():
         result.update(phase='held', error=str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__)
     finally:
         os.umask(previous_umask)
+        if args.workflow == 'rewards' and not args.read_only and (
+                (result.get('reward_batch') or {}).get('phase') not in {'complete', 'partial'}):
+            result['phase'] = 'held'
+            result.setdefault('error', 'qingxi_reward_batch_requires_review')
         write_result(args.result, result)
     return 0 if result.get('server_checked') and result['phase'] != 'held' else 1
 

@@ -19,7 +19,14 @@ from telethon.sessions import MemorySession
 
 
 COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态")
-READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory")
+READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory", "qingxi_rewards")
+QINGXI_READS = (
+    ('moon-palace', 'moonPalace', 'moon', None), ('blood-land', 'bloodLand', 'blood', None),
+    ('south-gate', 'southGate', 'siege', None), ('refugee-escort', 'refugeeEscort', 'escort', None),
+    ('mulan-shrine', 'mulanShrine', 'shrine', None), ('baiqiao-puppet', 'baiqiaoPuppet', 'puppet', None),
+    ('jianzhong-trial', 'jianzhongTrial', 'jianzhong', None),
+    ('trial', 'trial', 'status', 'longwind'), ('trial', 'trial', 'status', 'bamboo'),
+)
 BASE = "https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/"
 
 
@@ -179,6 +186,23 @@ def fishing_state_scope(root, identity, owner, player):
     return {"siteId": record["site_id"], "castOperationId": record["cast_id"], "refreshContext": True}
 
 
+def qingxi_status_report(data, resource, envelope, key, arena=None):
+    """Keep native schema evidence, never auth, proof bodies or inferred closure."""
+    payload = data.get(envelope)
+    status = payload.get(key) if isinstance(payload, dict) else None
+    row = {'resource': resource, 'arena': arena, 'payload_keys': sorted(payload) if isinstance(payload, dict) else [],
+           'status_keys': sorted(status) if isinstance(status, dict) else [], 'status': {}}
+    if isinstance(status, dict):
+        row['status'] = {name: status[name] for name in ('day', 'arena', 'claimed', 'hasKey', 'failClaimed',
+            'used', 'remaining', 'limit', 'activeRun', 'run', 'running', 'pending') if name in status}
+        for field in ('activeRun', 'run'):
+            active = row['status'].get(field)
+            if isinstance(active, dict):
+                row['status'][field] = {name: active[name] for name in
+                    ('id', 'arena', 'status', 'tier', 'rewarded', 'cleared') if name in active}
+    return row
+
+
 async def probe(args, report):
     root = args.project_root.resolve()
     owner, account, config = load_owner(root, args.identity)
@@ -213,7 +237,7 @@ async def probe(args, report):
     with requests.Session() as http:
         http.trust_env = False
 
-        def request(endpoint, player=None):
+        def request(endpoint, player=None, *, arena=None):
             if load_owner(root, args.identity)[0] != owner:
                 raise ValueError("account_changed")
             payload = {"token": token, "initData": init}
@@ -229,9 +253,15 @@ async def probe(args, report):
                 payload.update(fishing_state_scope(root, args.identity, owner, player))
             elif endpoint == "section" and args.read == "inventory":
                 payload["section"] = "inventory"
+            elif args.read == 'qingxi_rewards' and endpoint in {row[0] for row in QINGXI_READS}:
+                payload['action'] = 'status'
+                if endpoint == 'trial':
+                    if arena not in {'longwind', 'bamboo'}:
+                        raise ValueError('qingxi_read_arena_invalid')
+                    payload['arena'] = arena
             elif endpoint not in {"start", "details"}:
                 raise ValueError("endpoint_not_read_only")
-            time.sleep(2)
+            time.sleep(5 if args.read == 'qingxi_rewards' else 2)
             response = http.post(BASE + endpoint, json=payload, timeout=(8, 25), allow_redirects=False)
             step = {"endpoint": endpoint, "status": response.status_code, "at": time.time()}
             report["steps"].append(step)
@@ -245,6 +275,8 @@ async def probe(args, report):
             step["keys"] = sorted(data)
             if data.get("ok") is not True:
                 raise ValueError("server_rejected_read")
+            if player is not None and data.get('playerId') is not None and str(data['playerId']) != str(player):
+                raise ValueError('player_mismatch')
             if endpoint in {"start", "details", "command-center", "section"} and player is not None:
                 selected = (data.get("account") or {}).get("playerId")
                 step["player_id"] = selected
@@ -262,6 +294,13 @@ async def probe(args, report):
         report["player_id"] = player
         request("start", player)
         details = request("details", player)
+        if args.read == 'qingxi_rewards':
+            report['qingxi_rewards'] = []
+            for resource, envelope, key, arena in QINGXI_READS:
+                result = request(resource, player, arena=arena)
+                report['qingxi_rewards'].append(qingxi_status_report(result, resource, envelope, key, arena))
+            report['status'] = 'read_returned'
+            return
         entries = ((details.get("account") or {}).get("commandCenter") or {}).get("entries") or []
         report["entries"] = [
             {key: row.get(key) for key in ("key", "status", "title", "commands")}

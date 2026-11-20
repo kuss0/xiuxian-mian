@@ -641,7 +641,8 @@ def test_upstream_source_is_pinned_and_checked_before_browser_launch():
     assert provenance['version'] == '2.0.78'
     assert "(state.story?.flightLastFailure || recovery.reason)" in source
     assert 'window.__qx.navigationFailure' in source
-    assert "if (resource === 'trial' && !readonly) stop('quest_runner_trial_forbidden')" in source
+    assert "if (!config.rewardBatch) stop('quest_runner_trial_forbidden')" in source
+    assert '"rewardBatch": false' in source
     assert source.index('const config =') < source.index('==UserScript==')
 
 
@@ -766,6 +767,7 @@ def test_browser_requires_confirmed_final_receipt_to_release_hold(monkeypatch, t
                         AsyncMock(return_value='https://fixture.invalid/launch'))
     record, durable = {}, []
     monkeypatch.setattr(quests, 'save', lambda: durable.append(copy.deepcopy(record)))
+    monkeypatch.setattr(quests, '_drain_browser_process', AsyncMock())
 
     async def spawn(*args, **kwargs):
         assert durable[-1]['gameplay_uncertain'] is True
@@ -962,6 +964,7 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
     monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data',
                         AsyncMock(return_value='offline-entry'))
     monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr(quests, '_drain_browser_process', AsyncMock())
     monkeypatch.setattr(quests, 'save', Mock())
     flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': failure == 'flight_locked'}})
     record = {}
