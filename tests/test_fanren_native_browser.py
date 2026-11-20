@@ -226,5 +226,15 @@ def test_real_chromium_csp_and_page_guard_preserve_original_inputs():
                 await page.evaluate('''body => fetch('/api/miniapp/xianxia-dwelling/fishing/cast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})''',payload)
                 assert forwarded==[payload]
                 assert journal[0]['body']==payload
+                # The same native mouse path scrolls the real DOM and hits only
+                # the visible button, while an overlay blocks accidental clicks.
+                from tools.fanren_browser_support.human_input import HumanInput
+                await page.set_content('<div style="height:260px;overflow:auto;width:300px" id="panel"><div style="height:700px"></div><button id="target">target</button></div>')
+                await page.evaluate('''() => {window.trustedClick=false;document.querySelector('#target').onclick=e=>window.trustedClick=e.isTrusted;}''')
+                await HumanInput(page).click(page.locator('#target'))
+                assert await page.evaluate('window.trustedClick')
+                await page.evaluate('''() => {const e=document.createElement('div');e.style='position:fixed;inset:0;background:white;z-index:100';document.body.append(e);}''')
+                with pytest.raises(RuntimeError,match='target_obscured'):
+                    await HumanInput(page).click(page.locator('#target'))
             finally:await browser.close()
     asyncio.run(exercise())
