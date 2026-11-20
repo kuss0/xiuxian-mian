@@ -197,6 +197,12 @@ async def run(args):
                 await context.add_init_script(path=str(SUPPORT/'control_bridge.js'))
                 if cache:await cache.install(context)
                 page=await context.new_page()
+                # Playwright routing disables Chromium's HTTP cache globally.
+                # Restore the normal cache for assets that fall back to the server;
+                # bundled responses still pass our explicit version/hash checks.
+                cdp=await context.new_cdp_session(page)
+                await cdp.send('Network.enable')
+                await cdp.send('Network.setCacheDisabled',{'cacheDisabled':False})
                 async def heartbeat():
                     while not stop.is_set():
                         if cache:value['asset_cache']=dict(cache.metrics)
