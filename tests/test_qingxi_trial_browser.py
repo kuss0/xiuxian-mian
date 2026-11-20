@@ -16,7 +16,10 @@ def harness(monkeypatch, tmp_path):
     identity_id = 301299112
     owner = SimpleNamespace(identity_id=identity_id, account_id=identity_id, is_current=lambda: True)
     original = {'phase': 'done', 'day': browser.trial._day(browser.time.time()), 'daily_used': 1,
-                'receipts': [{'original': True}], 'run_id': 'original-run'}
+                'receipts': [{'original': True}], 'run_id': 'original-run',
+                'result': 'old HTTP result', 'grade': '乙', 'completed_at': 1,
+                'confirmed_wave': 3, 'gains': {'旧奖励': 1}, 'cultivation': 500000,
+                'report': {'old': True}}
     records = {str(identity_id): original}
     monkeypatch.setattr(browser, 'TOOL_ROOT', tmp_path)
     monkeypatch.setattr(browser, '_trial_tool_root', lambda: tmp_path)
@@ -147,6 +150,95 @@ def test_closed_timeout_reports_only_confirmed_partial_rewards(harness, victory_
     assert '通关' not in text and '已结束' in text
     assert '灵石×353' in text and '回灵丹×1' in text and '天雷竹×3' in text
     assert '修为+' not in text
+
+
+def test_scheduled_browser_completion_replaces_old_http_result(harness, victory_network):
+    harness.record['day'] = '2000-01-01'
+    harness.network.update(victory_network)
+
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job',
+                             scheduled_config=harness.config))
+
+    assert harness.record['phase'] == 'done'
+    assert harness.record['run_id'] == 'browser-run'
+    assert harness.record['previous_run_id'] == 'original-run'
+    assert harness.record['previous_attempt']['result'] == 'old HTTP result'
+    assert harness.record['previous_attempt']['receipts'] == [{'original': True}]
+    assert harness.record['result'].startswith('已通关｜')
+    assert '旧奖励' not in harness.record['result']
+    assert harness.record['grade'] == '丙'
+    assert harness.record['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
+    assert harness.record['cultivation'] == 400000
+    assert harness.record['confirmed_wave'] == 3
+    assert harness.record['completed_at'] == browser.snapshot()['finished_at']
+
+
+def test_scheduled_partial_close_updates_result_without_stale_grade(harness, victory_network):
+    harness.record['day'] = '2000-01-01'
+    harness.network.update(victory_network)
+    harness.network['receipts'] = victory_network['receipts'][:3] + [
+        {'ok': True, 'trial': {'status': {'activeRun': None}}},
+    ]
+
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job',
+                             scheduled_config=harness.config))
+
+    assert harness.record['phase'] == 'done'
+    assert harness.record['result'].startswith('已结束｜')
+    assert '灵石×353' in harness.record['result']
+    assert harness.record['gains'] == {'灵石': 353, '回灵丹': 1, '天雷竹': 3}
+    assert harness.record['cultivation'] == 0
+    assert 'grade' not in harness.record
+    assert harness.record['confirmed_wave'] == 2
+    assert harness.record['previous_attempt']['grade'] == '乙'
+
+
+def test_scheduled_unknown_run_holds_without_old_completion(harness):
+    harness.record['day'] = '2000-01-01'
+    harness.network['requests'] = [{'action': 'start'}]
+
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job',
+                             scheduled_config=harness.config))
+
+    assert harness.record['phase'] == 'held'
+    assert 'result' not in harness.record
+    assert 'grade' not in harness.record
+    assert 'completed_at' not in harness.record
+    assert harness.record['previous_attempt']['result'] == 'old HTTP result'
+    assert harness.record['previous_run_id'] == 'original-run'
+
+
+def test_startup_reconciles_legacy_browser_result_once(harness, monkeypatch):
+    dirty = Mock()
+    monkeypatch.setattr(browser.trial, 'mark_dirty', dirty)
+    harness.record.update(
+        phase='done',
+        completed_at=100,
+        run_id='browser-run',
+        previous_run_id='http-run',
+        operation_id='old-http-operation',
+        browser_trial_notice={'run_id': 'browser-run', 'state': 'sent'},
+        browser_trial={
+            'arena': 'longwind', 'run_id': 'browser-run', 'job_id': 'browser-job',
+            'scheduled': True, 'rewarded': True,
+            'server_closed': True, 'server_cleared': False,
+            'gains': {'灵石': 8}, 'cultivation': 0, 'tier': 2,
+            'finished_at': 200,
+        },
+    )
+
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record['result'] == '已结束｜灵石×8'
+    assert 'grade' not in harness.record
+    assert harness.record['completed_at'] == 200
+    assert harness.record['previous_attempt']['result'] == 'old HTTP result'
+    assert 'browser_trial' not in harness.record['previous_attempt']
+    assert harness.record['browser_trial_notice']['run_id'] == 'browser-run'
+    assert harness.record['previous_run_id'] == 'http-run'
+    assert harness.record['operation_id'] == 'browser-browser-job'
+    harness.record['browser_trial'].pop('finished_at')
+    browser.trial.reset_changfeng_runtime_on_startup()
+    dirty.assert_called_once()
 
 
 def test_local_victory_without_server_rewards_never_notifies(harness):

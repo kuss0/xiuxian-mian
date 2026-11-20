@@ -417,5 +417,10 @@ def reset_changfeng_runtime_on_startup():
         if isinstance(record, dict) and record.get("phase") not in {None, "done", "idle", "held"}:
             record.update(phase="held", last_error="程序重启，试炼结果待核对")
             changed = True
+    try:
+        from .qingxi_trial_browser import reconcile_persisted_records
+        changed = reconcile_persisted_records() or changed
+    except Exception as exc:
+        print(f"Changfeng browser state reconciliation failed: {type(exc).__name__}")
     if changed:
         mark_dirty()

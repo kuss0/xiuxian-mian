@@ -25,10 +25,156 @@ TRIAL_STRATEGY_SHA256 = '67d98870f531ae2642cf645054e0dd67cf9cf92441f74e7d7f617ed
 TRIAL_RUNNER_SHA256 = 'f5f113bb168f7327ec2af2a699e96a22505da928090d5df67ad591072ba738ec'
 _TASK = None
 _STATUS = {}
+_ATTEMPT_FIELDS = (
+    'run_id', 'operation_id', 'arena', 'result', 'grade', 'completed_at', 'receipts', 'report',
+    'confirmed_wave', 'gains', 'cultivation', 'rewarded', 'tier', 'exhausted',
+    'report_profile', 'observed_status', 'observed_at', 'observed_arenas', 'server_cleared',
+    'browser_trial', 'browser_trial_notice', 'execution_engine', 'started_at',
+)
 
 
 def snapshot():
     return copy.deepcopy(_STATUS)
+
+
+def _previous_attempt(record):
+    return {key: copy.deepcopy(record[key]) for key in _ATTEMPT_FIELDS if key in record}
+
+
+def _archive_previous_attempt(record, previous, current_run_id=None, *, active=None):
+    if active is None:
+        active = {key: copy.deepcopy(record[key]) for key in
+                  ('operation_id', 'arena', 'execution_engine', 'started_at') if key in record}
+    if previous:
+        record['previous_attempt'] = previous
+        if previous.get('run_id') and previous.get('run_id') != current_run_id:
+            record['previous_run_id'] = previous['run_id']
+    for key in _ATTEMPT_FIELDS:
+        record.pop(key, None)
+    record.update(active)
+
+
+def _restore_previous_metadata(record, previous):
+    for key in ('operation_id', 'arena', 'execution_engine', 'started_at'):
+        if key in previous:
+            record[key] = copy.deepcopy(previous[key])
+        else:
+            record.pop(key, None)
+
+
+def _sync_main_result(record, status):
+    server_started = status.get('server_started')
+    # Records written before the state-sync fields were introduced can still
+    # be reconciled when their run, reward and server closure are explicit.
+    if server_started is None:
+        server_started = bool(status.get('run_id') and
+                              (status.get('rewarded') is True or status.get('server_closed') is True))
+    if (record.get('phase') == 'held' or status.get('unknown_request')
+            or not server_started):
+        return False
+    server_result = status.get('server_result')
+    grade = server_result.get('grade') if isinstance(server_result, dict) else None
+    terminal = isinstance(grade, str) and bool(grade)
+    closed = status.get('server_closed') is True or status.get('server_cleared') is True
+    if not (terminal or closed):
+        return False
+    run_id = status.get('run_id')
+    if not run_id and not (status.get('exhausted') or status.get('no_rewards')):
+        return False
+
+    rewarded = status.get('rewarded') is True
+    gains = status.get('gains') or {}
+    if not isinstance(gains, dict):
+        gains = {}
+    gains = {name: count for name, count in gains.items()
+             if isinstance(name, str) and type(count) is int and count > 0}
+    cultivation = status.get('cultivation')
+    cultivation = cultivation if type(cultivation) is int and cultivation > 0 else 0
+    if rewarded:
+        summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
+        if cultivation:
+            summary += ('，' if summary else '') + f'修为+{cultivation}'
+        outcome = '已通关' if status.get('server_cleared') else '已结束'
+        record['result'] = f'{outcome}｜{summary or "无物品收获"}'
+    elif status.get('exhausted') or status.get('no_rewards'):
+        record['result'] = '今日有奖次数已用完'
+    else:
+        return False
+
+    if run_id:
+        record['run_id'] = run_id
+    arena = status.get('arena')
+    if isinstance(arena, str) and arena in trial.TRIAL_ARENAS:
+        record['arena'] = arena
+    if status.get('scheduled'):
+        record['execution_engine'] = 'browser-m19'
+    if status.get('started_at'):
+        record['started_at'] = status['started_at']
+    tier = status.get('tier')
+    if type(tier) is int and tier > 0:
+        record['tier'] = tier
+    elif 'tier' in record:
+        record.pop('tier')
+    if terminal:
+        record['grade'] = grade
+    else:
+        record.pop('grade', None)
+    confirmed_wave = status.get('confirmed_wave')
+    if type(confirmed_wave) is int and confirmed_wave >= 0:
+        record['confirmed_wave'] = confirmed_wave
+    else:
+        record.pop('confirmed_wave', None)
+    record['rewarded'] = rewarded
+    record['gains'] = gains if rewarded else {}
+    record['cultivation'] = cultivation
+    record['exhausted'] = bool(status.get('exhausted') or status.get('no_rewards'))
+    record['server_cleared'] = status.get('server_cleared') is True
+    finished_at = status.get('finished_at')
+    record['completed_at'] = finished_at if type(finished_at) in (int, float) and finished_at > 0 else time.time()
+    record['phase'] = 'done'
+    record['last_error'] = None
+    return True
+
+
+def reconcile_persisted_records():
+    """Repair completed native records left with an older HTTP result."""
+    changed = False
+    for record in trial._records().values():
+        if not isinstance(record, dict) or record.get('phase') != 'done':
+            continue
+        status = record.get('browser_trial')
+        if not isinstance(status, dict) or not status.get('run_id'):
+            continue
+        if (record.get('run_id') == status.get('run_id')
+                and (status.get('finished_at') is None
+                     or record.get('completed_at') == status.get('finished_at'))
+                and isinstance(record.get('result'), str)
+                and record['result'].startswith(('已通关｜', '已结束｜'))):
+            continue
+        previous = _previous_attempt(record)
+        if record.get('run_id') == status.get('run_id') and record.get('previous_run_id'):
+            previous['run_id'] = record['previous_run_id']
+            for key in ('operation_id', 'browser_trial', 'browser_trial_notice', 'execution_engine', 'started_at'):
+                previous.pop(key, None)
+        probe = copy.deepcopy(record)
+        if not _sync_main_result(probe, status):
+            continue
+        notice = copy.deepcopy(record.get('browser_trial_notice'))
+        active = {}
+        if status.get('job_id'):
+            active['operation_id'] = 'browser-' + str(status['job_id'])
+        if status.get('arena') in trial.TRIAL_ARENAS:
+            active['arena'] = status['arena']
+        if status.get('scheduled'):
+            active['execution_engine'] = 'browser-m19'
+        if status.get('started_at'):
+            active['started_at'] = status['started_at']
+        _archive_previous_attempt(record, previous, status.get('run_id'), active=active)
+        record['browser_trial'] = status
+        if notice:
+            record['browser_trial_notice'] = notice
+        changed = _sync_main_result(record, status) or changed
+    return changed
 
 
 def _trial_tool_root():
@@ -81,9 +227,12 @@ def summarize_network(network):
                 and not (row['trial'].get('status') or {}).get('activeRun') for row in receipts)
         and 'activeRun' in latest_status and latest_status['activeRun'] is None)
     gains, cultivation, seen = {}, 0, set()
+    confirmed_wave = -1
     for row in successful:
         current = row.get('run') or {}
         wave = current.get('cleared')
+        if current.get('id') == run_id and type(wave) is int and wave >= 0:
+            confirmed_wave = max(confirmed_wave, wave)
         if (not run_id or current.get('id') != run_id or current.get('rewarded') is not True
                 or type(wave) is not int or not 0 <= wave <= 3 or wave in seen):
             continue
@@ -103,7 +252,7 @@ def summarize_network(network):
     return {'started': started, 'rewarded': rewarded, 'terminal': terminal, 'closed': closed,
             'run_id': run_id, 'tier': run.get('tier'), 'gains': gains, 'cultivation': cultivation,
             'exhausted': exhausted, 'no_rewards': no_rewards, 'no_start_verified': no_start_verified,
-            'unknown_request': unknown_request,
+            'unknown_request': unknown_request, 'confirmed_wave': confirmed_wave,
             'cleared': bool(terminal and (terminal.get('run') or {}).get('status') == 'cleared')}
 
 
@@ -229,6 +378,7 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
         record = {'phase': 'idle', 'identity_id': identity_id}
         trial._records()[str(identity_id)] = record
     previous_phase = record.get('phase', 'idle')
+    previous_attempt = _previous_attempt(record)
     scheduled = scheduled_config is not None
     tool_root = _trial_tool_root()
     started_at = time.time()
@@ -267,8 +417,6 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                 used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(started_at) else 0
                 if used >= int(scheduled_config.get('daily_limit', 1)):
                     raise RuntimeError('trial_local_daily_limit')
-                if record.get('run_id'):
-                    record['previous_run_id'] = record.pop('run_id')
                 record.update(execution_engine='browser-m19', started_at=started_at, arena=arena,
                               operation_id='browser-' + job_id)
             record['phase'] = 'browser_trial'
@@ -339,7 +487,14 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
                            exhausted=facts['exhausted'], strategy_sha256=TRIAL_STRATEGY_SHA256,
                            server_cleared=facts['cleared'], run_id=facts['run_id'], tier=facts['tier'],
                            gains=facts['gains'], cultivation=facts['cultivation'],
+                           server_started=facts['started'], no_rewards=facts['no_rewards'],
+                           no_start_verified=facts['no_start_verified'], unknown_request=facts['unknown_request'],
+                           confirmed_wave=facts['confirmed_wave'],
                            server_result=(facts['terminal'] or {}).get('result'))
+            if scheduled and (facts['started'] or facts['unknown_request'] or not facts['no_start_verified']):
+                _archive_previous_attempt(record, previous_attempt, facts['run_id'])
+            elif scheduled:
+                _restore_previous_metadata(record, previous_attempt)
             if facts['rewarded']:
                 day = trial._day(started_at)
                 record['daily_used'] = (int(record.get('daily_used') or 0) if record.get('day') == day else 0) + 1
@@ -363,11 +518,15 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
     except asyncio.CancelledError:
         _STATUS.update(phase='interrupted')
         if reserved:
+            if scheduled and launch_requested:
+                _archive_previous_attempt(record, previous_attempt, snapshot().get('run_id'))
             record['phase'] = 'held' if launch_requested else previous_phase
         raise
     except Exception as error:
         _STATUS.update(phase='failed', error=type(error).__name__, finished_at=time.time())
         if record.get('phase') == 'browser_trial':
+            if scheduled and launch_requested:
+                _archive_previous_attempt(record, previous_attempt, snapshot().get('run_id'))
             record['phase'] = 'held' if launch_requested else previous_phase
     finally:
         await stop_process()
@@ -375,6 +534,8 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None):
             url_file.unlink(missing_ok=True)
         if reserved and trial._records().get(str(identity_id)) is record:
             record['browser_trial'] = snapshot()
+            if scheduled:
+                _sync_main_result(record, record['browser_trial'])
             trial._save()
     if trial._records().get(str(identity_id)) is record:
         await _notify_result(record)
