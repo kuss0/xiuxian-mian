@@ -172,6 +172,33 @@ async function check(scenario){
   for(const row of [{resource:'flight',action:'start'},{resource:'quests',action:'turn-in'},{resource:'field-cast'}]){
    const a=environment({},null,[row]);assert.equal(a.c.__qx.error,'quest_browser_pending_requires_review');
   }
+ } else if(scenario==='reviewed_flight_journal'){
+  const row={resource:'flight',action:'start',operation_id:'flight:1',at:1795028344.798};
+  for(const old of [null,{...row,operation_id:'flight:other'},{...row,at:row.at+1},row]){
+   const e=environment({reviewedFlightPending:old?[old]:[]},null,[row]),allowed=old===row;
+   assert.equal(e.c.__qx.error==='',allowed);
+   assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),allowed?[]:[row]);
+   assert.equal(e.calls.length,0);
+  }
+  for(const unknown of [{...row,action:'set'},{...row,resource:'quests',action:'field-release'},
+    {...row,resource:'quests',action:'field-defeat'},{...row,resource:'quests',action:'turn-in'},
+    {...row,resource:'trial',action:'start'}]){
+   const e=environment({reviewedFlightPending:[unknown]},null,[unknown]);
+   assert.equal(e.c.__qx.error,'quest_browser_pending_requires_review');
+   assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),[unknown]);
+  }
+  const unknown={resource:'quests',action:'field-defeat',operation_id:'unknown',at:20};
+  const e=environment({reviewedFlightPending:[row]},null,[row,unknown]);
+  assert.equal(e.c.__qx.error,'quest_browser_pending_requires_review');
+  assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),[row,unknown]);
+ } else if(scenario==='flight_rate_limit_unreviewed'){
+  const e=await ready({},(r,b)=>r==='flight'?new Response(JSON.stringify({ok:false,error:'rate_limited',
+    retryAfter:5,retryable:true}),{status:429,headers:{'content-type':'application/json'}}):{ok:true,account:{playerId:42}});
+  const response=await e.send('flight',{action:'start'});
+  assert.equal(response.status,429);assert.equal(e.c.__qx.error,'quest_http_429_rate_limited');
+  assert.equal(e.c.__qx.pending.size,1);
+  assert.equal(JSON.parse(e.storage.get('qingxi-local-pending:42'))[0].action,'start');
+  await e.send('quests',{action:'status'});assert.equal(e.c.__qx.pending.size,1);
  } else if(scenario==='proof_body_once'){
   let reads=0;const event={k:'use',s:100,pos:[0,0]};
   const e=await ready({},r=>{
@@ -339,7 +366,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'choices', 'fishing', 'durable_unknown', 'duplicate', 'singleflight',
     'native_cast', 'daily_full', 'daily_retry', 'pacing', 'readonly',
     'identity', 'journal_failure', 'status_cache', 'status_failure', 'housekeeping',
-    'flight_cleanup', 'flight_journal',
+    'flight_cleanup', 'flight_journal', 'reviewed_flight_journal', 'flight_rate_limit_unreviewed',
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',

@@ -84,10 +84,15 @@ def test_main_retains_entry_evidence_and_requires_fresh_final_status(monkeypatch
         profile_lock=lambda _: contextlib.nullcontext(), read_url_file=lambda _: 'https://offline', stop_browser=stop))
     monkeypatch.setattr(worker, 'browser_script', Mock(return_value=''))
     path = tmp_path / 'result.json'
+    reviewed = [{'resource': 'flight', 'action': 'start', 'operation_id': 'flight:1', 'at': 10}]
+    options = tmp_path / 'options.json'
+    options.write_text(json.dumps({'reviewed_flight_pending': reviewed}))
     monkeypatch.setattr(sys, 'argv', ['worker', '--tool-root', str(tmp_path), '--url-file', str(tmp_path / 'url'),
-        '--profile-dir', str(tmp_path / 'profile'), '--result', str(path), '--expected-player-id', '42', '--read-only'])
+        '--profile-dir', str(tmp_path / 'profile'), '--result', str(path), '--expected-player-id', '42', '--read-only',
+        '--options-file', str(options)])
     code = worker.main()
     result = json.loads(path.read_text())
+    assert worker.browser_script.call_args.kwargs['reviewed_flight_pending'] == reviewed
     assert result['upstream_version'] == worker.provenance_version() == '2.0.78'
     assert code == (0 if not failure else 1)
     assert result['player'] == 42 and result['states']['qx_q06']['status'] == 'ready'

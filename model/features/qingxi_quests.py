@@ -287,6 +287,55 @@ def server_flight_closed(response):
             and isinstance(response.get('mana'), dict) and response['mana'].get('flightLocked') is False)
 
 
+def rate_limited_flight_start_only(record, identity_id):
+    """Recognize one decoded takeoff rejection, never unknown flight/game writes."""
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    observed, position = record.get('observed_at'), result.get('position')
+    report = result.get('report')
+    if ((record.get('browser') or {}).get('error') != 'quest_http_429_rate_limited'
+            or result.get('error') != 'quest_http_429_rate_limited'
+            or result.get('player') != identity_id or result.get('upstream_version') not in SUPPORTED_UPSTREAM_VERSIONS
+            or result.get('transport_policy') != 1 or result.get('navigation_policy') != 4
+            or result.get('phase') != 'held' or result.get('state') != 'ready'
+            or (result.get('run') or {}).get('done') is not True
+            or result.get('casts') != 0 or result.get('combat_active') is not False
+            or any(result.get(key) for key in ('entry_error', 'status_error', 'cast_error',
+                                             'browser_shutdown_error', 'browser_close_error', 'reward_receipts'))
+            or result.get('cleanup_error') not in (None, '', 'TimeoutError')
+            or (result.get('world') or {}).get('current') != 'yue'
+            or not isinstance(position, list) or len(position) != 3
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in position)
+            or math.hypot(position[0], position[2]) >= 300
+            or not isinstance(report, dict) or report.get('error') or report.get('fieldSettlements') != []
+            or type(observed) not in (int, float) or not math.isfinite(observed)
+            or not 0 <= time.time() - observed < 60
+            or not isinstance(pending, list) or len(pending) != 1 or result.get('pending') != 1
+            or result.get('stored_pending') != pending or not isinstance(receipts, list)
+            or not all(isinstance(row, dict) for row in pending + receipts)):
+        return False
+    row = pending[0]
+    if (set(row) != {'resource', 'action', 'operation_id', 'at'} or row.get('resource') != 'flight'
+            or row.get('action') != 'start' or not isinstance(row.get('operation_id'), str)
+            or not row['operation_id'].startswith('flight:')
+            or type(row.get('at')) not in (int, float) or not math.isfinite(row['at'])):
+        return False
+    statuses = [ack for ack in receipts if ack.get('resource') == 'quests' and ack.get('action') == 'status'
+                and ack.get('ok') is True and ack.get('http_status') == 200 and not ack.get('error')
+                and not ack.get('parse_error')]
+    rejected = [ack for ack in receipts if ack.get('resource') == 'flight' and ack.get('action') == 'start'
+                and ack.get('operation_id') == row['operation_id'] and ack.get('ok') is False
+                and ack.get('http_status') == 429 and ack.get('error') == 'rate_limited'
+                and not ack.get('parse_error') and str(ack.get('content_type', '')).startswith('application/json')]
+    return (bool(statuses) and len(rejected) == 1 and len(receipts) == len(statuses) + 1
+            and result.get('requests') == len(statuses)
+            and all(not ack.get('grants') and not ack.get('cultivation') and not ack.get('pickedItems')
+                    and type(ack.get('at')) in (int, float) and math.isfinite(ack['at'])
+                    and ack['at'] <= observed for ack in receipts)
+            and rejected[0]['at'] >= row['at']
+            and any(ack['at'] > rejected[0]['at'] for ack in statuses))
+
+
 def confirmed_cast_receipts(record, identity_id):
     """Only exact acknowledged uploads may clear a stale Chromium disk journal."""
     receipts = []
@@ -645,6 +694,10 @@ async def review_browser_hold(call, record, identity_id):
         reason = 'legacy_cast_only_no_quest_mutations'
     elif read_only_browser_failure(record, identity_id):
         reason = 'read_only_failure_no_mutations'
+    elif rate_limited_flight_start_only(record, identity_id):
+        flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+        if server_flight_closed(flight):
+            reason = 'rate_limited_flight_start_closed'
     elif native_flight_only_failure(record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
@@ -665,6 +718,7 @@ async def review_browser_hold(call, record, identity_id):
             'quest_progress_stalled', 'quest_movement_not_ready', 'KeyboardInterrupt'}:
         reason = 'server_checked_safe_stop'
     if reason:
+        rollback = copy.deepcopy(record) if reason == 'rate_limited_flight_start_closed' else None
         record.update(gameplay_uncertain=False, phase='held' if record.get('pending') or record.get('gather')
                       else 'waiting_gameplay', last_error='', next_at=time.time() + 60)
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
@@ -674,7 +728,15 @@ async def review_browser_hold(call, record, identity_id):
             record['browser_review']['rejected_release_pending'] = result['pending_operations']
         if reason == 'unconfirmed_field_preparation_upgrade':
             record['browser_review']['abandoned_preparation_pending'] = result['pending_operations']
-        save()
+        if reason == 'rate_limited_flight_start_closed':
+            record['browser_review']['rejected_flight_pending'] = result['pending_operations']
+        try:
+            save()
+        except Exception:
+            if rollback is not None:
+                record.clear()
+                record.update(rollback)
+            raise
 
 
 def orphan_cast_proof_only(record, identity_id):
@@ -919,6 +981,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        if review.get('reason') == 'confirmed_field_release_rejection' else [],
                        'reviewed_preparation_pending': review.get('abandoned_preparation_pending', [])
                        if review.get('reason') == 'unconfirmed_field_preparation_upgrade' else [],
+                       'reviewed_flight_pending': review.get('rejected_flight_pending', [])
+                       if (review.get('reason') == 'rate_limited_flight_start_closed'
+                           and review.get('evidence_dir') == (record.get('browser') or {}).get('evidence_dir')) else [],
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])

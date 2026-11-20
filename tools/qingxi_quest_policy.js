@@ -49,8 +49,11 @@
   const reviewedPreparation = row => ((row?.resource === 'quests' && row.action === 'field-engage') ||
     (row?.resource === 'field-cast' && row.action === 'events')) &&
     (config.reviewedPreparationPending || []).some(old => canonical(old) === canonical(row));
+  const reviewedFlight = row => row?.resource === 'flight' && row.action === 'start' &&
+    typeof row.operation_id === 'string' && Number.isFinite(row.at) &&
+    (config.reviewedFlightPending || []).some(old => canonical(old) === canonical(row));
   const unresolved = Array.isArray(stored) ? stored.filter(row => !nativeCleanup(row) &&
-    !confirmedCast(row) && !reviewedRelease(row) && !reviewedPreparation(row) &&
+    !confirmedCast(row) && !reviewedRelease(row) && !reviewedPreparation(row) && !reviewedFlight(row) &&
     !(row?.resource === 'field-cast' && row.action === 'events' &&
       reviewed.some(old => canonical(old) === canonical(row)))) : null;
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';

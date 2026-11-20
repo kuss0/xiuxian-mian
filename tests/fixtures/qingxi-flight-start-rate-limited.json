@@ -1,0 +1,40 @@
+{
+  "source": "WA held browser result, read-only inspection 2026-11-20; player anonymized to 42",
+  "source_sha256": "956e9c780810ccb5198418d7c6cd04f3cbfb046760602b8f69343577b0e8e4bd",
+  "result": {
+    "player": 42,
+    "upstream_version": "2.0.53",
+    "navigation_policy": 4,
+    "transport_policy": 1,
+    "phase": "held",
+    "error": "quest_http_429_rate_limited",
+    "status_error": "",
+    "cast_error": "",
+    "cleanup_error": "TimeoutError",
+    "requests": 5,
+    "casts": 0,
+    "state": "ready",
+    "combat_active": false,
+    "world": {"current": "yue"},
+    "position": [0, 0.076, 108],
+    "pending": 1,
+    "pending_operations": [
+      {"resource": "flight", "action": "start", "operation_id": "flight:1", "at": 1795028344.798}
+    ],
+    "stored_pending": [
+      {"resource": "flight", "action": "start", "operation_id": "flight:1", "at": 1795028344.798}
+    ],
+    "run": {"done": true, "value": "已停止"},
+    "server_checked": false,
+    "reward_receipts": [],
+    "report": {"phase": "已停止", "error": "", "fieldSettlements": []},
+    "receipts": [
+      {"resource": "quests", "action": "status", "operation_id": false, "ok": true, "http_status": 200, "error": "", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["grants", "ok", "questBag", "quests"], "at": 1795028200.016},
+      {"resource": "quests", "action": "status", "operation_id": false, "ok": true, "http_status": 200, "error": "", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["grants", "ok", "questBag", "quests"], "at": 1795028343.643},
+      {"resource": "flight", "action": "start", "operation_id": "flight:1", "ok": false, "http_status": 429, "error": "rate_limited", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["error", "ok", "retryAfter", "retryable"], "at": 1795028344.912},
+      {"resource": "quests", "action": "status", "operation_id": false, "ok": true, "http_status": 200, "error": "", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["grants", "ok", "questBag", "quests"], "at": 1795028358.893},
+      {"resource": "quests", "action": "status", "operation_id": false, "ok": true, "http_status": 200, "error": "", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["grants", "ok", "questBag", "quests"], "at": 1795028374.862},
+      {"resource": "quests", "action": "status", "operation_id": false, "ok": true, "http_status": 200, "error": "", "parse_error": "", "content_type": "application/json", "grants": [], "cultivation": 0, "pickedItems": [], "shape": ["grants", "ok", "questBag", "quests"], "at": 1795028391.057}
+    ]
+  }
+}
