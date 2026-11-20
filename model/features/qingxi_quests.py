@@ -770,6 +770,77 @@ def summarize(data, rules):
             for key, slot in data.get('states', {}).items() if isinstance(slot, dict)}
 
 
+def field_status_evidence(data, record, *, verified_player_id, observed_at):
+    """Bounded diagnostics from an existing status read; never release evidence."""
+    unknown = 'unknown'
+    def identifier(value):
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_:.-]{1,100}', value) else unknown
+    def number(value, *, integer=False):
+        if type(value) is int if integer else type(value) in (int, float):
+            try:
+                if math.isfinite(value) and value >= 0:
+                    return value
+            except OverflowError:
+                pass
+        return unknown
+    def active(row):
+        return row['active'] if isinstance(row, dict) and type(row.get('active')) is bool else unknown
+    def engagement(row):
+        if not isinstance(row, dict) or 'engagement' not in row:
+            return unknown
+        value = row['engagement']
+        if value is None or type(value) is bool:
+            return value
+        if isinstance(value, str):
+            return {'present': True, 'type': 'string'}  # Never persist a bearer/engagement token.
+        if isinstance(value, dict):
+            return {'present': True, 'type': 'object', 'active': active(value),
+                    'enemy_id': identifier(value.get('enemyId')),
+                    'generation': number(value.get('generation'), integer=True),
+                    'expires_at': number(value.get('expiresAt'))}
+        return unknown
+    browser = record.get('browser') or {}
+    result = _browser_evidence(record)
+    pending = result.get('pending_operations')
+    source = 'browser_result'
+    if not isinstance(pending, list):
+        pending = (browser.get('evidence') or {}).get('pending_operations')
+        source = 'browser_digest' if isinstance(pending, list) else unknown
+    rows = [*pending] if isinstance(pending, list) else []
+    if isinstance(record.get('pending'), dict):
+        source = source + '+host_pending' if rows and source != unknown else 'host_pending'
+        rows.append(record['pending'])
+    target_ids = sorted({value for row in rows if isinstance(row, dict)
+                         for value in [identifier(row.get('enemy_id') or row.get('enemyId'))] if value != unknown})
+    field = data.get('field') if isinstance(data, dict) else None
+    enemies = field.get('enemies') if isinstance(field, dict) else None
+    corpses = data.get('corpses') if isinstance(data, dict) else None
+    roster_known = (isinstance(enemies, list) and all(isinstance(row, dict)
+                    and identifier(row.get('id')) != unknown for row in enemies))
+    corpses_known = (isinstance(corpses, list) and all(isinstance(row, dict)
+                     and identifier(row.get('id')) != unknown and identifier(row.get('enemyId')) != unknown
+                     for row in corpses))
+    targets = []
+    for target in target_ids[:8]:
+        matches = [row for row in enemies if isinstance(row, dict) and row.get('id') == target] if isinstance(enemies, list) else []
+        enemy = matches[0] if len(matches) == 1 else {}
+        refs = [row for row in corpses if isinstance(row, dict) and row.get('enemyId') == target] if isinstance(corpses, list) else []
+        targets.append({'enemy_id': target,
+            'roster_state': 'present' if len(matches) == 1 else 'duplicate' if matches else 'absent' if roster_known else unknown,
+            'generation': number(enemy.get('generation'), integer=True), 'hp': number(enemy.get('hp')),
+            'respawn_at': number(enemy.get('respawnAt')), 'active': active(enemy), 'engagement': engagement(enemy),
+            'corpses_state': 'known' if corpses_known else unknown,
+            'corpses': [{'id': identifier(row.get('id')), 'enemy_id': target,
+                        'generation': number(row.get('generation'), integer=True),
+                        'expires_at': number(row.get('expiresAt')),
+                        'looted': row['looted'] if type(row.get('looted')) is bool else unknown} for row in refs[:8]],
+            'corpses_truncated': len(refs) > 8})
+    return {'verified_player_id': verified_player_id if type(verified_player_id) is int and verified_player_id > 0 else unknown,
+            'observed_at': number(observed_at), 'pending_source': source,
+            'field_active': active(field), 'field_engagement': engagement(field),
+            'targets': targets, 'targets_truncated': len(target_ids) > 8}
+
+
 async def run_protocol(call, record, persist, *, rules=None, choices=None, status_only=False,
                        sleeper=asyncio.sleep, max_actions=64):
     rules = rules or catalog()
@@ -905,6 +976,11 @@ async def run_once(identity_id, *, status_only=False):
                     raise RuntimeError('qingxi_request_unconfirmed')
                 if result.data.get('playerId') is not None and str(result.data['playerId']) != str(identity_id):
                     raise RuntimeError('qingxi_player_mismatch')
+                if (_api_path == API_PATH and action == 'status' and result.data.get('ok') is True
+                        and isinstance(result.data.get('quests'), dict)
+                        and isinstance(result.data['quests'].get('states'), dict)):
+                    record['field_status_evidence'] = field_status_evidence(result.data['quests'], record,
+                        verified_player_id=identity_id, observed_at=time.time())
                 return result.data
             await run_protocol(call, record, save, choices=config.get('choices'), status_only=status_only)
             if status_only:
