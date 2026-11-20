@@ -16,7 +16,8 @@ def probe(monkeypatch):
 
 
 def test_probe_has_only_scoped_reads(probe):
-    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态", "fishing_context", "fishing_state", "inventory", "qingxi_rewards"}
+    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态", "fishing_context",
+                                  "fishing_state", "inventory", "qingxi_rewards", "qingxi_trial_profile"}
     assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态"}
     assert not {".装备", ".卸下法宝", ".斗法"}.intersection(probe["COMMAND_READS"])
 
@@ -59,8 +60,8 @@ def test_inventory_rejects_malformed_active(probe, active):
 
 
 @pytest.mark.parametrize("failure", ["", "player", "http"])
-@pytest.mark.parametrize('read', ['inventory', 'qingxi_rewards'])
-def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, failure, read):
+@pytest.mark.parametrize('read', ['inventory', 'qingxi_rewards', 'qingxi_trial_profile'])
+def test_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, failure, read):
     namespace = probe["probe"].__globals__
     session_dir = tmp_path / "data/session"
     session_dir.mkdir(parents=True)
@@ -94,7 +95,8 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
             return SimpleNamespace(url="https://asc.aiopenai.app/#tgWebAppData=fixture")
 
     calls = []
-    failure_endpoint = 'section' if read == 'inventory' else 'moon-palace'
+    failure_endpoint = {'inventory': 'section', 'qingxi_rewards': 'moon-palace',
+                        'qingxi_trial_profile': 'battle/doufa-profile'}[read]
 
     class Session:
         def __enter__(self):
@@ -109,6 +111,9 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
             assert timeout == (8, 25) and allow_redirects is False and self.trust_env is False
             data = inventory_payload([]) if endpoint == "section" else {"account": {"playerId": 7}}
             data.update(ok=True, identity={"choices": [{"playerId": 7}]})
+            if endpoint == 'battle/doufa-profile':
+                data['doufaProfile'] = {'slots': [{'name': '法宝', 'other': 'ignore'}], 'swords': {'count': 3},
+                                        'ultimate': {'kind': 'geng_formation'}}
             if read == 'qingxi_rewards' and endpoint not in {'start', 'details'}:
                 resource, envelope, key, arena = next(row for row in probe['QINGXI_READS']
                     if row[0] == endpoint and row[3] == json.get('arena'))
@@ -136,17 +141,24 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
         assert report['status'] == 'read_returned'
         if read == 'inventory':
             assert report["inventory"]["active_count"] == 0
-        else:
+        elif read == 'qingxi_rewards':
             assert len(report['qingxi_rewards']) == 9
+        else:
+            assert report['qingxi_trial_profile'] == {'slots': ['法宝'], 'sword_count': 3,
+                                                     'ultimate': 'geng_formation', 'realm': None}
     assert lifecycle == ["connect", "disconnect"]
     if read == 'inventory':
         assert [endpoint for endpoint, _ in calls] == ["start", "start", "details", "section"]
         assert calls[-1][1] == {"token": "df_FIXTURE999", "initData": "fixture", "playerId": 7, "section": "inventory"}
         assert all("command" not in payload and "action" not in payload for _, payload in calls)
-    else:
+    elif read == 'qingxi_rewards':
         expected = ['start', 'start', 'details'] + [row[0] for row in probe['QINGXI_READS']]
         assert [endpoint for endpoint, _ in calls] == (expected[:4] if failure else expected)
         assert all(payload.get('action') == 'status' and 'command' not in payload for _, payload in calls[3:])
+    else:
+        assert [endpoint for endpoint, _ in calls] == ['start', 'start', 'battle/doufa-profile']
+        assert calls[-1][1] == {'token': 'df_FIXTURE999', 'initData': 'fixture', 'playerId': 7,
+                                'includeInventory': False}
 
 
 @pytest.mark.parametrize("url", [

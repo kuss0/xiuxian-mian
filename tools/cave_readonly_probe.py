@@ -19,7 +19,7 @@ from telethon.sessions import MemorySession
 
 
 COMMAND_READS = (".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态")
-READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory", "qingxi_rewards")
+READS = (*COMMAND_READS, "fishing_context", "fishing_state", "inventory", "qingxi_rewards", "qingxi_trial_profile")
 QINGXI_READS = (
     ('moon-palace', 'moonPalace', 'moon', None), ('blood-land', 'bloodLand', 'blood', None),
     ('south-gate', 'southGate', 'siege', None), ('refugee-escort', 'refugeeEscort', 'escort', None),
@@ -203,6 +203,17 @@ def qingxi_status_report(data, resource, envelope, key, arena=None):
     return row
 
 
+def qingxi_trial_profile_report(data):
+    profile = data.get('doufaProfile')
+    if not isinstance(profile, dict) or not isinstance(profile.get('slots'), list):
+        raise ValueError('qingxi_trial_profile_incomplete')
+    slots = [row['name'] for row in profile['slots'] if isinstance(row, dict) and isinstance(row.get('name'), str)]
+    swords = profile.get('swords') or {}
+    ultimate = profile.get('ultimate') or {}
+    return {'slots': slots, 'sword_count': swords.get('count'), 'ultimate': ultimate.get('kind'),
+            'realm': (profile.get('realm') or {}).get('level')}
+
+
 async def probe(args, report):
     root = args.project_root.resolve()
     owner, account, config = load_owner(root, args.identity)
@@ -253,6 +264,8 @@ async def probe(args, report):
                 payload.update(fishing_state_scope(root, args.identity, owner, player))
             elif endpoint == "section" and args.read == "inventory":
                 payload["section"] = "inventory"
+            elif endpoint == 'battle/doufa-profile' and args.read == 'qingxi_trial_profile':
+                payload['includeInventory'] = False
             elif args.read == 'qingxi_rewards' and endpoint in {row[0] for row in QINGXI_READS}:
                 payload['action'] = 'status'
                 if endpoint == 'trial':
@@ -293,6 +306,10 @@ async def probe(args, report):
         player = selected[0]
         report["player_id"] = player
         request("start", player)
+        if args.read == 'qingxi_trial_profile':
+            report['qingxi_trial_profile'] = qingxi_trial_profile_report(request('battle/doufa-profile', player))
+            report['status'] = 'read_returned'
+            return
         details = request("details", player)
         if args.read == 'qingxi_rewards':
             report['qingxi_rewards'] = []
