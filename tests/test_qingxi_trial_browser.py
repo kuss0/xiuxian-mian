@@ -62,13 +62,14 @@ def harness(monkeypatch, tmp_path):
 @pytest.fixture
 def victory_network():
     # Deidentified server receipts from WA's 2026-11-16 browser run. The final
-    # wave legitimately grants two separate stacks of the same potion.
+    # wave legitimately grants two separate stacks of the same potion. Tier is
+    # normalized to one for the current first-tier-only execution policy.
     network = {'requests': [{'action': 'start'}], 'receipts': []}
     for wave, stones, extras in (
         (0, 105, [('回灵丹', 1)]), (1, 124, [('天雷竹', 2)]),
         (2, 124, [('天雷竹', 1)]), (3, 229, [('回灵丹', 1), ('回灵丹', 2)]),
     ):
-        trial = {'run': {'id': 'browser-run', 'rewarded': True, 'tier': 2, 'cleared': wave,
+        trial = {'run': {'id': 'browser-run', 'rewarded': True, 'tier': 1, 'cleared': wave,
                          'status': 'cleared' if wave == 3 else 'active'},
                  'grants': [{'name': name, 'quantity': quantity}
                             for name, quantity in [('灵石', stones), *extras]],
@@ -85,7 +86,7 @@ def test_server_rewards_are_summed_once_per_wave(victory_network):
     assert facts['gains'] == {'灵石': 582, '回灵丹': 4, '天雷竹': 3}
     assert facts['cultivation'] == 400000
     assert facts['run_id'] == 'browser-run'
-    assert facts['tier'] == 2
+    assert facts['tier'] == 1
 
 
 def test_rewards_ignore_failed_pending_anomalous_and_other_run_receipts(victory_network):
@@ -114,7 +115,7 @@ def test_browser_completion_notifies_original_identity_once(harness, victory_net
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
     text = harness.notice.call_args.args[0]
     assert '长风试炼·麦田试炼' in text and '青溪试炼' not in text
-    assert '第2重' in text and '通关' in text
+    assert '第1重' in text and '通关' in text
     assert all(piece in text for piece in ('灵石×582', '回灵丹×4', '天雷竹×3', '修为+400000'))
     assert 'score' not in text and 'fixture-job' not in text and 'browser-run' not in text
     assert harness.notice.call_args.kwargs['send_as_id'] == harness.owner.identity_id
@@ -302,6 +303,22 @@ def test_terminal_server_receipt_preserves_original_and_counts_one_extra(harness
     assert not h.lock.locked()
 
 
+def test_server_tier_mismatch_stays_held_without_publishing_completion(harness, victory_network):
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+    for row in harness.network['receipts']:
+        row['trial']['run']['tier'] = 2
+    ok, _message = asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))
+    assert not ok
+    assert harness.record['phase'] == 'held'
+    assert harness.record['last_error'] == '浏览器试炼回执重数不符，结果待核对'
+    assert harness.record['daily_used'] == 1
+    assert harness.record['browser_trial']['tier'] == 2
+    assert 'completed_at' not in harness.record
+    assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
+    assert len(harness.commands) == 1
+
+
 def test_no_game_request_releases_ownership(harness):
     harness.network.update(requests=[{'action': 'status'}], receipts=[
         {'ok': True, 'trial': {'status': {'activeRun': None}}},
@@ -392,6 +409,32 @@ def test_invalid_arena_is_rejected(harness):
     assert not ok
 
 
+@pytest.mark.parametrize('tier', [None, 0, 2, 30, 31, True, '1', 1.0])
+def test_manual_action_rejects_invalid_tier_before_browser_launch(harness, tier):
+    ok, message, _extra = asyncio.run(browser.action({
+        'action': 'start', 'send_as_id': harness.owner.identity_id, 'tier': tier,
+    }))
+    assert not ok and message == '当前仅验证第一重，重数须为整数1'
+    assert not harness.commands
+
+
+def test_manual_action_pins_explicit_first_tier(harness, victory_network):
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+
+    async def start():
+        ok, _message, _extra = await browser.action({
+            'action': 'start', 'send_as_id': harness.owner.identity_id, 'tier': 1,
+        })
+        assert ok
+        await browser._TASK
+
+    asyncio.run(start())
+    command = harness.commands[0]
+    assert command[command.index('--tier') + 1] == '1'
+    assert harness.record['browser_trial']['tier'] == 1
+
+
 def test_snapshot_does_not_return_login_url(harness):
     ok, _message, extra = asyncio.run(browser.action({'action': 'status'}))
     assert ok
@@ -418,7 +461,7 @@ def test_scheduled_browser_uses_native_m19_and_stops_at_local_daily_limit(harnes
     command = harness.commands[0]
     assert Path(command[1]).name == 'changfeng_trial_browser.py'
     assert command[command.index('--runs') + 1] == '1'
-    assert command[command.index('--tier') + 1] == 'best'
+    assert command[command.index('--tier') + 1] == '1'
     assert command[command.index('--retries') + 1] == '1'
     assert '--practice-only' not in command and '--practice-ok' not in command
     assert browser._TASK is None
