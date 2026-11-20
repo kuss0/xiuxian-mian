@@ -641,7 +641,8 @@ def test_upstream_source_is_pinned_and_checked_before_browser_launch():
     assert provenance['version'] == '2.0.78'
     assert "(state.story?.flightLastFailure || recovery.reason)" in source
     assert 'window.__qx.navigationFailure' in source
-    assert "if (resource === 'trial' && !readonly) stop('quest_runner_trial_forbidden')" in source
+    assert "if (!config.rewardBatch) stop('quest_runner_trial_forbidden')" in source
+    assert '"rewardBatch": false' in source
     assert source.index('const config =') < source.index('==UserScript==')
 
 

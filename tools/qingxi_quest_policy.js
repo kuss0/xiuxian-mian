@@ -10,8 +10,11 @@
     castEvents: new Map(), castSending: false, castError: '',
   };
   const instances = {'moon-palace': 'moonPalace', 'blood-land': 'bloodLand',
-    'south-gate': 'southGate', 'refugee-escort': 'escort', 'mulan-shrine': 'mulanShrine',
+    'south-gate': 'southGate', 'refugee-escort': 'refugeeEscort', 'mulan-shrine': 'mulanShrine',
     'baiqiao-puppet': 'baiqiaoPuppet', 'jianzhong-trial': 'jianzhongTrial'};
+  const instanceStatusKeys = {'moon-palace':'moon', 'blood-land':'blood', 'south-gate':'siege',
+    'refugee-escort':'escort', 'mulan-shrine':'shrine', 'baiqiao-puppet':'puppet', 'jianzhong-trial':'jianzhong'};
+  const trialStarts = {longwind:0, bamboo:0};
   const journalKey = 'qingxi-local-pending:' + config.player;
   const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
@@ -66,7 +69,14 @@
     const readonly = resource === 'battle/doufa-profile' ? profileRead :
       body.action === 'status' || (body.action == null &&
         ['overview', 'details', 'section', 'town/review'].includes(resource));
-    if (resource === 'trial' && !readonly) stop('quest_runner_trial_forbidden');
+    if (resource === 'trial' && !readonly) {
+      if (!config.rewardBatch) stop('quest_runner_trial_forbidden');
+      if (!['start','checkpoint','end'].includes(body.action)) stop('reward_batch_trial_action');
+      if (body.action === 'start' && (body.tier !== 1 || !Object.hasOwn(trialStarts, body.arena)))
+        stop('reward_batch_first_tier_only');
+    }
+    if (config.rewardBatch && resource === 'quests' && !readonly && !body.action?.startsWith('field-'))
+      stop('reward_batch_npc_mutation_forbidden');
     if (body.playerId != null && String(body.playerId) !== String(config.player)) {
       q.error = 'quest_player_mismatch';
       throw Error(q.error);
@@ -93,7 +103,7 @@
   }
   function receipt(resource, body, response, data, key, parseError = '') {
     const code = typeof data?.error === 'string' && /^[a-zA-Z0-9_:-]{1,100}$/.test(data.error) ? data.error : '';
-    const payload = instances[resource] ? data?.[instances[resource]] : data;
+    const payload = resource === 'trial' ? data?.trial : instances[resource] ? data?.[instances[resource]] : data;
     const castAck = resource !== 'field-cast' || data?.off === true ||
       (Array.isArray(data?.acked) && body.events.every(event => data.acked.includes(event.k + ':' + event.s)));
     const row = {resource, action: body.action || 'events', operation_id: key,
@@ -215,7 +225,7 @@
     }
     check(resource, body);
     if (resource === 'field-cast') return castRequest(input, options, body);
-    const control = resource === 'quests';
+    const control = resource === 'quests' || (config.rewardBatch && (resource === 'trial' || instances[resource]));
     const tracked = control || (body.action && resource !== 'start');
     const mutating = tracked && body.action !== 'status';
     const key = mutating && (body.operationId || resource + ':' + (++q.serial));
@@ -227,22 +237,49 @@
     if (cached && performance.now() - cached.at < 5000) return cached.response.clone();
     if (instances[resource] && body.action === 'start') {
       // Query through the native request envelope before spending an entry.
+      if (config.rewardBatch) q.statusCache.clear();
       const statusBody = {action: 'status'};
       for (const key of ['token', 'initData', 'playerId']) if (body[key] != null) statusBody[key] = body[key];
       const statusResponse = await window.fetch(url.href, {...options, body: JSON.stringify(statusBody)});
-      const data = await statusResponse.json().catch(() => null), status = data?.[instances[resource]];
+      const data = await statusResponse.json().catch(() => null), payload = data?.[instances[resource]],
+        status = payload?.[instanceStatusKeys[resource]] || payload;
       if (!statusResponse.ok || data?.ok !== true || typeof status?.claimed !== 'boolean' || typeof status?.hasKey !== 'boolean') {
         stop('daily_reward_status_unverified');
       }
       if (status.claimed) stop('daily_reward_full');
       if (!status.hasKey) stop('daily_instance_locked');
       if (status.activeRun) stop('daily_instance_pending');
+      if (resource === 'moon-palace' && status.failClaimed === true) stop('daily_reward_exhausted');
+      if (config.rewardBatch) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(status.day) || !Object.hasOwn(status, 'activeRun'))
+          stop('daily_reward_status_unverified');
+        if (q.rewardDay && q.rewardDay !== status.day) stop('reward_batch_day_changed');
+        q.rewardDay = status.day;
+      }
+    }
+    if (config.rewardBatch && resource === 'trial' && body.action === 'start') {
+      q.statusCache.clear();
+      const statusBody = {action:'status', arena:body.arena};
+      for (const key of ['token','initData','playerId']) if (body[key] != null) statusBody[key] = body[key];
+      const response = await window.fetch(url.href, {...options, body:JSON.stringify(statusBody)});
+      const data = await response.json().catch(() => null), status = data?.trial?.status;
+      if (!response.ok || data?.ok !== true || status?.arena !== body.arena || status.limit !== 3 ||
+          !Number.isInteger(status.used) || !Number.isInteger(status.remaining) || status.used < 0 ||
+          status.remaining < 0 || status.used + status.remaining !== 3 ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(status.day) || !Object.hasOwn(status, 'activeRun'))
+        stop('reward_batch_trial_status_unverified');
+      if (status.activeRun !== null) stop('reward_batch_trial_pending');
+      if (status.remaining === 0 || trialStarts[body.arena] >= 3) stop('reward_batch_trial_exhausted');
+      if (q.rewardDay && q.rewardDay !== status.day) stop('reward_batch_day_changed');
+      q.rewardDay = status.day;
     }
     const dispatch = async () => {
       check(resource, body);
       if (key && q.responses.has(key)) return q.responses.get(key).clone();
       if (key && q.pending.has(key)) throw Error('quest_operation_pending');
       if (instances[resource] && body.action === 'start' && q.starts.has(resource)) stop('instance_retry_requires_review');
+      if (config.rewardBatch && resource === 'trial' && body.action === 'start' && trialStarts[body.arena] >= 3)
+        stop('reward_batch_trial_exhausted');
       if (control) {
         if (q.requests >= 240) stop('quest_request_budget');
         const wait = 5000 - (performance.now() - q.last);
@@ -253,6 +290,7 @@
       }
       if (options?.signal?.aborted) stop('quest_request_expired_before_send');
       if (instances[resource] && body.action === 'start') q.starts.add(resource);
+      if (config.rewardBatch && resource === 'trial' && body.action === 'start') trialStarts[body.arena]++;
       if (key) {
         q.statusCache.clear();
         q.pending.set(key, {resource, action: body.action || 'events', operation_id: key,
@@ -271,6 +309,10 @@
         throw error;
       }
       const {data, parseError, buffered} = decoded;
+      if (data?.playerId != null && String(data.playerId) !== String(config.player)) {
+        q.error = 'quest_player_mismatch';
+        throw Error(q.error);
+      }
       if (resource === 'start' && data?.ok === true && data.account?.playerId) {
         q.player = Number(data.account.playerId);
         if (q.player !== config.player) q.error = 'quest_player_mismatch';
