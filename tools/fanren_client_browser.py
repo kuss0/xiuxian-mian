@@ -52,7 +52,10 @@ def request_fact(url,body,player):
     try:actor=int(actor)
     except (TypeError,ValueError):actor=0
     operation=str(body.get('operationId') or '')
-    if not operation and action=='checkpoint':operation=str(body.get('sessionId') or body.get('runId') or '')+':'+str((body.get('fishingProof') or {}).get('durationMs') or body.get('wave') or '')
+    if not operation and action in {'checkpoint','fight'}:
+        session=body.get('sessionId') or body.get('runId')
+        duration=(body.get('fishingProof') or {}).get('durationMs') or body.get('wave')
+        if session and duration is not None:operation=str(session)+':'+str(duration)
     return {'key':f'{family}:{action}:{operation}','player_id':actor,'family':family,'action':action,
             'operation_id':operation,'session_id':body.get('sessionId'),'run_id':body.get('runId'),
             'identity_matches':actor==player}
@@ -140,6 +143,7 @@ async def run(args):
     def cancel():stop.set();task.cancel()
     loop.add_signal_handler(signal.SIGTERM,cancel)
     pending=set();tasks=set();scenarios=None
+    heartbeat_task=None
     def persist():
         value['pending']=sorted(pending);save(args.result,value)
     async def before_write(_source,request):
@@ -187,6 +191,21 @@ async def run(args):
                 await context.add_init_script(path=str(SUPPORT/'control_bridge.js'))
                 if cache:await cache.install(context)
                 page=await context.new_page()
+                async def heartbeat():
+                    while not stop.is_set():
+                        if cache:value['asset_cache']=dict(cache.metrics)
+                        try:
+                            value['scene']=await asyncio.wait_for(page.evaluate('''() => {
+                                const s=window.__fanrenRuntime?.stats?.();
+                                return s?{draws:s.draws,mode:s.mode,control:s.controlMode,tier:s.environment?.tier,
+                                    position:s.actorPosition,modelReady:s.companion?.modelReady,
+                                    loading:s.companion?.modelLoading,modelError:s.companion?.modelError,
+                                    failures:s.assetFailures,performance:s.performance}:null;
+                            }'''),timeout=4)
+                        except Exception:pass
+                        persist()
+                        await asyncio.sleep(12)
+                heartbeat_task=asyncio.create_task(heartbeat())
                 def response_listener(response):
                     task=asyncio.create_task(on_response(response));tasks.add(task);task.add_done_callback(tasks.discard)
                 page.on('response',response_listener)
@@ -220,6 +239,9 @@ async def run(args):
                 value['server_terminal']=server_terminal(value['intents'],value['receipts'],args.scenario)
                 if cache:value['asset_cache']=dict(cache.metrics)
             finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    await asyncio.gather(heartbeat_task,return_exceptions=True)
                 if scenarios:await scenarios.close()
                 await context.close();value['browser_closed']=True
     except (Exception,asyncio.CancelledError) as error:

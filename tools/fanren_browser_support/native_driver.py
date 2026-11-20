@@ -1,6 +1,7 @@
 """Bounded keyboard control using browser-native input and observed runtime state."""
 
 import asyncio
+import random
 import time
 
 
@@ -12,6 +13,7 @@ class NativeInputDriver:
         self.held = set()
         self.cancelled = asyncio.Event()
         self.active = False
+        self.rng = random.SystemRandom()
 
     async def release(self):
         for key in list(self.held):
@@ -58,7 +60,7 @@ class NativeInputDriver:
                     await self.page.keyboard.down(key)
                 self.held = wanted
                 try:
-                    await asyncio.wait_for(self.cancelled.wait(), timeout=.12)
+                    await asyncio.wait_for(self.cancelled.wait(), timeout=self.rng.uniform(.18,.32))
                 except TimeoutError:
                     pass
             return {'reached': False, 'reason': 'cancelled'}

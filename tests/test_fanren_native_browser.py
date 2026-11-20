@@ -95,6 +95,14 @@ def test_wrong_player_response_is_not_a_receipt():
     assert not worker.response_fact(intent,'Cloudflare HTML',521)['ok']
 
 
+def test_original_fishing_proof_is_observed_without_requiring_a_new_operation_id():
+    body={'playerId':42,'sessionId':'real-session','fishingProof':{'durationMs':5200,'events':[{'t':100,'holding':True}]}}
+    original=json.dumps(body)
+    fact=worker.request_fact('https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/fishing/fight',body,42)
+    assert fact['operation_id']=='real-session:5200'
+    assert json.dumps(body)==original
+
+
 def test_native_launcher_preserves_webview_auth_while_normalizing_official_verify_entry():
     source='https://asc.aiopenai.app/miniapp/xianxia-verify?token=entry#tgWebAppData=signed'
     assert worker.normalize_launch_url(source)=='https://asc.aiopenai.app/miniapp/xianxia-dwelling?token=entry#tgWebAppData=signed'
