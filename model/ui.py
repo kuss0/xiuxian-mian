@@ -10080,7 +10080,18 @@ async def _ui_qingxi_trial_browser(payload, session):
     return ok, message, extra.get("browser_trial")
 
 
+async def _ui_fanren_client_browser(payload, session):
+    from .features.fanren_client_browser import action
+    ok, message, extra = await action(payload)
+    return ok, message, extra.get("client_browser")
+
+
 _UI_JSON_ACTION_ROUTES = {
+    "/api/fanren-client-browser": {
+        "handler": _ui_fanren_client_browser,
+        "extra_key": "client_browser",
+        "include_snapshot": False,
+    },
     "/api/qingxi-quests": {
         "handler": lambda payload, session: _qingxi_quests_action(payload),
         "extra_key": "qingxi_quests",
