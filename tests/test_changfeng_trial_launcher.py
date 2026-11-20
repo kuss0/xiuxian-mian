@@ -171,3 +171,35 @@ def test_entry_wrapper_never_restarts_or_generates_reports(monkeypatch):
         runner.start_trial(page, 'longwind', args)
     original.assert_called_once_with(page, 'longwind', args)
     verify.assert_called_once_with(page, 'longwind', runner)
+
+
+def test_projectile_estimate_survives_wall_stall_and_resets_after_retry():
+    runner = SimpleNamespace(browser_script=lambda *_args: '''
+const assert = require('node:assert/strict');
+const queued = {eta: 10200};
+const bot = {shots: [], shotMark: {}, trackShots(_enemies, _position, now) {
+  if (this.shots.length) return this.shots[0].eta - now;
+  return null;
+}};
+global.window = {__lw: {bot}};
+''')
+    launcher.install_projectile_timing(runner)
+    program = runner.browser_script(False, 42) + '''
+bot.sNow = {arena:'longwind',wave:{index:0,time:10},
+            trial:{run:{id:'fixture'}},metrics:{retries:0}};
+assert.equal(bot.trackShots([], {}, 30000), null);
+bot.shots.push(queued);
+bot.shotMark.archer = {released:true};
+bot.sNow.wave.time = 10.06;
+assert.equal(bot.trackShots([], {}, 31000), 140);
+bot.sNow.wave.time = 10.23;
+assert.equal(bot.trackShots([], {}, 31300), -30);
+bot.sNow.metrics.retries = 1;
+assert.equal(bot.trackShots([], {}, 31400), null);
+assert.deepEqual(bot.shotMark, {});
+bot.shots.push(queued);
+bot.sNow.wave.index = 1;
+assert.equal(bot.trackShots([], {}, 31500), null);
+'''
+    result = subprocess.run(['node', '-e', program], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

@@ -64,6 +64,16 @@ STOP_ENTRY = """(() => {
 })()"""
 
 
+def install_projectile_timing(runner):
+    original = runner.browser_script
+    timing = Path(__file__).with_name('changfeng_projectile_timing.js').read_text(encoding='utf-8')
+
+    def browser_script(*args, **kwargs):
+        return original(*args, **kwargs) + '\n' + timing
+
+    runner.browser_script = browser_script
+
+
 def verify_rewarded_entry(page, arena, runner, *, clock=time.monotonic, sleeper=time.sleep):
     deadline = clock() + 15
     reason = 'trial_browser_reward_unverified'
@@ -129,6 +139,7 @@ def main(argv=None):
     options, remaining = parser.parse_known_args(argv)
     sys.path.insert(0, str(options.tool_root / 'tools'))
     runner = importlib.import_module('longwind_trial_bot')
+    install_projectile_timing(runner)
     install_entry_gate(runner)
     return runner.main(remaining)
 
