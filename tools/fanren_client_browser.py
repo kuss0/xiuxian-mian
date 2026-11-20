@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import time
 from urllib.parse import parse_qsl,urlsplit,urlunsplit
@@ -13,6 +14,7 @@ from playwright.async_api import async_playwright
 from fanren_browser_support.asset_cache import VerifiedAssetCache
 from fanren_browser_support.human_input import HumanInput
 from fanren_browser_support.scenarios import NativeScenarios
+from fanren_browser_support.native_driver import NativeInputDriver
 
 ORIGIN='https://asc.aiopenai.app'
 SUPPORT=Path(__file__).with_name('fanren_browser_support')
@@ -204,6 +206,11 @@ async def run(args):
                 await page.screenshot(path=str(args.result.with_suffix('.png')),timeout=30000)
                 scenarios=NativeScenarios(page)
                 value['stage']='scenario';persist()
+                if args.scenario in {'npc','combat'}:
+                    town=page.locator('#worldTownEntry')
+                    if await town.is_visible() and (await town.inner_text()).strip()=='前往青溪坊':
+                        await human.click(town)
+                        await page.wait_for_function('window.__fanrenRuntime.stats().environment?.tier===4 && window.__fanrenRuntime.stats().companion?.modelReady',timeout=600000)
                 if args.scenario=='inspect':value['scenario_result']={'kind':'inspect','loaded':True}
                 elif args.scenario=='walk':value['scenario_result']=await scenarios.walk()
                 elif args.scenario=='fishing':value['scenario_result']=await scenarios.fishing()
@@ -218,6 +225,7 @@ async def run(args):
     except (Exception,asyncio.CancelledError) as error:
         # Never persist launch URLs, cookies, initData or exception strings containing them.
         value['error_type']=type(error).__name__
+        value['error_message']=re.sub(r'https?://\S+','[URL omitted]',str(error))[:400]
         value['unknown']=bool(value['intents'])
     finally:
         value['finished_at']=time.time();persist()

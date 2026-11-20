@@ -53,6 +53,13 @@ def outcome_closed(value,identity_id):
     return value.get('server_terminal') is True
 
 
+def navigation_failed_before_entry(value,identity_id):
+    return (isinstance(value,dict) and value.get('identity_id')==identity_id
+            and value.get('stage')=='loading_page' and value.get('browser_closed') is True
+            and value.get('identity_verified') is False and value.get('intents')==[]
+            and value.get('pending')==[] and value.get('unknown') is False)
+
+
 async def action(payload):
     global _TASK
     kind=payload.get('action','status')
@@ -64,6 +71,12 @@ async def action(payload):
         record=records().get(str(identity_id),{})
         directory=Path(record.get('evidence_dir') or '')
         expected=Path(STATE_DIR)/'fanren_browser'/str(identity_id)/str(record.get('job_id') or '')
+        if record.get('phase')=='held' and record.get('scenario')=='inspect' and directory==expected and (directory/'result.json').is_file():
+            value=json.loads((directory/'result.json').read_text())
+            if navigation_failed_before_entry(value,identity_id):
+                record.update(phase='failed',reviewed_at=time.time(),review_reason='navigation_failed_before_authenticated_entry')
+                persist();_STATUS.update(copy.deepcopy(record))
+                return True,'已核对为登录场景前的导航失败',{'client_browser':copy.deepcopy(_STATUS)}
         if (record.get('phase')!='held' or record.get('scenario')!='inspect' or directory!=expected
                 or (directory/'result.json').exists() or (directory.parent/'profile').exists()):
             return False,'缺少开浏览器前失败的精确证据',{}
@@ -134,7 +147,8 @@ async def run(owner,scenario,job_id):
                     try:await asyncio.wait_for(asyncio.shield(waiter),5)
                     except TimeoutError:pass
             value=json.loads(result.read_text()) if result.is_file() else {}
-            record.update(phase='done' if outcome_closed(value,identity_id) else 'held',finished_at=time.time(),
+            phase='done' if outcome_closed(value,identity_id) else 'failed' if navigation_failed_before_entry(value,identity_id) else 'held'
+            record.update(phase=phase,finished_at=time.time(),
                           result={k:value.get(k) for k in ['identity_verified','scenario_result','server_terminal','unknown','pending','browser_closed']})
         finally:
             # Drain the worker before another scene may acquire this account.

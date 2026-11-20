@@ -104,6 +104,14 @@ def test_native_launcher_preserves_webview_auth_while_normalizing_official_verif
         with pytest.raises(RuntimeError):worker.normalize_launch_url(source)
 
 
+def test_only_closed_prelogin_navigation_failure_is_unstarted():
+    evidence={'identity_id':42,'stage':'loading_page','browser_closed':True,'identity_verified':False,
+              'intents':[],'pending':[],'unknown':False}
+    assert runtime.navigation_failed_before_entry(evidence,42)
+    for change in [{'stage':'scenario'},{'browser_closed':False},{'intents':[{}]},{'unknown':True},{'identity_id':99}]:
+        assert not runtime.navigation_failed_before_entry({**evidence,**change},42)
+
+
 def test_driver_releases_physical_keys_when_identity_changes():
     class Keyboard:
         def __init__(self):self.calls=[]
