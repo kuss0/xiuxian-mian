@@ -154,7 +154,7 @@ SNAPSHOT = r"""(() => {
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
   reward_batch:window.__qingxiRewardBatch?.state,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
-    recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry}:null,
+    recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
   run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};
 })()"""
 

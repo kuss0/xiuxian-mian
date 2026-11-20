@@ -248,10 +248,10 @@
       }
       if (status.claimed) stop('daily_reward_full');
       if (!status.hasKey) stop('daily_instance_locked');
-      if (status.activeRun) stop('daily_instance_pending');
+      if (status.activeRun || status.run) stop('daily_instance_pending');
       if (resource === 'moon-palace' && status.failClaimed === true) stop('daily_reward_exhausted');
       if (config.rewardBatch) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(status.day) || !Object.hasOwn(status, 'activeRun'))
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(status.day) || !Object.hasOwn(status, 'run'))
           stop('daily_reward_status_unverified');
         if (q.rewardDay && q.rewardDay !== status.day) stop('reward_batch_day_changed');
         q.rewardDay = status.day;

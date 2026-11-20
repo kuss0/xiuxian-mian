@@ -509,6 +509,28 @@ function renderAvatarConfig(avatars, replica) {
     }).join('') + '</div>';
 }
 
+function renderQingxiRewardConfig(config, identities, members) {
+  const setting = config.qingxi_rewards || {};
+  const labels = {claimed:'已领奖', locked:'未解锁', exhausted:'今日机会已用', used:'次数已用', pending:'待执行', unknown:'未核对'};
+  return '<div class="dungeon-section"><h4>青溪每日副本与双试炼（7＋6）</h4>'
+    + '<label class="checkbox-inline"><input type="checkbox" name="qingxi_rewards_enabled"' + (setting.enabled ? ' checked' : '') + '>开启每日七副本＋麦田、竹林各三次奖励</label>'
+    + '<p>试炼固定第一重，按服务端剩余次数执行；接管所选账号的旧长风单场自动调度。次数已用不代表已经通关或取得奖励。</p>'
+    + members('qingxi_rewards', setting.participant_identity_ids)
+    + Object.entries(config.qingxi_reward_progress || {}).map(function(entry) {
+      const identity = identities.find(function(row) { return String(row.identity_id) === entry[0]; }) || {};
+      const progress = entry[1];
+      return '<details><summary>' + escapeHtml(identity.display_name || entry[0]) + '｜'
+        + escapeHtml(progress.day || '未核对日期') + '｜每日已领 ' + escapeHtml(progress.claimed) + '/7｜试炼次数已用 '
+        + escapeHtml(progress.trial_used) + '/6｜' + escapeHtml(progress.phase || 'idle') + '</summary>'
+        + '<ul>' + (progress.slots || []).map(function(slot) {
+          return '<li>' + escapeHtml(slot.title) + '：' + escapeHtml(labels[slot.state] || '未核对') + '</li>';
+        }).join('') + '</ul>'
+        + (progress.blocked_reason ? '<p>' + escapeHtml(progress.blocked_reason) + '</p>' : '')
+        + '<button type="button" class="btn" data-qingxi-reward-action="rewards_refresh" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">只读核对</button>'
+        + '<button type="button" class="btn" data-qingxi-reward-action="rewards" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">执行一批</button></details>';
+    }).join('') + '</div>';
+}
+
 function renderExpeditionConfig(replica) {
   const config = replica.expeditions || {};
   const xuangu = config.xuangu || {};
@@ -594,6 +616,7 @@ function renderExpeditionConfig(replica) {
     + ['longwind', 'bamboo'].map(function(arena) {
       return '<label class="checkbox-inline"><input type="checkbox" data-changfeng-arena="' + arena + '"' + ((changfeng.arenas || ['longwind', 'bamboo']).includes(arena) ? ' checked' : '') + ' />' + (arena === 'longwind' ? '麦田试炼' : '竹林试炼') + '</label>';
     }).join('') + '</div></div>'
+    + renderQingxiRewardConfig(config, identities, members)
     + '<div class="dungeon-section"><h4>青溪坊 NPC 任务</h4>'
     + '<label class="checkbox-inline"><input type="checkbox" name="qingxi_enabled"' + (qingxi.enabled ? ' checked' : '') + '>自动接取、推进和交付任务</label>'
     + '<label class="checkbox-inline"><input type="checkbox" name="qingxi_gameplay"' + (qingxi.gameplay_enabled ? ' checked' : '') + '>自动推进野外战斗、机关和跨区任务</label>'
@@ -669,6 +692,19 @@ document.addEventListener('click', async function(event) {
   finally { button.disabled = false; }
 });
 
+document.addEventListener('click', async function(event) {
+  const button = event.target.closest('[data-qingxi-reward-action]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const result = await postJson('/api/qingxi-quests', {action: button.dataset.qingxiRewardAction,
+      send_as_id: button.dataset.qingxiRewardIdentity});
+    updateFlash(result.message || '已安排青溪操作', false);
+    if (typeof refreshState === 'function') await refreshState({silent:true, keepFlash:true});
+  } catch (error) { updateFlash(error.message || '青溪操作失败', true); }
+  finally { button.disabled = false; }
+});
+
 document.addEventListener('submit', async function(event) {
   const form = event.target;
   if (form.id !== 'expedition-config-form') return;
@@ -703,6 +739,7 @@ document.addEventListener('submit', async function(event) {
     spirit_beast: {enabled: form.elements.spirit_beast_enabled.checked, participant_identity_ids: selectedMembers('spirit_beast')},
     qingxi_quests: {enabled: form.elements.qingxi_enabled.checked, gameplay_enabled: form.elements.qingxi_gameplay.checked, participant_identity_ids: selectedMembers('qingxi_quests'),
       choices: Object.fromEntries(Array.from(form.querySelectorAll('[data-qingxi-choice]')).filter(function(input) { return input.value; }).map(function(input) { return [input.dataset.qingxiChoice, input.value]; }))},
+    qingxi_rewards: {enabled: form.elements.qingxi_rewards_enabled.checked, participant_identity_ids: selectedMembers('qingxi_rewards')},
     warm_pairs: {enabled: form.elements.warm_pairs_enabled.checked, lead_text: form.elements.warm_pairs_lead.value,
       pairs: Array.from(form.querySelectorAll('[data-warm-pair]')).map(function(row) {
         return {name: row.querySelector('[data-pair-name]').value.trim(), source_identity_id: row.querySelector('[data-pair-source]').value,

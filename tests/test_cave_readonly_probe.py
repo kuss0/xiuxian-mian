@@ -16,7 +16,7 @@ def probe(monkeypatch):
 
 
 def test_probe_has_only_scoped_reads(probe):
-    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态", "fishing_context", "fishing_state", "inventory"}
+    assert set(probe["READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态", "fishing_context", "fishing_state", "inventory", "qingxi_rewards"}
     assert set(probe["COMMAND_READS"]) == {".天机盘", ".我的阵法", ".我的灵兽", ".我的侍妾", ".远航状态"}
     assert not {".装备", ".卸下法宝", ".斗法"}.intersection(probe["COMMAND_READS"])
 
@@ -59,7 +59,8 @@ def test_inventory_rejects_malformed_active(probe, active):
 
 
 @pytest.mark.parametrize("failure", ["", "player", "http"])
-def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, failure):
+@pytest.mark.parametrize('read', ['inventory', 'qingxi_rewards'])
+def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, failure, read):
     namespace = probe["probe"].__globals__
     session_dir = tmp_path / "data/session"
     session_dir.mkdir(parents=True)
@@ -93,6 +94,7 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
             return SimpleNamespace(url="https://asc.aiopenai.app/#tgWebAppData=fixture")
 
     calls = []
+    failure_endpoint = 'section' if read == 'inventory' else 'moon-palace'
 
     class Session:
         def __enter__(self):
@@ -107,19 +109,23 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
             assert timeout == (8, 25) and allow_redirects is False and self.trust_env is False
             data = inventory_payload([]) if endpoint == "section" else {"account": {"playerId": 7}}
             data.update(ok=True, identity={"choices": [{"playerId": 7}]})
-            if endpoint == "section" and failure == "player":
-                data["account"]["playerId"] = 8
+            if read == 'qingxi_rewards' and endpoint not in {'start', 'details'}:
+                resource, envelope, key, arena = next(row for row in probe['QINGXI_READS']
+                    if row[0] == endpoint and row[3] == json.get('arena'))
+                data[envelope] = {key: {'day': '2026-11-20', 'activeRun': None}}
+            if endpoint == failure_endpoint and failure == "player":
+                data['playerId'] = 8
 
             def raise_for_status():
-                if endpoint == "section" and failure == "http":
+                if endpoint == failure_endpoint and failure == "http":
                     raise namespace["requests"].HTTPError("fixture")
 
-            return SimpleNamespace(status_code=400 if failure == "http" and endpoint == "section" else 200,
+            return SimpleNamespace(status_code=400 if failure == "http" and endpoint == failure_endpoint else 200,
                                    raise_for_status=raise_for_status, json=lambda: data)
 
     monkeypatch.setitem(namespace, "TelegramClient", Client)
     monkeypatch.setattr(namespace["requests"], "Session", Session)
-    args = SimpleNamespace(project_root=tmp_path, identity=7, read="inventory")
+    args = SimpleNamespace(project_root=tmp_path, identity=7, read=read)
     report = {"steps": []}
     if failure:
         with pytest.raises((ValueError, namespace["requests"].HTTPError)):
@@ -127,11 +133,20 @@ def test_inventory_probe_uses_only_scoped_reads(probe, monkeypatch, tmp_path, fa
         assert "inventory" not in report
     else:
         asyncio.run(probe["probe"](args, report))
-        assert report["status"] == "read_returned" and report["inventory"]["active_count"] == 0
+        assert report['status'] == 'read_returned'
+        if read == 'inventory':
+            assert report["inventory"]["active_count"] == 0
+        else:
+            assert len(report['qingxi_rewards']) == 9
     assert lifecycle == ["connect", "disconnect"]
-    assert [endpoint for endpoint, _ in calls] == ["start", "start", "details", "section"]
-    assert calls[-1][1] == {"token": "df_FIXTURE999", "initData": "fixture", "playerId": 7, "section": "inventory"}
-    assert all("command" not in payload and "action" not in payload for _, payload in calls)
+    if read == 'inventory':
+        assert [endpoint for endpoint, _ in calls] == ["start", "start", "details", "section"]
+        assert calls[-1][1] == {"token": "df_FIXTURE999", "initData": "fixture", "playerId": 7, "section": "inventory"}
+        assert all("command" not in payload and "action" not in payload for _, payload in calls)
+    else:
+        expected = ['start', 'start', 'details'] + [row[0] for row in probe['QINGXI_READS']]
+        assert [endpoint for endpoint, _ in calls] == (expected[:4] if failure else expected)
+        assert all(payload.get('action') == 'status' and 'command' not in payload for _, payload in calls[3:])
 
 
 @pytest.mark.parametrize("url", [

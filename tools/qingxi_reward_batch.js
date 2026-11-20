@@ -43,7 +43,7 @@
         ['claimed','pending','locked'].includes(row.status) &&
         row.status === (row.claimed ? 'claimed' : row.hasKey ? 'pending' : 'locked'), 'reward_batch_daily_status');
     }
-    // The upstream reward overview omits activeRun. Re-read each native status
+    // The upstream reward overview omits run. Re-read each native status
     // envelope so a claimed/locked row cannot hide an unresolved server run.
     const readers = window.__autobot.handoff?.().rewardRequests || {};
     for (const [index, definition] of dailyReaders.entries()) {
@@ -57,8 +57,8 @@
       const payload = envelope ? response?.[envelope] : response, status = payload?.[key];
       requireValue(response?.ok !== false && !response?.error && payload?.ok !== false && !payload?.error && status && status.day === day &&
         typeof status.claimed === 'boolean' && typeof status.hasKey === 'boolean' &&
-        Object.hasOwn(status, 'activeRun'), 'reward_batch_daily_status');
-      requireValue(status.activeRun === null, 'reward_batch_daily_pending');
+        Object.hasOwn(status, 'run'), 'reward_batch_daily_status');
+      requireValue(status.run === null, 'reward_batch_daily_pending');
       const row = daily.rows.find(item => item.id === dailyIds[index]);
       requireValue(row.claimed === status.claimed && row.hasKey === status.hasKey &&
         !!row.exhausted === (index === 0 && status.failClaimed === true && !status.claimed && status.hasKey),

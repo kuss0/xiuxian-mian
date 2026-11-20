@@ -44,8 +44,8 @@ if(scenario==='pending')q.pending.set('old',{});
 const c={console,Date,Map,Set,Object,Array,JSON,localStorage:{getItem:()=>scenario==='stored_pending'?'[{}]':'[]'},
  __qx:q,__fc:{stats:()=>({active:scenario==='combat_pending',overworld:false})}};
 function dailyResponse(index){const row=daily[index],status={day:row.day,claimed:row.claimed,hasKey:row.hasKey,
- activeRun:scenario==='daily_pending'&&index===0?{id:'old'}:null,failClaimed:row.exhausted};
- if(scenario==='daily_no_active_field'&&index===0)delete status.activeRun;
+ run:scenario==='daily_pending'&&index===0?{id:'old'}:null,failClaimed:row.exhausted};
+ if(scenario==='daily_no_active_field'&&index===0)delete status.run;
  return {ok:true,[defs[index][0]]:status};}
 defs.forEach((d,index)=>{if(d[1])c[d[1]]=async()=>dailyResponse(index)});
 c.qingxiInstanceRequest=async resource=>{const index=defs.findIndex(d=>d[2]===resource);return {ok:true,[defs[index][3]]:dailyResponse(index)}};
@@ -135,7 +135,7 @@ def verified_batch():
                        for identity in ['moonpalace', 'bloodland', 'southgate', 'escort', 'mulanshrine', 'bqpuppet', 'jianzhong']],
              'trials': {arena: {'arena': arena, 'day': day, 'used': 3, 'remaining': 0, 'limit': 3, 'activeRun': None}
                         for arena in ['longwind', 'bamboo']}}
-    return {'player': 42, 'server_checked': True,
+    return {'player': 42, 'server_checked': True, 'pending': 0, 'stored_pending': [],
             'reward_batch': {'phase': 'complete', 'running': False, 'before': {'day': day}, 'final': final}}
 
 
@@ -182,8 +182,9 @@ def test_host_requires_all_nine_native_statuses_before_releasing(verified_batch,
     assert quests.reward_batch_verified(result, 42) is (taint == '')
 
 
-@pytest.mark.parametrize('valid', [True, False])
-def test_reward_worker_shares_durable_ownership_and_requires_batch_evidence(monkeypatch, tmp_path, verified_batch, valid):
+@pytest.mark.parametrize('valid', [True, False, 'pending', 'journal', 'status_error'])
+@pytest.mark.parametrize('inspection', [False, True])
+def test_reward_worker_shares_durable_ownership_and_requires_batch_evidence(monkeypatch, tmp_path, verified_batch, valid, inspection):
     from model.features import cave_treasure_miniapp, qingxi_trial_browser
 
     for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
@@ -194,8 +195,16 @@ def test_reward_worker_shares_durable_ownership_and_requires_batch_evidence(monk
     monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data', AsyncMock(return_value='fixture'))
     record, saved, commands = {}, [], []
     monkeypatch.setattr(quests, 'save', lambda: saved.append(copy.deepcopy(record)))
+    if inspection and valid:
+        verified_batch['reward_inspection'] = verified_batch['reward_batch']['final']
     if not valid:
         verified_batch.pop('reward_batch')
+    elif valid == 'pending':
+        verified_batch['pending'] = 1
+    elif valid == 'journal':
+        verified_batch['stored_pending'] = [{'operation_id': 'unknown'}]
+    elif valid == 'status_error':
+        verified_batch['status_error'] = 'unknown'
 
     async def spawn(*command, **_kwargs):
         commands.append(command)
@@ -205,10 +214,11 @@ def test_reward_worker_shares_durable_ownership_and_requires_batch_evidence(monk
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(quests, '_drain_browser_process', AsyncMock())
     flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': False}})
     flow = quests.run_gameplay(SimpleNamespace(identity_id=42), 'fixture', 'fixture', record, lambda: True,
-                              verify_flight=flight, reward_batch=True)
-    if valid:
+                              verify_flight=flight, reward_batch=True, inspection_only=inspection)
+    if valid is True:
         asyncio.run(flow)
         assert record['gameplay_uncertain'] is False
         flight.assert_awaited_once()
@@ -219,7 +229,8 @@ def test_reward_worker_shares_durable_ownership_and_requires_batch_evidence(monk
         flight.assert_not_awaited()
     command = commands[0]
     assert command[command.index('--workflow') + 1] == 'rewards'
-    assert command[command.index('--max-seconds') + 1] == '10800'
+    assert command[command.index('--max-seconds') + 1] == ('900' if inspection else '10800')
+    assert ('--read-only' in command) is inspection
     assert 'fixture' not in command
     assert not list(tmp_path.glob('.runtime/**/launch.url'))
 
@@ -231,6 +242,69 @@ def test_npc_only_review_cannot_release_a_reward_batch(monkeypatch):
     asyncio.run(quests.review_browser_hold(AsyncMock(), record, 42))
     assert record['gameplay_uncertain'] is True
     evidence.assert_not_called()
+
+
+def test_reward_review_does_not_replace_unresolved_npc_evidence(monkeypatch):
+    from model.features import cave_treasure_runtime as cave
+    owner = SimpleNamespace(identity_id=42, account_id=42, is_current=lambda: True)
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'workflow': 'quests'}}
+    monkeypatch.setattr(quests.MiniAppIdentityOwner, 'capture', lambda _id: owner)
+    monkeypatch.setattr(quests, 'get_global_enabled', lambda: True)
+    monkeypatch.setattr(quests, 'get_activity_block_reason', lambda *_args, **_kwargs: '')
+    monkeypatch.setattr(quests, 'is_cave_public_identity_available', lambda _id: True)
+    monkeypatch.setattr(quests, 'records', lambda: {'42': record})
+    monkeypatch.setattr(cave, '_public_entry_lock', lambda _id: asyncio.Lock())
+    before = copy.deepcopy(record)
+    ok, message = asyncio.run(quests.run_once(42, status_only=True, reward_batch=True))
+    assert not ok and '不能用奖励状态解除占用' in message
+    assert record == before
+
+
+def test_repeated_cancellation_drains_reward_spawn_under_scene_lock(monkeypatch, tmp_path):
+    from model.features import cave_treasure_miniapp, qingxi_trial_browser
+    for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setattr(qingxi_trial_browser, 'TOOL_ROOT', tmp_path)
+    monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data', AsyncMock(return_value='fixture'))
+    monkeypatch.setattr(quests, 'save', Mock())
+    record = {}
+
+    async def exercise():
+        lock = asyncio.Lock()
+        spawned, release_spawn, draining, release_drain = [asyncio.Event() for _ in range(4)]
+        child = SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
+        async def spawn(*_command, **kwargs):
+            assert kwargs['env']['XIUXIAN_FANREN_PROCESS_OWNER']
+            spawned.set()
+            await release_spawn.wait()
+            return child
+        async def drain(process, token):
+            assert process is child and token and lock.locked()
+            draining.set()
+            await release_drain.wait()
+        monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', spawn)
+        monkeypatch.setattr(quests, '_drain_browser_process', drain)
+        async def operation():
+            async with lock:
+                await quests.run_gameplay(SimpleNamespace(identity_id=42), 'fixture', 'fixture', record, lambda: True,
+                    verify_flight=AsyncMock(), reward_batch=True)
+        task = asyncio.create_task(operation())
+        await spawned.wait()
+        task.cancel()
+        release_spawn.set()
+        await draining.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert lock.locked() and not task.done()
+        release_drain.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not lock.locked()
+    asyncio.run(exercise())
+    assert record['phase'] == 'held' and record['gameplay_uncertain'] is True
+    assert not list(tmp_path.glob('.runtime/**/launch.url'))
 
 
 def test_batch_notification_uses_reward_identity_and_actual_gains(monkeypatch):

@@ -387,6 +387,9 @@ async def run_changfeng_scheduler(now):
     if not config.get("enabled") or not get_global_enabled() or not _entry_url() or _TASKS:
         return
     for identity_id in config.get("participant_identity_ids", []):
+        from .qingxi_rewards import owns_identity
+        if owns_identity(identity_id):
+            continue
         if identity_id not in get_identity_ids() or not is_cave_public_identity_available(identity_id):
             continue
         if get_activity_block_reason(identity_id, include_changfeng=False):

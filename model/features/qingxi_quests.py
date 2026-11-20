@@ -13,7 +13,6 @@ from functools import lru_cache
 from pathlib import Path
 import time
 import uuid
-import signal
 
 from ..activity_occupancy import get_activity_block_reason
 from ..persistence import mark_dirty, save_state
@@ -982,7 +981,11 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
         return False, '洞府公共入口操作执行中'
     entry = _entry_url()
     config = get_expedition_config().get('qingxi_quests', {})
+    reward_config = copy.deepcopy(get_expedition_config().get('qingxi_rewards', {}))
     record = records().setdefault(str(identity_id), {})
+    if (reward_batch and status_only and record.get('gameplay_uncertain')
+            and (record.get('browser') or {}).get('workflow') != 'rewards'):
+        return False, '旧青溪任务仍待原任务证据核对，不能用奖励状态解除占用'
     if not status_only and (record.get('gather') or record.get('gameplay_uncertain')
             or (reward_batch and (record.get('pending') or record.get('phase') in {'held', 'running', 'loading'}))):
         return False, '青溪采集旧操作尚待核对'
@@ -990,6 +993,7 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
         return (owner.is_current() and get_global_enabled() and is_cave_public_identity_available(identity_id)
                 and entry == _entry_url() and cave._public_entry_allowed()
                 and config == get_expedition_config().get('qingxi_quests', {})
+                and (not reward_batch or reward_config == get_expedition_config().get('qingxi_rewards', {}))
                 and not get_activity_block_reason(identity_id, include_qingxi=False)
                 and records().get(str(identity_id)) is record)
     async with lock:
@@ -1028,10 +1032,20 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
                         verified_player_id=identity_id, observed_at=time.time())
                 return result.data
             if reward_batch:
-                await run_gameplay(owner, token, url, record, allowed, reward_batch=True,
+                await run_gameplay(owner, token, url, record, allowed, reward_batch=True, inspection_only=status_only,
                     verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))
                 record.update(phase='idle', last_error='')
+                if status_only:
+                    record['reward_inspection'] = copy.deepcopy(record['browser']['reward_inspection'])
+                    record['rewards_reviewed_at'] = time.time()
+                    record['rewards_next_at'] = time.time() + 1800
+                    save()
+                    return True, '九项奖励、未决记录与飞行状态已只读核对'
                 record['reward_batch'] = copy.deepcopy(record['browser']['reward_batch'])
+                batch = record['reward_batch']
+                from .changfeng_trial import _next_day
+                record['rewards_next_at'] = (_next_day(time.time(), identity_id) if batch.get('remaining') == 0
+                                             else time.time() + 1800)
                 save()
                 await notify_rewards(identity_id, record)
                 return True, '青溪每日七副本与双试炼本轮已核对'
@@ -1057,6 +1071,8 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
             return True, '青溪任务状态已核对' if status_only else '青溪任务本轮已结束'
         except (Exception, asyncio.CancelledError) as exc:
             code = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            if reward_batch:
+                record['rewards_next_at'] = time.time() + 1800
             if status_only:
                 record['last_status_error'] = code
             else:
@@ -1070,7 +1086,14 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
             return False, code
 
 
-async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, choices=None, reward_batch=False):
+async def _drain_browser_process(process, owner_token):
+    from .fanren_client_browser import _stop_native_process_group
+    await _stop_native_process_group(process, owner_token)
+
+
+async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, choices=None, reward_batch=False,
+                       inspection_only=False):
+    from .fanren_client_browser import _PROCESS_OWNER_ENV, _await_uncancelled
     from .qingxi_trial_browser import TOOL_ROOT
     from .cave_treasure_miniapp import request_cave_treasure_miniapp_init_data
     script = Path(__file__).resolve().parents[2] / 'tools/qingxi_quest_browser.py'
@@ -1081,19 +1104,21 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
     directory.mkdir(parents=True, mode=0o700)
     launch = directory / 'launch.url'
     options = directory / 'options.json'
-    process = waiter = None
+    process = waiter = spawn_task = cleanup_task = None
+    owner_token = uuid.uuid4().hex
 
     async def stop():
-        if process is not None and process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(asyncio.shield(waiter), 50)
-            except asyncio.TimeoutError:
-                os.killpg(process.pid, signal.SIGKILL)
-                await asyncio.shield(waiter)
+        nonlocal process, cleanup_task
+        cancelled = False
+        if process is None and spawn_task is not None:
+            process, cancelled = await _await_uncancelled(spawn_task)
+        if process is not None:
+            if cleanup_task is None:
+                cleanup_task = asyncio.create_task(_drain_browser_process(process, owner_token))
+            _, interrupted = await _await_uncancelled(cleanup_task)
+            cancelled = cancelled or interrupted
+        if cancelled:
+            raise asyncio.CancelledError
 
     try:
         launch_url = await request_cave_treasure_miniapp_init_data(owner.identity_id, token=token,
@@ -1116,7 +1141,7 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
-        deadline_seconds = 11100 if reward_batch else 1500
+        deadline_seconds = 11100 if reward_batch and not inspection_only else 1500
         record.update(phase='running', deadline=time.time() + deadline_seconds, gameplay_uncertain=True,
                       browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.78',
                                'workflow': 'rewards' if reward_batch else 'quests'})
@@ -1125,11 +1150,15 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                    '--profile-dir', str(directory.parent / 'profile'), '--result', str(directory / 'result.json'),
                    '--expected-player-id', str(owner.identity_id), '--options-file', str(options), '--max-seconds', '900']
         if reward_batch:
-            command[-1] = '10800'
+            command[-1] = '900' if inspection_only else '10800'
             command.extend(['--workflow', 'rewards'])
+            if inspection_only:
+                command.append('--read-only')
         with (directory / 'runner.log').open('w') as output:
-            process = await asyncio.create_subprocess_exec(*command, stdout=output, stderr=asyncio.subprocess.STDOUT,
-                                                           start_new_session=True)
+            spawn_task = asyncio.create_task(asyncio.create_subprocess_exec(
+                *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                env={**os.environ, _PROCESS_OWNER_ENV: owner_token}))
+            process = await asyncio.shield(spawn_task)
             waiter = asyncio.create_task(process.wait())
             deadline = time.monotonic() + deadline_seconds
             while process.returncode is None:
@@ -1140,10 +1169,20 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                     await asyncio.wait_for(asyncio.shield(waiter), 5)
                 except asyncio.TimeoutError:
                     pass
+                live_path = directory / 'result.json'
+                if reward_batch and live_path.is_file() and live_path.stat().st_size <= 2_000_000:
+                    try:
+                        live = json.loads(live_path.read_text())
+                        if live.get('player') == owner.identity_id:
+                            record['browser']['reward_batch'] = live.get('reward_batch')
+                            record['browser']['report'] = live.get('report')
+                            mark_dirty()
+                    except (OSError, ValueError):
+                        pass
         result = json.loads((directory / 'result.json').read_text())
         record['browser'].update({k: result.get(k) for k in (
             'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
-            'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report', 'reward_batch')})
+            'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report', 'reward_batch', 'reward_inspection')})
         record['browser']['evidence'] = evidence_digest(result)
         existing = {row.get('reward_id', row['operation_id']) for row in record.get('receipts', [])}
         for row in result.get('reward_receipts', []):
@@ -1157,7 +1196,16 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                           or ready_npc_navigation_handoff(result, owner.identity_id))
         if not confirmed_stop or result.get('player') != owner.identity_id:
             raise RuntimeError('qingxi_browser_requires_review')
-        if reward_batch and not reward_batch_verified(result, owner.identity_id):
+        if reward_batch and (result.get('server_checked') is not True or result.get('pending') != 0
+                or result.get('stored_pending') != [] or any(result.get(key) for key in (
+                    'error', 'status_error', 'cleanup_error', 'browser_shutdown_error'))):
+            raise RuntimeError('qingxi_reward_batch_requires_review')
+        verification = result
+        if inspection_only:
+            inspection = result.get('reward_inspection') or {}
+            verification = {'reward_batch': {'phase': 'partial', 'running': False,
+                            'before': {'day': inspection.get('day')}, 'final': inspection}}
+        if reward_batch and not reward_batch_verified(verification, owner.identity_id):
             raise RuntimeError('qingxi_reward_batch_requires_review')
         try:
             flight = await verify_flight()
@@ -1169,15 +1217,22 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         record['gameplay_uncertain'] = False
         save()
     finally:
-        await stop()
-        launch.unlink(missing_ok=True)
+        try:
+            await stop()
+        except BaseException as error:
+            record.update(gameplay_uncertain=True, phase='held')
+            record['browser']['cleanup_error'] = type(error).__name__
+            save()
+            raise
+        finally:
+            launch.unlink(missing_ok=True)
 
 
 async def action(payload):
     kind = payload.get('action', 'status')
     if kind == 'status':
         return True, '青溪任务记录', {'qingxi_quests': copy.deepcopy(records())}
-    if kind not in {'run', 'refresh', 'rewards'}:
+    if kind not in {'run', 'refresh', 'rewards', 'rewards_refresh'}:
         return False, '未知操作', {}
     try:
         identity_id = int(payload.get('send_as_id'))
@@ -1186,7 +1241,7 @@ async def action(payload):
     if _TASKS:
         return False, '青溪任务操作执行中', {}
     task = track_background_task(asyncio.create_task(run_once(
-        identity_id, status_only=kind == 'refresh', reward_batch=kind == 'rewards')))
+        identity_id, status_only=kind in {'refresh', 'rewards_refresh'}, reward_batch=kind in {'rewards', 'rewards_refresh'})))
     _TASKS[identity_id] = task
     def done(completed):
         _TASKS.pop(identity_id, None)

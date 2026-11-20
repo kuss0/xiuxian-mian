@@ -45,7 +45,7 @@ async function check(scenario){
     const q=quotas[body.arena];q.used++;q.remaining--;
     return {ok:true,trial:{run:{id:body.arena+'-'+q.used,rewarded:true,cleared:0},grants:[{name:'灵石',quantity:1}]}};
    }
-   const status={day:'2026-11-20',hasKey:true,claimed:false,activeRun:null,failClaimed:scenario==='reward_failed_moon'};
+   const status={day:'2026-11-20',hasKey:true,claimed:false,run:null,failClaimed:scenario==='reward_failed_moon'};
    return resource==='refugee-escort'?{ok:true,refugeeEscort:{escort:status}}:{ok:true,moonPalace:{moon:status}};
   });
   if(scenario==='reward_day_anchor')e.c.__qx.rewardDay='2026-11-19';

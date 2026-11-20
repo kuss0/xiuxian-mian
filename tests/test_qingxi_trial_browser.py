@@ -1,5 +1,6 @@
 import asyncio
 import json
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -55,6 +56,11 @@ def harness(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', spawn)
+    async def drain(process, _token):
+        if process.returncode is None:
+            process.send_signal(signal.SIGTERM)
+            await process.wait()
+    monkeypatch.setattr(browser, '_drain_trial_process', drain)
     return SimpleNamespace(owner=owner, record=original, records=records, config=config,
                            network=network, commands=commands, launch=launch, lock=lock, notice=notice)
 
@@ -327,6 +333,19 @@ def test_no_game_request_releases_ownership(harness):
     assert harness.record['phase'] == 'done'
     assert harness.record['daily_used'] == 1
     assert '--practice-only' in harness.commands[0]
+
+
+def test_cleanup_failure_holds_completed_trial_and_removes_launch_secret(harness, victory_network, monkeypatch):
+    harness.record['daily_used'] = 0
+    harness.network.update(victory_network)
+    monkeypatch.setattr(browser, '_drain_trial_process', AsyncMock(side_effect=RuntimeError('fixture cleanup failure')))
+    with pytest.raises(RuntimeError, match='cleanup failure'):
+        asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))
+    assert harness.record['phase'] == 'held'
+    assert harness.record['browser_trial']['cleanup_error'] == 'RuntimeError'
+    assert browser._TASK is None and not harness.lock.locked()
+    command = harness.commands[0]
+    assert not Path(command[command.index('--url-file') + 1]).exists()
 
 
 def test_aborted_run_closed_by_server_releases_without_claiming_victory(harness):

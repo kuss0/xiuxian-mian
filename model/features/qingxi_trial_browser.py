@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import signal
 import time
 import uuid
 
@@ -339,6 +338,9 @@ async def run_scheduled_once(identity_id, arena='longwind'):
     """One scheduled native game, sharing manual ownership and local daily caps."""
     global _TASK
     identity_id = int(identity_id)
+    from .qingxi_rewards import owns_identity
+    if owns_identity(identity_id):
+        return False, '每日七副本与双试炼调度已接管该身份'
     config = copy.deepcopy(trial.get_expedition_config().get('changfeng', {}))
     if (not config.get('enabled') or identity_id not in config.get('participant_identity_ids', [])
             or arena not in trial.TRIAL_ARENAS or not get_global_enabled()):
@@ -383,7 +385,13 @@ async def run_scheduled_once(identity_id, arena='longwind'):
     return ok, '本次浏览器试炼已结束' if ok else '浏览器试炼待核对'
 
 
+async def _drain_trial_process(process, owner_token):
+    from .fanren_client_browser import _stop_native_process_group
+    await _stop_native_process_group(process, owner_token)
+
+
 async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, tier=1):
+    from .fanren_client_browser import _PROCESS_OWNER_ENV, _await_uncancelled
     if type(tier) is not int or tier != 1:
         raise ValueError('trial_browser_tier_one_only')
     from . import cave_treasure_runtime as cave
@@ -401,6 +409,8 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
     started_at = time.time()
     entry_url = trial._entry_url()
     process = None
+    cleanup_task = None
+    owner_token = uuid.uuid4().hex
     launch_requested = False
     reserved = False
     url_file = None
@@ -409,20 +419,23 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
     network_loaded = False
 
     def allowed():
+        from .qingxi_rewards import owns_identity
         return (owner.is_current() and is_cave_public_identity_available(identity_id) and get_global_enabled()
                 and not get_activity_block_reason(identity_id, include_changfeng=False)
                 and cave._public_entry_allowed() and trial._entry_url() == entry_url
                 and (not scheduled or trial.get_expedition_config().get('changfeng', {}) == scheduled_config)
+                and (not scheduled or not owns_identity(identity_id))
                 and trial._records().get(str(identity_id)) is record and record.get('phase') == 'browser_trial')
 
     async def stop_process():
-        if process is not None and process.returncode is None:
-            process.send_signal(signal.SIGTERM)
-            try:
-                await asyncio.wait_for(process.wait(), 15)
-            except TimeoutError:
-                os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+        nonlocal cleanup_task
+        if process is None:
+            return
+        if cleanup_task is None:
+            cleanup_task = asyncio.create_task(_drain_trial_process(process, owner_token))
+        _, cancelled = await _await_uncancelled(cleanup_task)
+        if cancelled:
+            raise asyncio.CancelledError
 
     try:
         async with lock:
@@ -470,13 +483,14 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
             with (directory / 'runner.log').open('w') as output:
                 launch_requested = True
                 spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-                    *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True))
+                    *command, stdout=output, stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                    env={**os.environ, _PROCESS_OWNER_ENV: owner_token}))
                 try:
                     process = await asyncio.shield(spawn)
                 except asyncio.CancelledError:
                     # Recover the exact child before unwinding so cancellation
                     # cannot leave a newly created browser process unowned.
-                    process = await spawn
+                    process, _ = await _await_uncancelled(spawn)
                     raise
                 waiter = asyncio.create_task(process.wait())
                 # Keep the runner's normal 25-minute fight budget plus scene-loading time.
@@ -550,13 +564,21 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
                 _archive_previous_attempt(record, previous_attempt, snapshot().get('run_id'))
             record['phase'] = 'held' if launch_requested else previous_phase
     finally:
-        await stop_process()
-        if url_file:
-            url_file.unlink(missing_ok=True)
-        if reserved and trial._records().get(str(identity_id)) is record:
-            record['browser_trial'] = snapshot()
-            if scheduled:
-                _sync_main_result(record, record['browser_trial'])
-            trial._save()
+        try:
+            await stop_process()
+        except BaseException as error:
+            if reserved:
+                record['phase'] = 'held'
+                record['last_error'] = '浏览器进程清理待核对'
+                _STATUS.update(cleanup_error=type(error).__name__)
+            raise
+        finally:
+            if url_file:
+                url_file.unlink(missing_ok=True)
+            if reserved and trial._records().get(str(identity_id)) is record:
+                record['browser_trial'] = snapshot()
+                if scheduled:
+                    _sync_main_result(record, record['browser_trial'])
+                trial._save()
     if trial._records().get(str(identity_id)) is record:
         await _notify_result(record)

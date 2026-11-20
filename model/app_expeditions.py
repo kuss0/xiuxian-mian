@@ -12,7 +12,7 @@ from .app_zhengmo import handle_zhengmo_game_event, reset_zhengmo_runtime_on_sta
 from . import app_spirit_beast
 from . import avatar_soul
 from . import dungeon_openings
-from .features import changfeng_trial, hunt, paired_activities, qingxi_quests, zhengmo
+from .features import changfeng_trial, hunt, paired_activities, qingxi_quests, qingxi_rewards, zhengmo
 from .features.weekly_adventures import KINDS
 from .persistence import mark_dirty, save_state
 from .runtime import send_audit_log, track_background_task
@@ -155,6 +155,8 @@ def get_expedition_snapshot():
         "additional_runs": {key: copy.deepcopy(get_expedition_run_state().get(key, {})) for key in ("spirit_beast", "warm_pairs", "global_duel")},
         "qingxi_quests": copy.deepcopy(config.get('qingxi_quests', {})),
         "qingxi_quests_runs": copy.deepcopy(qingxi_quests.records()),
+        "qingxi_rewards": copy.deepcopy(config.get('qingxi_rewards', {})),
+        "qingxi_reward_progress": qingxi_rewards.snapshots(),
         "qingxi_quest_choices": [{'quest_id': q['id'], 'title': q['title'], 'options': q['rewards']['choices']}
                                  for q in qingxi_quests.catalog()['quests'] if q['rewards'].get('choices')],
         "avatars": copy.deepcopy(get_expedition_run_state().get("avatars", {})),
@@ -235,6 +237,12 @@ def ui_set_expedition_config(payload):
     previous_config, previous_teams = get_expedition_config(), get_hunt_teams()
     config, teams = copy.deepcopy(previous_config), previous_teams
     try:
+        if 'qingxi_rewards' in payload:
+            raw = payload['qingxi_rewards']
+            if not isinstance(raw, dict) or type(raw.get('enabled', False)) is not bool:
+                raise ValueError('青溪每日副本配置无效')
+            config['qingxi_rewards'] = {'enabled': raw.get('enabled', False),
+                'participant_identity_ids': _participants(raw.get('participant_identity_ids', []))}
         if 'qingxi_quests' in payload:
             raw = payload['qingxi_quests']
             if (not isinstance(raw, dict) or type(raw.get('enabled', False)) is not bool
@@ -504,7 +512,7 @@ async def handle_expedition_game_event(event, *, event_type="message"):
 
 async def _run_tick(now):
     await dungeon_openings.ensure_loaded()
-    for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, run_zhengmo_scheduler, qingxi_quests.scheduler, changfeng_trial.run_changfeng_scheduler, app_spirit_beast.scheduler, paired_activities.scheduler, avatar_soul.supervisor):
+    for handler in (run_hunt_scheduler, run_xuangu_scheduler, run_weekly_scheduler, run_zhengmo_scheduler, qingxi_rewards.scheduler, qingxi_quests.scheduler, changfeng_trial.run_changfeng_scheduler, app_spirit_beast.scheduler, paired_activities.scheduler, avatar_soul.supervisor):
         name = f"{handler.__module__}.{handler.__name__}"
         previous = _SCHEDULER_TASKS.get(name)
         if previous is not None and not previous.done():
@@ -519,7 +527,7 @@ async def run_expedition_scheduler(now):
     global _TICK_TASK, _LAST_TICK_AT
     _LAST_TICK_AT = time.time()
     config = get_expedition_config()
-    if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not get_expedition_run_state().get("avatars") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "qingxi_quests", "weekly", "zhengmo", "spirit_beast", "warm_pairs", "global_duel")):
+    if not get_hunt_run_state() and not get_expedition_run_state().get("weekly") and not get_expedition_run_state().get("avatars") and not any(team.get("auto_weekly") for team in get_hunt_teams()) and not any((config.get(key) or {}).get("enabled") for key in ("xuangu", "changfeng", "qingxi_quests", "qingxi_rewards", "weekly", "zhengmo", "spirit_beast", "warm_pairs", "global_duel")):
         return
     if _TICK_TASK is not None and not _TICK_TASK.done():
         return
