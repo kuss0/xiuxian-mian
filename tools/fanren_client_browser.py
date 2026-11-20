@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import signal
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl,urlsplit,urlunsplit
 
 from playwright.async_api import async_playwright
 from fanren_browser_support.asset_cache import VerifiedAssetCache
@@ -16,6 +16,16 @@ from fanren_browser_support.scenarios import NativeScenarios
 
 ORIGIN='https://asc.aiopenai.app'
 SUPPORT=Path(__file__).with_name('fanren_browser_support')
+
+
+def normalize_launch_url(value):
+    parsed=urlsplit(value.strip())
+    params=dict(parse_qsl(parsed.query)+parse_qsl(parsed.fragment))
+    if (parsed.scheme!='https' or parsed.hostname!='asc.aiopenai.app' or parsed.port not in (None,443)
+            or parsed.username or parsed.password or parsed.path not in {'/miniapp/xianxia-dwelling','/miniapp/xianxia-verify'}
+            or not params.get('tgWebAppData')):
+        raise RuntimeError('invalid_launch_origin')
+    return urlunsplit((parsed.scheme,parsed.netloc,'/miniapp/xianxia-dwelling',parsed.query,parsed.fragment))
 
 
 def save(path,value):
@@ -155,8 +165,11 @@ async def run(args):
         except Exception:
             if value['intents']:value['unknown']=True
             persist()
-    url=args.url_file.read_text().strip();parsed=urlsplit(url)
-    if parsed.scheme+'://'+parsed.netloc!=ORIGIN or parsed.path!='/miniapp/xianxia-dwelling':raise RuntimeError('invalid_launch_origin')
+    persist()
+    try:url=normalize_launch_url(args.url_file.read_text())
+    except Exception:
+        value.update(error_type='InvalidLaunchURL',browser_closed=True,stage='before_browser_launch')
+        persist();return
     cache_path=Path(os.environ.get('FANREN_ASSET_BUNDLE','/root/fanren-research-20261120/analysis/local-3d/bundle'))
     cache=VerifiedAssetCache(cache_path) if (cache_path/'verified-assets.json').is_file() else None
     persist()

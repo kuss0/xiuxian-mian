@@ -57,6 +57,23 @@ async def action(payload):
     global _TASK
     kind=payload.get('action','status')
     if kind=='status':return True,'客户端浏览器状态',{'client_browser':copy.deepcopy(_STATUS)}
+    if kind=='review_unstarted_inspect':
+        try:identity_id=int(payload.get('send_as_id') or 0)
+        except (TypeError,ValueError):return False,'身份无效',{}
+        if _TASK is not None and not _TASK.done():return False,'浏览器仍在运行',{}
+        record=records().get(str(identity_id),{})
+        directory=Path(record.get('evidence_dir') or '')
+        expected=Path(STATE_DIR)/'fanren_browser'/str(identity_id)/str(record.get('job_id') or '')
+        if (record.get('phase')!='held' or record.get('scenario')!='inspect' or directory!=expected
+                or (directory/'result.json').exists() or (directory.parent/'profile').exists()):
+            return False,'缺少开浏览器前失败的精确证据',{}
+        log=directory/'runner.log'
+        text=log.read_text() if log.is_file() else ''
+        if "raise RuntimeError('invalid_launch_origin')" not in text or not text.rstrip().endswith('RuntimeError: invalid_launch_origin'):
+            return False,'启动失败证据不匹配',{}
+        record.update(phase='failed',reviewed_at=time.time(),review_reason='launcher_rejected_url_before_browser_exists')
+        persist();_STATUS.update(copy.deepcopy(record))
+        return True,'已核对为浏览器启动前的入口校验失败',{'client_browser':copy.deepcopy(_STATUS)}
     if kind=='stop':
         if _TASK is not None and not _TASK.done():_TASK.cancel()
         return True,'已请求停止，等待浏览器收尾',{'client_browser':copy.deepcopy(_STATUS)}

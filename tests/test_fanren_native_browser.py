@@ -95,6 +95,15 @@ def test_wrong_player_response_is_not_a_receipt():
     assert not worker.response_fact(intent,'Cloudflare HTML',521)['ok']
 
 
+def test_native_launcher_preserves_webview_auth_while_normalizing_official_verify_entry():
+    source='https://asc.aiopenai.app/miniapp/xianxia-verify?token=entry#tgWebAppData=signed'
+    assert worker.normalize_launch_url(source)=='https://asc.aiopenai.app/miniapp/xianxia-dwelling?token=entry#tgWebAppData=signed'
+    for source in ['https://evil.invalid/miniapp/xianxia-verify#tgWebAppData=signed',
+                   'https://asc.aiopenai.app/miniapp/xianxia-verify',
+                   'https://user@asc.aiopenai.app/miniapp/xianxia-verify#tgWebAppData=signed']:
+        with pytest.raises(RuntimeError):worker.normalize_launch_url(source)
+
+
 def test_driver_releases_physical_keys_when_identity_changes():
     class Keyboard:
         def __init__(self):self.calls=[]
