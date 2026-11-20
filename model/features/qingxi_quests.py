@@ -677,6 +677,21 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'verified_npc_delivery_handoff'
+    elif operator_reviewed_field_pending(record, identity_id):
+        fresh = await call('status')
+        state = fresh.get('quests') or {}
+        field = state.get('field') if isinstance(state, dict) else None
+        enemies = field.get('enemies') if isinstance(field, dict) else None
+        targets = {r['enemy_id'] for r in result['pending_operations'] if r['resource'] == 'quests'}
+        if (fresh.get('ok') is True and str(fresh.get('playerId', identity_id)) == str(identity_id)
+                and isinstance(state, dict) and isinstance(state.get('states'), dict)
+                and state.get('corpses') == [] and isinstance(enemies, list)
+                and all(sum(isinstance(r, dict) and r.get('id') == enemy_id and type(r.get('generation')) is int
+                            and type(r.get('hp')) in (int, float) and r['hp'] > 0 for r in enemies) == 1
+                        for enemy_id in targets)):
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'operator_reviewed_field_pending'
     elif old_unconfirmed_field_preparation(record, identity_id):
         fresh = await call('status')
         state = fresh.get('quests') or {}
@@ -738,6 +753,12 @@ async def review_browser_hold(call, record, identity_id):
             record['browser_review']['abandoned_preparation_pending'] = result['pending_operations']
         if reason == 'rate_limited_flight_start_closed':
             record['browser_review']['rejected_flight_pending'] = result['pending_operations']
+        if reason == 'operator_reviewed_field_pending':
+            rows = result['pending_operations']
+            record['browser_review'].update(
+                rejected_release_pending=[r for r in rows if r.get('action') == 'field-release'],
+                abandoned_preparation_pending=[r for r in rows if r.get('action') != 'field-release'],
+                operator=record.pop('operator_release'))
         try:
             save()
         except Exception:
@@ -745,6 +766,43 @@ async def review_browser_hold(call, record, identity_id):
                 record.clear()
                 record.update(rollback)
             raise
+
+
+def operator_reviewed_field_pending(record, identity_id):
+    """An operator named these exact field writes for a one-off review.
+
+    This never matches by itself: the request must list every unresolved
+    operation of the current run, and the run may contain only engagement,
+    release and cast-proof uploads with no settlement, loot or reward. The
+    caller still requires fresh server facts before releasing the hold.
+    """
+    request = record.get('operator_release')
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    report = result.get('report') or {}
+    if (not isinstance(request, dict) or not isinstance(request.get('operation_ids'), list)
+            or type(request.get('at')) not in (int, float) or not 0 <= time.time() - request['at'] < 900
+            or request.get('evidence_dir') != (record.get('browser') or {}).get('evidence_dir')
+            or result.get('player') != identity_id or result.get('phase') != 'held'
+            or not isinstance(pending, list) or not pending or result.get('stored_pending') != pending
+            or not isinstance(receipts, list) or not all(isinstance(row, dict) for row in pending + receipts)
+            or result.get('reward_receipts') or not isinstance(report, dict) or report.get('fieldSettlements') != []):
+        return False
+    ids = [row.get('operation_id') for row in pending]
+    if (not all(isinstance(value, str) and value for value in ids) or len(set(ids)) != len(ids)
+            or sorted(ids) != sorted(request['operation_ids'])):
+        return False
+    for row in pending:
+        kind = (row.get('resource'), row.get('action'))
+        if kind not in {('quests', 'field-engage'), ('quests', 'field-release'), ('field-cast', 'events')}:
+            return False
+        if kind[0] == 'quests' and not (isinstance(row.get('enemy_id'), str) and row['enemy_id']):
+            return False
+    allowed = {'status', 'field-engage', 'field-release'}
+    return all(not row.get('grants') and not row.get('pickedItems') and not row.get('cultivation')
+               and (row.get('resource') != 'quests' or row.get('action') in allowed)
+               and row.get('resource') in {'quests', 'field-cast', 'flight', 'players/social', 'location'}
+               for row in receipts)
 
 
 def orphan_cast_proof_only(record, identity_id):
@@ -1178,9 +1236,11 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        review.get('abandoned_cast_pending', []) if review.get('reason') in {
                            'orphan_cast_no_engagement', 'gateway_refused_cast_completion'} else [],
                        'reviewed_release_pending': review.get('rejected_release_pending', [])
-                       if review.get('reason') == 'confirmed_field_release_rejection' else [],
+                       if review.get('reason') in {'confirmed_field_release_rejection',
+                                                   'operator_reviewed_field_pending'} else [],
                        'reviewed_preparation_pending': review.get('abandoned_preparation_pending', [])
-                       if review.get('reason') == 'unconfirmed_field_preparation_upgrade' else [],
+                       if review.get('reason') in {'unconfirmed_field_preparation_upgrade',
+                                                   'operator_reviewed_field_pending'} else [],
                        'reviewed_flight_pending': review.get('rejected_flight_pending', [])
                        if (review.get('reason') == 'rate_limited_flight_start_closed'
                            and review.get('evidence_dir') == (record.get('browser') or {}).get('evidence_dir')) else [],
@@ -1278,7 +1338,7 @@ async def action(payload):
     kind = payload.get('action', 'status')
     if kind == 'status':
         return True, '青溪任务记录', {'qingxi_quests': copy.deepcopy(records())}
-    if kind not in {'run', 'refresh', 'rewards', 'rewards_refresh'}:
+    if kind not in {'run', 'refresh', 'rewards', 'rewards_refresh', 'operator_release'}:
         return False, '未知操作', {}
     try:
         identity_id = int(payload.get('send_as_id'))
@@ -1286,6 +1346,20 @@ async def action(payload):
         return False, '需要有效身份', {}
     if _TASKS:
         return False, '青溪任务操作执行中', {}
+    if kind == 'operator_release':
+        # One-off review of exactly named unresolved field writes. It only asks
+        # the normal read-only refresh to consider them; fresh server facts decide.
+        record = records().get(str(identity_id))
+        ids, note = payload.get('operation_ids'), payload.get('note')
+        browser = (record or {}).get('browser') or {}
+        if (not record or record.get('gameplay_uncertain') is not True or browser.get('workflow') == 'rewards'
+                or not isinstance(ids, list) or not ids or not all(isinstance(v, str) and v for v in ids)
+                or not isinstance(note, str) or not note.strip() or len(note) > 200):
+            return False, '需要当前待核对记录、完整的未决操作编号和说明', {}
+        record['operator_release'] = {'operation_ids': ids, 'note': note.strip(), 'at': time.time(),
+                                      'evidence_dir': browser.get('evidence_dir')}
+        save()
+        kind = 'refresh'
     task = track_background_task(asyncio.create_task(run_once(
         identity_id, status_only=kind in {'refresh', 'rewards_refresh'}, reward_batch=kind in {'rewards', 'rewards_refresh'})))
     _TASKS[identity_id] = task

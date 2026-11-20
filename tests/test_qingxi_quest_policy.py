@@ -21,7 +21,7 @@ function environment(config={},handler=null,stored=[]){
   fetch:async(input,options)=>{
    const resource=new URL(input).pathname.split('/').at(-1),body=JSON.parse(options?.body||'{}');
    calls.push({resource,body,at:now,journal:storage.get('qingxi-local-pending:42')});
-   const value=handler?await handler(resource,body):{ok:true,account:{playerId:42}};
+   const value=handler?await handler(resource,body,options):{ok:true,account:{playerId:42}};
    return value instanceof Response ? value : new Response(JSON.stringify(value));
   }};
  c.window=c;vm.createContext(c);vm.runInContext(GUARD.replace('__CONFIG__',JSON.stringify({player:42,...config})),c);
@@ -287,6 +287,32 @@ async function check(scenario){
   assert.equal(reads,1);assert.equal(e.calls.length,2);assert.equal(e.c.__qx.pending.size,0);
   await e.send('quests',{action:'status'});await e.send('quests',{action:'status'});
   assert.equal(reads,2);assert.equal(e.calls.length,3);
+ } else if(scenario==='write_late_body'||scenario==='cast_late_body'){
+  // Real WA sample 2026-11-20: HTTP 200 arrived, the native deadline fired on a
+  // stalled frame, and the body read was aborted through the shared signal.
+  const signal={aborted:false},cast=scenario==='cast_late_body',event={k:'use',s:7,key:'pierce'};
+  const e=await ready({},(r,b,o)=>{
+   if(r!==(cast?'field-cast':'quests'))return {ok:true,account:{playerId:42}};
+   const response=new Response('{}',{headers:{'content-type':'application/json'}});
+   response.json=async()=>{
+    signal.aborted=true;
+    if(o?.signal===signal)throw Object.assign(Error('native deadline'),{name:'AbortError'});
+    return cast?{ok:true,acked:['use:7']}:{ok:true,quests:{states:{}},engagement:'late-receipt'};
+   };
+   return response;
+  });
+  const body=cast?{events:[event]}:{action:'field-engage',operationId:'engage-late',enemyId:'longwind:032'};
+  const response=await e.c.fetch(prefix+(cast?'field-cast':'quests'),{body:JSON.stringify(body),signal});
+  const data=await response.json();
+  if(cast)assert.deepEqual(data.acked,['use:7']);else assert.equal(data.engagement,'late-receipt');
+  const row=e.c.__qx.receipts.at(-1);
+  assert.equal(row.ok,true);assert.equal(row.native_expired,true);assert.equal(row.parse_error,'');
+  assert.equal(e.c.__qx.pending.size,0);assert.equal(e.c.__qx.error,'');assert.equal(e.c.__qx.castError,'');
+  assert.equal(JSON.parse(e.storage.get('qingxi-local-pending:42')).length,0);
+  // A write whose native deadline passed before it was sent is still never sent.
+  const before=e.calls.length;
+  await assert.rejects(e.c.fetch(prefix+'quests',{body:JSON.stringify({action:'field-engage',operationId:'engage-next'}),signal}));
+  assert.equal(e.calls.length,before);
  } else if(scenario==='quest_body_abort'||scenario==='quest_bad_json'||scenario==='status_body_abort'){
   let fail=true;
   const e=await ready({},(r,b)=>{
@@ -426,7 +452,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'cast_503', 'cast_fatal', 'cast_exhausted',
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
     'release_rejection', 'release_journal', 'preparation_journal',
-    'quest_body_once', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
+    'quest_body_once', 'write_late_body', 'cast_late_body', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
     'reward_six', 'reward_default_denied', 'reward_escort', 'reward_failed_moon', 'reward_npc_denied',
     'reward_high_tier', 'reward_cross_day', 'reward_unknown_start', 'reward_unknown_active',
     'reward_bad_quota', 'reward_wrong_player', 'reward_day_anchor', 'reward_defeat',

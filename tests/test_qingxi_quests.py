@@ -1140,6 +1140,121 @@ def test_old_unconfirmed_preparation_upgrade_excludes_kills_and_rewards(monkeypa
         assert record['browser_review']['abandoned_preparation_pending'] == pending
 
 
+@pytest.mark.parametrize('taint', ['', 'no_request', 'partial_ids', 'extra_id', 'stale_request', 'other_run',
+                                 'identity', 'running', 'stored_changed', 'settlement', 'reward', 'loot',
+                                 'defeat_pending', 'defeat_receipt', 'turn-in', 'fresh_failure',
+                                 'fresh_wrong_identity', 'fresh_missing_enemy', 'fresh_dead_enemy',
+                                 'fresh_corpses', 'flight_locked'])
+def test_operator_release_needs_exact_operations_and_fresh_server_facts(monkeypatch, tmp_path, taint):
+    """Shapes from the two held runs of 2026-11-19/20 (field-release 409 body abort; engage+cast body abort)."""
+    import copy
+    import json
+    pending = [dict(resource='quests', action='field-release', operation_id='release', enemy_id='lantern:090', at=10),
+               dict(resource='quests', action='field-engage', operation_id='engage', enemy_id='longwind:032', at=11),
+               dict(resource='field-cast', action='events', operation_id='cast', at=11, attempts=1,
+                    events=[dict(k='use', s=100, key='pierce', pos=[0, 0])])]
+    receipts = [dict(resource='quests', action='status', ok=True),
+                dict(resource='flight', action='status', ok=False, error='request_aborted'),
+                dict(resource='quests', action='field-release', ok=False, http_status=409, error='non_json',
+                     parse_error='AbortError', operation_id='release', enemy_id='lantern:090', at=12)]
+    result = dict(player=42, upstream_version='2.0.78', navigation_policy=4, transport_policy=1, phase='held',
+                  error='quest_http_409_non_json', casts=3, requests=7, pending=5, combat_active=True,
+                  pending_operations=pending, stored_pending=copy.deepcopy(pending), receipts=receipts,
+                  report={'fieldSettlements': []}, reward_receipts=[])
+    request = {'operation_ids': ['cast', 'engage', 'release'], 'note': 'user approved', 'at': 100,
+               'evidence_dir': str(tmp_path)}
+    fresh = {'ok': True, 'quests': {'states': {}, 'corpses': [], 'field': {'enemies': [
+        {'id': 'lantern:090', 'generation': 1, 'hp': 196887}, {'id': 'longwind:032', 'generation': 2, 'hp': 18116}]}}}
+    flight = {'ok': True, 'mana': {'flightLocked': False}}
+    if taint == 'no_request':
+        request = None
+    elif taint == 'partial_ids':
+        request['operation_ids'].pop()
+    elif taint == 'extra_id':
+        request['operation_ids'].append('other')
+    elif taint == 'stale_request':
+        request['at'] = -900
+    elif taint == 'other_run':
+        request['evidence_dir'] = str(tmp_path / 'older')
+    elif taint == 'identity':
+        result['player'] = 43
+    elif taint == 'running':
+        result['phase'] = 'running'
+    elif taint == 'stored_changed':
+        result['stored_pending'][0]['at'] += 1
+    elif taint == 'settlement':
+        result['report']['fieldSettlements'].append({'ok': False})
+    elif taint == 'reward':
+        receipts[2]['grants'] = [{'name': '灵石', 'quantity': 1}]
+    elif taint == 'loot':
+        receipts[2]['pickedItems'] = [{'itemId': 'x', 'quantity': 1}]
+    elif taint == 'defeat_pending':
+        pending[1]['action'] = 'field-defeat'
+        result['stored_pending'] = copy.deepcopy(pending)
+    elif taint in {'defeat_receipt', 'turn-in'}:
+        receipts.append(dict(resource='quests', action='field-defeat' if taint == 'defeat_receipt' else taint, ok=False))
+    elif taint == 'fresh_failure':
+        fresh['ok'] = False
+    elif taint == 'fresh_wrong_identity':
+        fresh['playerId'] = 43
+    elif taint == 'fresh_missing_enemy':
+        fresh['quests']['field']['enemies'].pop()
+    elif taint == 'fresh_dead_enemy':
+        fresh['quests']['field']['enemies'][0]['hp'] = 0
+    elif taint == 'fresh_corpses':
+        fresh['quests']['corpses'] = [{'id': 'unknown'}]
+    elif taint == 'flight_locked':
+        flight['mana']['flightLocked'] = True
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': str(tmp_path)}}
+    if request:
+        record['operator_release'] = request
+    call, save = AsyncMock(side_effect=[fresh, flight]), Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    monkeypatch.setattr(quests.time, 'time', lambda: 160)
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert save.call_count == int(not taint)
+    if not taint:
+        review = record['browser_review']
+        assert review['reason'] == 'operator_reviewed_field_pending'
+        assert review['rejected_release_pending'] == pending[:1]
+        assert review['abandoned_preparation_pending'] == pending[1:]
+        assert review['operator']['note'] == 'user approved' and 'operator_release' not in record
+        assert call.await_args_list[0].args == ('status',)
+        assert call.await_args_list[1].kwargs == {'_api_path': '/api/miniapp/xianxia-dwelling/flight'}
+
+
+def test_operator_release_action_validates_and_only_schedules_a_refresh(monkeypatch):
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'browser': {'evidence_dir': '/evidence/run'}}
+    monkeypatch.setattr(quests, 'records', lambda: {'42': record})
+    monkeypatch.setattr(quests, 'save', Mock())
+    monkeypatch.setattr(quests, '_TASKS', {})
+    seen = []
+
+    async def run_once(identity_id, **kwargs):
+        seen.append((identity_id, kwargs))
+    monkeypatch.setattr(quests, 'run_once', run_once)
+    monkeypatch.setattr(quests, 'track_background_task', lambda task: task)
+
+    async def scenario():
+        for bad in ({'operation_ids': []}, {'operation_ids': ['a']}, {'operation_ids': 'a', 'note': 'x'},
+                    {'operation_ids': ['a'], 'note': ' '}):
+            ok, _, _ = await quests.action({'action': 'operator_release', 'send_as_id': 42, **bad})
+            assert not ok and 'operator_release' not in record
+        ok, _, _ = await quests.action({'action': 'operator_release', 'send_as_id': 43,
+                                        'operation_ids': ['a'], 'note': 'x'})
+        assert not ok
+        ok, _, _ = await quests.action({'action': 'operator_release', 'send_as_id': 42,
+                                        'operation_ids': ['a'], 'note': ' approved '})
+        assert ok
+        await asyncio.gather(*list(quests._TASKS.values()))
+    asyncio.run(scenario())
+    assert record['operator_release']['operation_ids'] == ['a'] and record['operator_release']['note'] == 'approved'
+    assert record['operator_release']['evidence_dir'] == '/evidence/run'
+    assert seen == [(42, {'status_only': True, 'reward_batch': False})]
+
+
 @pytest.fixture
 def orphan_cast_hold(tmp_path):
     import json
