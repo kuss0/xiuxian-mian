@@ -12,9 +12,35 @@ class NativeScenarios:
         self.page=page;self.input=HumanInput(page)
         self.driver=NativeInputDriver(page,bridge='window.fanrenNative',canvas='canvas[data-fanren-native="scene"]')
 
+    async def open_menu(self):
+        menu=self.page.locator('#worldSystemMenu')
+        if await menu.count() and not await menu.is_visible():
+            await self.input.press('Escape')
+            await menu.wait_for(state='visible',timeout=15000)
+        return menu
+
+    async def close_menu(self):
+        menu=self.page.locator('#worldSystemMenu')
+        if await menu.count() and await menu.is_visible():await self.input.press('Escape')
+
+    async def low_graphics(self):
+        state=await self.page.evaluate('window.fanrenNative.stats()')
+        if state.get('performance',{}).get('quality')=='low':return
+        await self.open_menu()
+        entry=self.page.locator('#worldQuality')
+        if not await entry.is_visible():return
+        await self.input.click(entry)
+        await self.input.click(self.page.locator('#worldQualityPanel [data-quality="low"]'))
+        view=self.page.locator('#qualityViewDistance')
+        if await view.is_visible():
+            await self.input.hover(view);await view.focus();await self.input.press('Home')
+        await self.input.click(self.page.locator('[data-quality-close]'))
+        await self.close_menu()
+
     async def take_control(self):
         state=await self.page.evaluate('window.fanrenNative.stats()')
         if state['controlMode']=='companion':return True
+        await self.open_menu()
         buttons=self.page.get_by_role('button',name='操控人物',exact=True).or_(
             self.page.get_by_role('button',name='操控南宫婉',exact=True)).or_(
             self.page.locator('#worldControl, #worldCompanionControl, #worldControlCompanion'))
@@ -24,6 +50,7 @@ class NativeScenarios:
             if await item.is_visible() and await item.is_enabled():candidates.append(item)
         if len(candidates)!=1:raise RuntimeError('native_control_button_unavailable')
         await self.input.click(candidates[0])
+        await self.close_menu()
         await self.page.wait_for_function('() => window.fanrenNative.stats().controlMode==="companion"',timeout=10000)
         return True
 
@@ -65,9 +92,20 @@ class NativeScenarios:
         for index in range(await dialog.get_by_role('button').count()):
             button=dialog.get_by_role('button').nth(index);text=(await button.inner_text()).strip()
             if text and text not in {'×','关闭'} and await button.is_enabled():available.append((text,button))
-        safe=[row for row in available if any(word in row[0] for word in ['接取','接受','采集','全部拾取','交付'])]
+        options=dialog.locator('button.quest-option')
+        if await options.count()==1:
+            await self.input.click(options.first)
+            available=[]
+            for index in range(await dialog.get_by_role('button').count()):
+                button=dialog.get_by_role('button').nth(index);text=(await button.inner_text()).strip()
+                if text and await button.is_enabled():available.append((text,button))
+        safe=[row for row in available if any(word in row[0] for word in ['接受任务','开始采集','全部拾取','完成任务'])]
         if len(safe)!=1:return {'kind':'npc','started':False,'reason':'choice_requires_review','buttons':[s for s,_ in available]}
-        await self.input.click(safe[0][1]);await asyncio.sleep(2)
+        await self.input.click(safe[0][1])
+        # A gathering animation must finish on the page's own clock; moving cancels it.
+        gather=self.page.locator('.qingxi-gather:visible')
+        if await gather.count():await gather.wait_for(state='hidden',timeout=90000)
+        await asyncio.sleep(2)
         return {'kind':'npc','started':True,'target':target['id'],'action':safe[0][0]}
 
     async def fishing(self,timeout=180):

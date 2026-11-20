@@ -98,7 +98,7 @@ def init_script(player,scenario):
     return r'''(() => {
       const expected=__PLAYER__,scenario=__SCENARIO__;
       window.__fanrenOwner=false;
-      for(const [name,slot] of [['createDwelling3D','__fanrenRuntime'],['createDwellingFieldCombat','__fanrenCombat']]){
+      for(const [name,slot] of [['createDwelling3D','__fanrenRuntime'],['createDwellingFieldCombat','__fanrenCombat'],['createDwellingQuests','__fanrenQuests']]){
         let current;
         Object.defineProperty(window,name,{configurable:true,get:()=>current,set:value=>{
           current=typeof value==='function'?new Proxy(value,{apply(target,self,args){const result=Reflect.apply(target,self,args);
@@ -218,12 +218,17 @@ async def run(args):
                 value['stage']='entering_scene';persist()
                 await human.click(page.locator('#dwellingEnter'))
                 await page.wait_for_function('() => window.__fanrenRuntime?.stats().companion?.modelReady',timeout=600000)
-                await page.wait_for_function('() => window.__fanrenRuntime.stats().draws>2',timeout=600000)
+                await page.wait_for_function('''() => {
+                    const s=window.__fanrenRuntime.stats(),loading=document.querySelector('#worldLoading');
+                    return s.draws>2 && (!loading || loading.hidden) && document.querySelector('#dwellingWorldCanvas')?.getAttribute('aria-busy')!=='true';
+                }''',timeout=600000)
                 await page.evaluate('''() => {window.fanrenNative=window.createFanren3DBridge({runtime:window.__fanrenRuntime,ownerCheck:()=>window.__fanrenOwner===true});}''')
                 buttons=await page.locator('button:visible').evaluate_all('items=>items.map(e=>({id:e.id,text:e.textContent.trim().slice(0,70)}))')
                 value['visible_buttons']=buttons
-                await page.screenshot(path=str(args.result.with_suffix('.png')),timeout=30000)
+                try:await page.screenshot(path=str(args.result.with_suffix('.png')),timeout=5000)
+                except Exception:value['screenshot_unavailable']=True
                 scenarios=NativeScenarios(page)
+                await scenarios.low_graphics()
                 value['stage']='scenario';persist()
                 if args.scenario in {'npc','combat'}:
                     town=page.locator('#worldTownEntry')
