@@ -110,7 +110,8 @@ def test_browser_completion_notifies_original_identity_once(harness, victory_net
     harness.network.update(victory_network)
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'fixture-job'))
     text = harness.notice.call_args.args[0]
-    assert '青溪试炼·麦田试炼' in text and '第2重' in text and '通关' in text
+    assert '长风试炼·麦田试炼' in text and '青溪试炼' not in text
+    assert '第2重' in text and '通关' in text
     assert all(piece in text for piece in ('灵石×582', '回灵丹×4', '天雷竹×3', '修为+400000'))
     assert 'score' not in text and 'fixture-job' not in text and 'browser-run' not in text
     assert harness.notice.call_args.kwargs['send_as_id'] == harness.owner.identity_id

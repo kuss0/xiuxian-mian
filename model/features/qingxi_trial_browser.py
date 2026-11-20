@@ -116,7 +116,7 @@ async def _notify_result(record):
         return
     arena = trial.TRIAL_ARENAS[status['arena']]
     tier = status.get('tier')
-    title = f"⚔️ 青溪试炼·{arena}" + (f"·第{tier}重" if type(tier) is int and tier > 0 else '')
+    title = f"⚔️ 长风试炼·{arena}" + (f"·第{tier}重" if type(tier) is int and tier > 0 else '')
     outcome = '已通关' if status.get('server_cleared') else ('已结束' if status.get('server_closed') else '结算待核对')
     summary = '、'.join(f'{name}×{count}' for name, count in gains.items())
     if cultivation:
