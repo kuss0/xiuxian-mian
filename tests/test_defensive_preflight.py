@@ -3,6 +3,7 @@ import sqlite3
 
 from tools import defensive_preflight as preflight
 from unittest.mock import patch
+import sys
 
 
 def _create_preflight_db(path, *, identity_enabled):
@@ -78,6 +79,24 @@ def test_snapshot_reports_missing_expedition_daily_even_with_empty_pending(tmp_p
     monkeypatch.setattr(preflight.time, "time", lambda: now)
     result = preflight.snapshot(horizon_sec=3600)
     assert any(r.get("kind") == "changfeng" and r["identity_ids"] == [1] for r in result["checks"])
+
+
+def test_cli_identifies_held_and_protectively_paused_roles(monkeypatch, capsys):
+    monkeypatch.setattr(preflight, "snapshot", lambda **_: {
+        "ts": "2026-11-21 20:47:51", "status": "at_risk", "checks": [
+            {"level": "at_risk", "module": "expeditions", "identity_ids": [8574677796],
+             "reason": "长风试炼：原局待核对超过15分钟，可能持续占用账号"},
+            {"level": "watch", "module": "expeditions", "identity_ids": [7538826434],
+             "reason": "长风试炼：战败保护暂停，等待手动验证通关"},
+        ],
+    })
+    monkeypatch.setattr(sys, "argv", ["defensive_preflight"])
+
+    assert preflight.main() == 2
+
+    text = capsys.readouterr().out
+    assert "at_risk expeditions 身份=8574677796" in text
+    assert "watch expeditions 身份=7538826434" in text
 
 
 def test_tianxing_outside_prepare_window_is_watch():

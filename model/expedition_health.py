@@ -25,16 +25,33 @@ def _epoch(value):
         return 0
 
 
+def _verified_defeat_pause(run):
+    """Read the persisted pause together with its matching closed browser receipt."""
+    pause = _dict(run.get("auto_pause"))
+    status = _dict(run.get("browser_trial"))
+    deaths = status.get("deaths")
+    return (pause.get("reason") == "confirmed_defeat"
+            and pause.get("requires_verified_win") is True
+            and isinstance(pause.get("run_id"), str) and bool(pause["run_id"])
+            and _epoch(pause.get("at")) > 0
+            and pause.get("arena") in {"longwind", "bamboo"}
+            and status.get("run_id") == pause["run_id"]
+            and status.get("arena") == pause.get("arena")
+            and status.get("server_closed") is True and status.get("rewarded") is True
+            and status.get("server_cleared") is not True
+            and (status.get("kind") == "defeat" or type(deaths) is int and deaths > 0))
+
+
 def expedition_health(config, records, enabled_ids, now):
     """Warn about stale occupancy and missed daily scheduling, never clear it."""
     local = datetime.fromtimestamp(now, TZ)
     today = local.strftime("%Y-%m-%d")
     alerts = []
 
-    def alert(kind, key, identities, reason, **extra):
+    def alert(kind, key, identities, reason, *, level="at_risk", **extra):
         ids = sorted(set(identities) & enabled_ids)
         if ids:
-            alerts.append(dict(level="at_risk", module="expeditions", kind=kind, run_key=str(key),
+            alerts.append(dict(level=level, module="expeditions", kind=kind, run_key=str(key),
                                identity_ids=ids, reason=f"{LABELS.get(kind, kind)}：{reason}", **extra))
 
     collections = [("weekly", _dict(records.get("weekly")).get("runs", {})),
@@ -47,16 +64,23 @@ def expedition_health(config, records, enabled_ids, now):
                 continue
             kind = run.get("kind", module)
             held = run.get("requires_reconciliation") or run.get("phase") in {"held", "interrupted"}
-            started = _epoch(run.get("started_at") or run.get("created_at"))
+            started_value = run.get("started_at")
+            if started_value is None:
+                started_value = run.get("created_at")
+            started = _epoch(started_value)
+            age_known = not isinstance(started_value, bool) and 0 < started <= now
             overdue = (run.get("phase") in {"opening", "joining", "running", "dissolving", "waiting_open", "finishing", "loading", "starting", "querying", "marching"}
                        and _epoch(run.get("deadline")) > 0 and now > _epoch(run["deadline"]) + 300)
-            if not started or now - started < 900 or not (held or overdue):
+            if (not (held or overdue) or age_known and now - started < 900
+                    or not age_known and not held):
                 continue
             ids = [m.get("identity_id") for m in run.get("members", run.get("my_members", [])) if isinstance(m, dict)]
             if not ids and module in {"changfeng", "qingxi_quests", "zhengmo"}:
                 ids = [run.get("identity_id") or (int(key) if str(key).isdigit() else None)]
-            reason = "原局待核对超过15分钟，可能持续占用账号" if held else "运行阶段已超过回执期限，检查调度与回包"
-            alert(kind, key, ids, reason, age_sec=int(now - started))
+            reason = ("原局待核对，开始时间缺失或无效，无法确认占用时长" if not age_known else
+                      "原局待核对超过15分钟，可能持续占用账号" if held else
+                      "运行阶段已超过回执期限，检查调度与回包")
+            alert(kind, key, ids, reason, age_sec=int(now - started) if age_known else None)
 
     for kind in ("changfeng", "zhengmo"):
         cfg = _dict(config.get(kind))
@@ -70,7 +94,19 @@ def expedition_health(config, records, enabled_ids, now):
                if kind == "zhengmo" else cfg.get("participant_identity_ids", []))
         for identity in ids:
             run = _dict(_dict(records.get(kind)).get(str(identity)))
+            # These states deliberately prevent another run. Their own
+            # diagnosis explains the absence of a new daily execution.
+            if run.get("requires_reconciliation") or run.get("phase") in {"held", "interrupted"}:
+                continue
             if run.get("day") == today or _epoch(run.get("next_at") or run.get("next_check")) > now:
+                continue
+            if kind == "changfeng" and run.get("auto_pause"):
+                verified = _verified_defeat_pause(run)
+                alert(kind, identity, [identity],
+                      "战败保护暂停，等待手动验证通关" if verified else "自动暂停记录待核对，需检查暂停原因",
+                      level="watch" if verified else "at_risk",
+                      pause_reason=_dict(run.get("auto_pause")).get("reason"),
+                      run_id=_dict(run.get("auto_pause")).get("run_id"))
                 continue
             alert(kind, identity, [identity], "今日尚无执行记录，检查调度与活动占用")
     return alerts

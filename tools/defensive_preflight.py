@@ -762,6 +762,8 @@ def main() -> int:
         level = item.get("level")
         module = item.get("module")
         label = item.get("label") or ""
+        if not label and item.get("identity_ids"):
+            label = "身份=" + ",".join(str(identity) for identity in item["identity_ids"])
         action = item.get("action") or ""
         due = item.get("due_at") or ""
         due_in = item.get("due_in_sec")
