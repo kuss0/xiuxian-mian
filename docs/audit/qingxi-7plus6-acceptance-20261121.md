@@ -245,3 +245,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 只提炼原生喝药命令拒绝后的控制流修复，不整体移植分享版。隔离全量 **19243 passed, 1561 subtests passed in 577.68s**，18项定向测试/25个真实生成脚本断言及撤修、静态、字节比对通过；原阈值、数值、一重/零重试、m19双hash不变。
 - `0cdba0e5` 已推生产remote，22:40:30仅主服务重启，MainPID=2345480，三服务active、24身份、UI200、queue0、NRestarts0。两自动开关、两主号任务进度和WA两场地停跑记录均保持。详见 `qingxi-potion-refusal-20261121.md`；备份 `potion-wrapper-2240/`。
 - 未启动当天第二次试炼，真实收益未验收，**0/26**、三日观察未开始。普通任务地图不传送，分享版goField捷径不采用；q31宗门选择仍留空。22:42先刷新WA q20，等同身份服务端状态新鲜后继续主线。
+
+## 22:55 WA q21 交付与 q20 前置渲染停止
+
+- 22:44:10 宿主按已明确的 `endure` 正常交付 q21，operation `qx-b73d763eb22a4a9ebc989ab54b986b00`，成功奖励回灵丹×2，服务端 q21=`rewarded`；没有重复接受或领取。低优先级通知记录不替代独立 Telegram 投递确认。
+- 后续单一浏览器 `quest-eee8abc80d0b40b8be49052db3a7d846` 在健康前置的原生返回洞府流程停止。人物已安装 NGW 模型但 `modelReady=false/modelLoading=true`，tier3 场景继续渲染、全血15086，无战斗、无飞行、内存与磁盘 pending 均空。420秒返回场景核验超时，22:54:21 末端原生任务状态 fresh；`mainline_started_at` 未出现，浏览器只有4项成功 status 回执、0次 cast，q20没有新增进度。
+- worker/Chromium 已退出，无 cleanup/shutdown error；宿主保留 `held/gameplay_uncertain=true`，错误 `qingxi_native_health_return_unverified`。22:58 正常只读 refresh 后仍保留 held，没有伪造 modelReady、放宽安全返回判定或重开同号浏览器；本轮未取得宿主后续飞行关闭鲜读，不将其写成完整恢复。官方本地源码将这种状态缩到 installModel 后的 prepareEffects/compileAsync 等待链；缺少现场 GPU 异常，不能声称已唯一确认根因。独立离线复现仍未发布。
+- 脱敏证据 `fight-timeout-diag-1855/wa-q20-preflight-render-hold-evidence.json`、`wa-q20-native-loading-diagnostic.json`、`wa-q20-live-samples.jsonl`。WA 两试炼当日停跑、两个自动开关 false、**0/26** 与三日观察未开始均不变。吧唧 q15 已 fresh 确认可续，先让 22:59:53 的灵宠阵法正常调度窗口过去，再决定下一次单浏览器主线运行。
