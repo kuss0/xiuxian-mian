@@ -264,6 +264,28 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
 
 SNAPSHOT = r"""(() => {
  const q=window.__quests?.snapshot?.(),s=window.__fc?.stats?.(),r=window.__autobot?.report?.();
+ // Export only the native bounded damage report. Keep native units: time is
+ // performance.now() milliseconds; enemy time/cooldown seconds, horizontal
+ // distance metres, position [x,0,z], HP/mana/stamina native unscaled values.
+ // Enemies remain candidates; action is the current kind at the damage sample.
+ const number=value=>typeof value==='number'&&Number.isFinite(value)?value:null;
+ const text=(value,size)=>typeof value==='string'?value.slice(0,size):null;
+ const rows=(value,size)=>Array.isArray(value)?value.slice(-size):[];
+ const items=(value,size)=>Array.isArray(value)?value.slice(0,size):[];
+ const labels=value=>items(value,8).filter(value=>typeof value==='string').map(value=>text(value,40));
+ const position=value=>Array.isArray(value)&&value.length===3&&value.every(Number.isFinite)?value.slice():null;
+ const damage=rows(r?.damage,12).filter(row=>row&&typeof row==='object'&&!Array.isArray(row)).map(row=>({
+   time:number(row.time),hpBefore:number(row.hpBefore),hp:number(row.hp),hpMax:number(row.hpMax),
+   mana:number(row.mana),stamina:number(row.stamina),action:text(row.action,32),keys:text(row.keys,32),
+   position:position(row.position),hpPotions:number(row.hpPotions),hpPotionCooldown:number(row.hpPotionCooldown),
+   arena:text(row.arena,40),wave:number(row.wave),phase:text(row.phase,120),
+   treasureFx:labels(row.treasureFx),shots:labels(row.shots),
+   enemies:items(row.enemies,3).filter(enemy=>enemy&&typeof enemy==='object'&&!Array.isArray(enemy)).map(enemy=>({
+     id:text(enemy.id,100),name:text(enemy.name,80),role:text(enemy.role,40),phase:number(enemy.phase),
+     move:text(enemy.move,40),time:number(enemy.time),state:text(enemy.state,40),
+     telegraph:typeof enemy.telegraph==='boolean'?enemy.telegraph:null,distance:number(enemy.distance)
+   }))
+ }));
  return {player:window.__qx?.player,error:window.__qx?.error,stop_reason:window.__qx?.stopReason,
   requests:window.__qx?.requests,casts:window.__qx?.casts,status_error:window.__qx?.statusError,states:q?.states||{},
   cast_error:window.__qx?.castError,
@@ -279,7 +301,7 @@ SNAPSHOT = r"""(() => {
   reward_batch:window.__qingxiRewardBatch?.state,reward_one:window.__qingxiRewardBatch?.oneState,
   field_fight_timeout:window.__qx?.fieldFightTimeout||null,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
-    recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
+    recent:r.recent?.slice(-12),damage,fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
   run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};
 })()"""
 
