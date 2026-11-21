@@ -274,3 +274,25 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 新鲜九项只读核对确认 WA 两试炼日为 `2026-11-22`、各used=0/remaining=3/activeRun=null，七副本仍未解锁。两主号无不确定占用，两个自动开关false，gameplay_enabled=true。下一次WA仍需完整原生健康闸门；实机GPU保护、q20推进、首场通关均待验证。
 - q23预算候选未部署。独立审查发现无lease请求排队期间瓶节点消失/变更会漏过识别，正在隔离实验树补线前双采样否定用例。当前未到q23，不将该候选称为线上修复。
 - 并行核对公共入口野外一分钟续跑：两号真实状态显示 `available=true/cooldown_hours=0`、daily_remaining递减，各次POST及回执独立。jihejish于00:45:34第8局后排至11-23 00:47:57；这是服务端剩余次数下的现有本地间隔，未见重复结算，未更改节奏/天星开关。WA仍留出00:55准备、01:05历练窗口。主号 **0/26**，三日观察未开始。
+
+## 11-22 01:27 Q23 装瓶预算发布与 WA 历练闭合
+
+- `1403a27d` 已推 `xiuxian-mian/main`。隔离全量 **19352 passed、1561 subtests passed in 575.00s**，最终合并树定向64项、作者定向143项以及 Node、Ruff、编译、撤修对照通过。全量之后只去掉新 JS 文件末尾一个空行，另有字节对照与22项直接测试证明语义未变；验证目录 `q23-budget-validation/`。
+- 等待 WA 第八次日常历练真实结清后，重新从只读连接做 SQLite 一致性备份 `q23-budget-release-0121/pre-restart-final-state.db`。发送队列和全局 pending 均为空、无浏览器 worker 时，01:27:00 仅重启主服务。MainPID `2468319`、NRestarts=0，24身份恢复，UI200，watchdog与健康观察active，两青溪自动开关false、gameplay_enabled=true；两主号无不确定占用，q21/q25选择保留，q31为空。
+- Q23仅在本次原生步骤、动态瓶节点、身份所有权与派发前剩余预算同时匹配时允许新装瓶；站稳和限速后线前均需至少420秒。已有计时或模糊状态不授权新装瓶，线后未知仍held；未发出的预算暂缓须正常返回洞府。真实Q23节点、计时和交付尚未观察，不把离线保护记作实场完成。详见 `qingxi-q23-timed-gather-20261122.md`。
+- WA 01:23:58第八次历练真实结算：修为+45000、四级妖丹×2，回包明确“推命命中、改命待发、今日剩余0/8”。最新公共入口状态 `daily_count=8/daily_limit=8/daily_remaining=0/available=false`，下次11-23 00:30:47。模块pending/reply_to/reply_due清零；不对范围外通用CommandAttempt账本作全闭合声明。持续采样 `wa-wild-window-20261122-samples.jsonl`。
+- 01:28:24仅对WA手动安排一轮正常主线，job `quest-5adea6a3095a46799d2bdca323dc478c`，此前fresh确认q20 active、q21 rewarded。初次只读采样的 `native_warmup.installed=1/calls=3/completed=3/unsupported=0/timedOut=0`，原生NGW `modelReady=true/modelLoading=false`；场景及后续主线仍待本轮核验。监测 `fight-timeout-diag-1855/wa-q20-warmup-live-20261122.jsonl`，渲染异常独立订阅同前缀exceptions文件。主号仍 **0/26**，三日观察未开始。
+
+## 11-22 01:32 WA 实机预热与返回等待超时
+
+- 当前渲染器精确匹配。35 次预热调用全部结束，`unsupported=0/timedOut=0/compileErrors=0/pollErrors=0`。终局 `restored=1/activeRenderers=0`，原生NGW已就绪，入坊场景也曾达到 `scene_ready=true`。原来的模型卡住未在本轮重现，仍不能反推昨日卡住的唯一原因。
+- 主线开始前，满血15086的角色回洞府检查从01:31:10.392到01:31:42.893约32.5秒，被浏览器控制连接的单次评估超时提前终止。原返回等待预算为900秒，原生助手的场景时限为420秒。旧日志把发起、轮询和读取回执归并，具体超时的调用不明。末端坐标仅是采样，不用于证明安全返回。
+- 01:31:49末端同身份任务状态为fresh。全轮四条成功status、0施法、无奖励，`pending_operations=[]/stored_pending=[]`，战斗关闭、无收尾错误。未进入主线，q20仍active、进度0/6，宿主保持held。原 `result.json` 与前次渲染故障及已审阅记录保留。
+
+## 11-22 01:59 等待修复发布与只读记录核销
+
+- `b34b264a/5fa0652b` 已推 `xiuxian-mian/main`，01:58:25仅重启主服务，PID2491533/NRestarts0、UI200、24身份、队列空、watchdog与健康观察active。全量 **19380 passed、1561 subtests passed in 579.72s**，发布前461项相关用例及两组撤修反例、静态检查通过。一致性备份 `cdp-return-release-0158/`，详见 `qingxi-cdp-return-wait-20261122.md`。
+- 新worker各发一次原生返回/再入，在原预算内读取同一回执，读取超时不再直接用掉整个预算；dispatch超时、断线、异常回执和安全场景失败仍held。新增旧记录对账只识别本轮完整纯读样本、前次审阅链和新鲜任务/飞行回执，不匹配带新分阶段诊断的未知记录。
+- 01:58:59通过正常认证refresh读取新鲜任务，01:59:05取得服务端飞行关闭，保存 `pre_mainline_read_only_return_timeout` 和前次review引用。宿主 `waiting_gameplay/gameplay_uncertain=false`、无pending/gather；field聚合仍unknown，没有重放原返回或游戏写入。q20仍active，q21rewarded。
+- 正常MiniApp库存刷新于01:55:55完成，吧唧当前缓存来源 `cave_inventory_miniapp`，确认玄铁剑×1、神雷版青竹蜂云剑×1、普通青竹蜂云剑×1、灵石381381。它仅证明库存数量，不能证明全部已祭出或已装技能槽；没有购买、炼器、转移或更换装备。旧图纸数量不当作成品。
+- 02:00九项只读检查完成：本日WA双试炼各used0/remaining3/activeRun=null，七每日仍未解锁。为避开03:06:59元婴窗口，02:02:02单次安排WA麦田第一重有奖局，job `81d420cd16bc438c955d91206bca06b8`；实际开局与结局待核验，显式一重、单场、零重试、35分钟宿主预算，两青溪自动开关false。主号仍 **0/26**，三日观察未开始。
