@@ -691,7 +691,7 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
             command = [str(tool_root / '.venv/bin/python'), str(launcher), '--tool-root', str(tool_root),
                        '--arena', arena, '--identity', str(identity_id), '--expected-player-id', str(identity_id),
                        '--profile-dir', str(directory.parent / 'profile'), '--url-file', str(url_file),
-                       '--log', str(log_file), '--go', '--runs', '1', '--tier', tier_arg, '--retries', '1',
+                       '--log', str(log_file), '--go', '--runs', '1', '--tier', tier_arg, '--retries', '0',
                        '--max-run-seconds', '1500', '--wait-login', '60']
             if practice_only:
                 command.append('--practice-only')

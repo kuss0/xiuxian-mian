@@ -589,6 +589,7 @@ def test_manual_action_pins_explicit_first_tier(harness, victory_network):
     asyncio.run(start())
     command = harness.commands[0]
     assert command[command.index('--tier') + 1] == '1'
+    assert command[command.index('--retries') + 1] == '0'
     assert harness.record['browser_trial']['tier'] == 1
 
 
@@ -619,7 +620,7 @@ def test_scheduled_browser_uses_native_m19_and_stops_at_local_daily_limit(harnes
     assert Path(command[1]).name == 'changfeng_trial_browser.py'
     assert command[command.index('--runs') + 1] == '1'
     assert command[command.index('--tier') + 1] == '1'
-    assert command[command.index('--retries') + 1] == '1'
+    assert command[command.index('--retries') + 1] == '0'
     assert '--practice-only' not in command and '--practice-ok' not in command
     assert browser._TASK is None
     assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
