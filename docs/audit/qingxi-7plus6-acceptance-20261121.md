@@ -225,3 +225,9 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 返回洞府，满血 9744、战斗关闭、pending=0、stored_pending=[]、任务 final fresh、飞行闭合、worker/Chromium 清理完成；宿主 `waiting_gameplay/gameplay_uncertain=false`。后续只续剩余 3 符芯与 2 阵盘，不能把部分进度当成 q14 完成。
 - 脱敏摘要 `fight-timeout-diag-1855/baji-q14-partial-live-evidence.json`。21:43 队列空、无浏览器、两个自动开关仍 false，进入隔离全量回归；生产运行版本未变。单副本候选实验提交 `a50559ae`，发布验证树 `/root/xiuxian-qingxi-single-daily-release-lab-20261121`，801 项相关测试及两项撤修反例通过，尚待全量和生产核验。
 - 旁路候选均未部署：跃斩提前侧滚 `/root/xiuxian-bamboo-leap-lab-20261121/README.md` 仅有条件反例及官方命中子集验证；缓存 v2 `/tmp/qingxi-cdp-assets-v2-20261121-review.md` 修了授权生命周期和 CDP deadline，91 项离线测试，不证明真实命中或性能收益。原始 m19 哈希不变。
+
+## 22:03 单副本入口与预检诊断发布核验
+
+- 最终隔离回归 **19236 passed, 1561 subtests passed in 557.61s**，全量 Ruff、编译、JS 语法及 diff 检查通过。代码与测试树一致，单副本 `2976feee`、预检 `05be021d` 已推 `xiuxian-mian/main`；22:02:32 仅重启主服务，24 身份恢复、三服务 active、UI 200、queue=0、NRestarts=0，无残留浏览器。
+- 认证状态确认两主号无 pending/gather/不确定占用，主线/配额/奖励选择和 WA 双场地停跑记录均保留。单副本虽已提供 `reward_one+daily_id`，尚未进入真实七副本验收；阶段四的双场地单场闸门仍未通过，两个自动开关 false、**0/26**、三日观察未开始。详细核验 `qingxi-single-daily-release-20261121.md`。
+- 用户新分享包已隔离审查，见 `qingxi-share-reference-review-20261121.md`。仅提炼出用药拒绝续防候选及导航/诊断参考，未把其5副本+双试炼流程当7+6，未加载其启动器、默认多次重试或不可更改宗门默认值。分享包与三个策略/缓存实验均未发布。

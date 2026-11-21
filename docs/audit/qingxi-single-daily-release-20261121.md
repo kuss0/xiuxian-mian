@@ -1,6 +1,6 @@
 # 青溪单副本入口与预检诊断：待发布验证
 
-当前仅在隔离工作树 `/root/xiuxian-qingxi-single-daily-release-lab-20261121` 验证，生产基线 `28155cd0`。单副本实现来自实验提交 `a50559ae`；预检诊断来自独立补丁。尚未生产部署，不能据此填写任何真实通关槽位。
+先在隔离工作树 `/root/xiuxian-qingxi-single-daily-release-lab-20261121` 验证，生产代码基线 `28155cd0`。单副本实现来自实验提交 `a50559ae`；预检诊断来自独立补丁。22:02:32 已发布为 `2976feee` + `05be021d`，仅主服务重启；不能据此填写任何真实通关槽位。
 
 ## 行为与边界
 
@@ -29,3 +29,9 @@ held 记录继续保留占用风险，去掉重复的“今日未执行”。缺
 ## 尚未证明
 
 七个副本成功 start/end 的完整真实服务端回包尚未逐一取得；当前 reader 测试结合已存只读状态形状与官方客户端消费字段的模拟回包。字段缺失会保持 held，不能据 mock 推断真实通关。资源缓存 v2、持续格挡和提前躲跃斩候选均未纳入本次变更，未证明加载或胜率改善。
+
+## 22:03 发布核验
+
+代码与最终全量测试树的 `model/tools/tests/vendor` 完全一致，推送 `xiuxian-mian HEAD:main` 后仅重启 `xiuxian.service`。22:02:48 新 MainPID=2320648，NRestarts=0；主服务、safety watchdog、health observer active，UI 200，24 身份恢复，队列0，无遗留浏览器。
+
+两青溪开关仍 false，q21/q25 已登记选项保留；WA 主线 q19 rewarded/q20 active，吧唧 q13 rewarded/q14 active 且 cores=12。两主号 pending/gather/不确定为false、原浏览器飞行已关闭；WA 麦田/竹林各自 confirmed_defeat 及竹林原通知记录均保留。预检仍报告 8574677796 的真实旧 held 和其正魔未执行，只把 7538826434 的匹配真实战败暂停解释为 watch，没有把整体风险洗绿。原 m19 bot/runner 两哈希未变。
