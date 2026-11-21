@@ -536,6 +536,52 @@ def old_unconfirmed_field_preparation(record, identity_id):
         any(r.get('operation_id') == row['operation_id'] for row in pending)) for r in receipts)
 
 
+def rejected_field_engagement_only(record, identity_id):
+    """One complete distance refusal; every earlier write has a confirmed answer."""
+    result = _browser_evidence(record)
+    pending, receipts = result.get('pending_operations'), result.get('receipts')
+    report = result.get('report')
+    settlements = report.get('fieldSettlements') if isinstance(report, dict) else None
+    if (result.get('player') != identity_id or result.get('upstream_version') != '2.0.78'
+            or result.get('navigation_policy') != 4 or result.get('transport_policy') != 1
+            or result.get('phase') != 'held' or result.get('error') != 'quest_http_409_quest_too_far'
+            or type(result.get('pending')) is not int or result['pending'] != 1
+            or not isinstance(pending, list) or len(pending) != 1
+            or result.get('stored_pending') != pending or not isinstance(receipts, list) or not receipts
+            or not all(isinstance(row, dict) for row in pending + receipts)
+            or result.get('cleanup_error') not in (None, 'TimeoutError')
+            or any(result.get(key) for key in ('status_error', 'cast_error', 'entry_error', 'snapshot_error',
+                                             'browser_shutdown_error', 'browser_close_error'))
+            or not isinstance(settlements, list)
+            or any(not isinstance(row, dict) or row.get('ok') is not True for row in settlements)):
+        return False
+    row = pending[0]
+    if (row.get('resource') != 'quests' or row.get('action') != 'field-engage'
+            or not isinstance(row.get('operation_id'), str) or not row['operation_id']
+            or not isinstance(row.get('enemy_id'), str) or not row['enemy_id']
+            or type(row.get('at')) not in (int, float) or not math.isfinite(row['at'])):
+        return False
+    failures = [ack for ack in receipts if ack.get('ok') is not True]
+    if len(failures) != 1:
+        return False
+    ack = failures[0]
+    return (ack.get('ok') is False
+            and all(ack.get(key) == row[key] for key in ('resource', 'action', 'operation_id', 'enemy_id'))
+            and ack.get('http_status') == 409 and ack.get('error') == 'quest_too_far'
+            and ack.get('parse_error') == '' and str(ack.get('content_type', '')).startswith('application/json')
+            and ack.get('shape') in (['error', 'ok'], ['ok', 'error'])
+            and not any(ack.get(key) for key in ('grants', 'cultivation', 'pickedItems'))
+            and type(ack.get('at')) in (int, float) and math.isfinite(ack['at'])
+            and 0 <= ack['at'] - row['at'] < 60
+            and not any(type(receipt.get('at')) not in (int, float)
+                        or not math.isfinite(receipt['at'])
+                        or (receipt['at'] > ack['at'] and not (
+                            (receipt.get('resource') == 'quests' and receipt.get('action') == 'status')
+                            or receipt.get('resource') == 'location'
+                            or (receipt.get('resource') == 'flight' and receipt.get('action') in {'stop', 'status'})))
+                        for receipt in receipts))
+
+
 def safe_browser_town_stop(result, identity_id):
     """A stopped worker in town, with no unresolved writes or cleanup errors."""
     report, world = result.get('report') or {}, result.get('world') or {}
@@ -677,6 +723,23 @@ async def review_browser_hold(call, record, identity_id):
         flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
         if server_flight_closed(flight):
             reason = 'verified_npc_delivery_handoff'
+    elif rejected_field_engagement_only(record, identity_id):
+        fresh = await call('status')
+        state = fresh.get('quests') or {}
+        field = state.get('field') if isinstance(state, dict) else None
+        enemies = field.get('enemies') if isinstance(field, dict) else None
+        enemy_id = result['pending_operations'][0]['enemy_id']
+        target = [row for row in enemies if isinstance(row, dict) and row.get('id') == enemy_id] if isinstance(enemies, list) else []
+        corpses = state.get('corpses') if isinstance(state, dict) else None
+        if (fresh.get('ok') is True and str(fresh.get('playerId', identity_id)) == str(identity_id)
+                and isinstance(state, dict)
+                and isinstance(state.get('states'), dict) and len(target) == 1
+                and type(target[0].get('hp')) in (int, float) and math.isfinite(target[0]['hp']) and target[0]['hp'] > 0
+                and isinstance(corpses, list)
+                and all(isinstance(row, dict) and row.get('enemyId') != enemy_id for row in corpses)):
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if server_flight_closed(flight):
+                reason = 'confirmed_field_engage_distance_rejection'
     elif operator_reviewed_field_pending(record, identity_id):
         fresh = await call('status')
         state = fresh.get('quests') or {}
@@ -749,8 +812,12 @@ async def review_browser_hold(call, record, identity_id):
             record['browser_review']['abandoned_cast_pending'] = _browser_evidence(record)['pending_operations']
         if reason == 'confirmed_field_release_rejection':
             record['browser_review']['rejected_release_pending'] = result['pending_operations']
-        if reason == 'unconfirmed_field_preparation_upgrade':
+        if reason in {'unconfirmed_field_preparation_upgrade', 'confirmed_field_engage_distance_rejection'}:
             record['browser_review']['abandoned_preparation_pending'] = result['pending_operations']
+        if reason == 'confirmed_field_engage_distance_rejection':
+            record['browser_review']['rejected_receipt'] = next(
+                row for row in result['receipts'] if row.get('ok') is not True)
+            record['browser_review']['flight'] = {'ok': flight.get('ok'), 'flightLocked': flight['mana']['flightLocked']}
         if reason == 'rate_limited_flight_start_closed':
             record['browser_review']['rejected_flight_pending'] = result['pending_operations']
         if reason == 'operator_reviewed_field_pending':
@@ -1240,6 +1307,7 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                                                    'operator_reviewed_field_pending'} else [],
                        'reviewed_preparation_pending': review.get('abandoned_preparation_pending', [])
                        if review.get('reason') in {'unconfirmed_field_preparation_upgrade',
+                                                   'confirmed_field_engage_distance_rejection',
                                                    'operator_reviewed_field_pending'} else [],
                        'reviewed_flight_pending': review.get('rejected_flight_pending', [])
                        if (review.get('reason') == 'rate_limited_flight_start_closed'

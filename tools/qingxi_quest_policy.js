@@ -134,7 +134,13 @@
     // distance rejection is a confirmed no-op, not an unknown reward/write.
     const rejectedRelease = resource === 'quests' && body.action === 'field-release' &&
       response.status === 409 && data?.ok === false && code === 'quest_too_far';
-    if (rejectedRelease) row.rejected_noop = true;
+    // The native overworld controller also engages enemies while flying past
+    // them. A complete, empty distance refusal did not create an engagement.
+    const rejectedEngage = resource === 'quests' && body.action === 'field-engage' &&
+      response.status === 409 && data?.ok === false && code === 'quest_too_far' &&
+      Object.keys(data).length === 2 && Object.hasOwn(data, 'ok') && Object.hasOwn(data, 'error');
+    const rejectedNoop = rejectedRelease || rejectedEngage;
+    if (rejectedNoop) row.rejected_noop = true;
     if (row.ok && resource === 'quests' && body.action === 'status') q.questStatusRevision++;
     if (row.ok && (row.grants.length || row.cultivation) && key) {
       const runId = payload?.run?.id || body.runId || payload?.runId;
@@ -143,13 +149,13 @@
       q.rewards.set(row.reward_id, row);
     }
     if (q.receipts.length > 180) q.receipts.splice(0, 60);
-    if (!row.ok && !rejectedRelease) {
+    if (!row.ok && !rejectedNoop) {
       if (resource === 'field-cast') return false;
       const error = 'quest_http_' + response.status + '_' + (code || (data ? 'unconfirmed' : 'non_json'));
       if (key) q.error = error;
       else q.statusError = error;
     }
-    return row.ok || rejectedRelease;
+    return row.ok || rejectedNoop;
   }
   async function castRequest(input, options, body) {
     // The native ordered transport retries up to three times. It may append

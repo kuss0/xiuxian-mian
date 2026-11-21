@@ -95,6 +95,30 @@ async function check(scenario){
    assert.equal(e.c.__qx.error==='',confirmed);
    assert.deepEqual(JSON.parse(e.storage.get('qingxi-local-pending:42')),confirmed?[]:[row]);
   }
+ } else if(scenario==='engage_distance_rejection'){
+  const fixture=DISTANCE_FIXTURE,pending=fixture.pending_operations[0];
+  const refusal=fixture.receipts.find(row=>row.ok===false);
+  assert.equal(refusal.operation_id,pending.operation_id);
+  for(const mode of ['real','wrong_action','unknown_status','unknown_error','positive','extra_field','non_json']){
+   const action=mode==='wrong_action'?'field-defeat':pending.action;
+   const status=mode==='unknown_status'?503:refusal.http_status;
+   const ok=mode==='positive',error=mode==='unknown_error'?'quest_operation_conflict':refusal.error;
+   const extra=mode==='extra_field'?{grants:[{name:'灵石',quantity:1}]}:{};
+   const e=await ready({},(r,b)=>!b.action?{ok:true,account:{playerId:42}}:
+     new Response(mode==='non_json'?'<html>error</html>':JSON.stringify({ok,error,...extra}),{status,headers:{'content-type':'application/json'}}));
+   const body={action,operationId:pending.operation_id,enemyId:pending.enemy_id};
+   if(mode==='non_json')await assert.rejects(e.send('quests',body));
+   else assert.equal((await(await e.send('quests',body)).json()).ok,ok);
+   const known=mode==='real';
+   assert.equal(e.c.__qx.pending.size,known?0:1);
+   assert.equal(e.c.__qx.error==='',known);
+   if(known){
+    assert.equal(e.c.__qx.receipts.at(-1).rejected_noop,true);
+    assert.equal(e.storage.get('qingxi-local-pending:42'),'[]');
+    await e.send('quests',body);
+    assert.equal(e.calls.length,2); // Original refusal is buffered, never replayed.
+   }
+  }
  } else if(scenario==='release_rejection'){
   for(const [action,status,error,ok=false] of [['field-release',409,'quest_too_far'],['turn-in',409,'quest_too_far'],
       ['field-release',503,'quest_too_far'],['field-release',409,'quest_operation_conflict'],
@@ -451,7 +475,7 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
     'cast_network', 'cast_abort', 'cast_bad_json', 'cast_partial', 'cast_429',
     'cast_503', 'cast_fatal', 'cast_exhausted',
     'proof_guards', 'reviewed_journal', 'proof_initial_inflight', 'proof_body_once', 'acknowledged_disk_journal',
-    'release_rejection', 'release_journal', 'preparation_journal',
+    'release_rejection', 'release_journal', 'preparation_journal', 'engage_distance_rejection',
     'quest_body_once', 'write_late_body', 'cast_late_body', 'quest_body_abort', 'quest_bad_json', 'status_body_abort',
     'reward_six', 'reward_default_denied', 'reward_escort', 'reward_failed_moon', 'reward_npc_denied',
     'reward_high_tier', 'reward_cross_day', 'reward_unknown_start', 'reward_unknown_active',
@@ -462,8 +486,10 @@ def test_browser_policy(scenario, tmp_path):
         pytest.skip('Node is required to exercise real browser policy code')
     path = tmp_path / 'policy.cjs'
     transport = (Path(__file__).parent / 'fixtures/dwelling-cast-transport.js').read_text()
+    distance = (Path(__file__).parent / 'fixtures/qingxi-engage-distance-20261121.json').read_text()
     path.write_text('const GUARD=' + json.dumps(GUARD) + ';const SCENARIO=' + json.dumps(scenario)
-                    + ';const CAST_TRANSPORT=' + json.dumps(transport) + ';\n' + HARNESS)
+                    + ';const CAST_TRANSPORT=' + json.dumps(transport)
+                    + ';const DISTANCE_FIXTURE=' + distance + ';\n' + HARNESS)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
 
 
