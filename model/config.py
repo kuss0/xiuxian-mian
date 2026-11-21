@@ -681,6 +681,7 @@ REPLICA_LUOYUN_SUCCESS_COOLDOWN_SEC = 48 * 60 * 60
 REPLICA_ACTIVE_TTL_SEC = 2 * 60 * 60
 REPLICA_FAILURE_GRACE_SEC = 3 * 60
 UI_HOST = os.environ.get("CHAOGU_UI_HOST", "0.0.0.0")
+UI_TAILNET_SOCKET = _get_env_str("CHAOGU_UI_TAILNET_SOCKET", "")
 try:
     UI_PORT = int(os.environ.get("CHAOGU_UI_PORT", "3030"))
 except (TypeError, ValueError):

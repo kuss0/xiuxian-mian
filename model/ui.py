@@ -42,6 +42,7 @@ from .storage_bag_api_payload import (
 )
 from .message_keys import message_key_parts
 from .config_values import coerce_bool as _coerce_ui_bool
+from .ui_tailnet import start_tailnet_listener, tailnet_origin, tailnet_session
 from .profile_observation import apply_profile_observation, timestamp as profile_timestamp
 from .cave_external_limits import next_request_at as cave_external_next_request_at
 
@@ -90,6 +91,7 @@ from .config import (
     UI_HOST,
     UI_PORT,
     UI_PUBLIC_BASE_URL,
+    UI_TAILNET_SOCKET,
     create_account_client,
     get_account_offline_reason,
     get_all_clients,
@@ -361,6 +363,7 @@ from .state import (
 from .timing import fmt_abs_ts, get_day_key
 
 _ui_server = None
+_ui_tailnet_server = None
 _ui_request_tasks = set()
 _ui_stopping = False
 _STORAGE_BAG_TRANSFER_METHODS = {"basic", "gift", "blocked", "unknown"}
@@ -10054,6 +10057,10 @@ def _ui_actor_id(session):
     return (session or {}).get("sender_id")
 
 
+def _ui_account_login_key(session):
+    return session.get("account_login_key") or session.get("session_token", "")
+
+
 # 声明式 JSON 动作路由。
 #
 # 这些路由此前各自手写同一段模板：鉴权 -> 方法校验 -> 可选的 send_as_id 校验 ->
@@ -10294,7 +10301,7 @@ def _serve_ui_document_route(writer, *, method, path, query, session, session_co
     return False
 
 
-async def handle_ui_http(reader, writer):
+async def handle_ui_http(reader, writer, *, private_origin=None):
     task = asyncio.current_task()
     _ui_request_tasks.add(task)
     try:
@@ -10302,7 +10309,7 @@ async def handle_ui_http(reader, writer):
             _write_response(writer, "HTTP/1.1 503 Service Unavailable", "Shutting down", content_type="text/plain; charset=utf-8")
             await _close_ui_writer(writer)
             return
-        await _handle_ui_http_request(reader, writer)
+        await _handle_ui_http_request(reader, writer, private_origin=private_origin)
     finally:
         _ui_request_tasks.discard(task)
 
@@ -10319,10 +10326,11 @@ async def _close_ui_writer(writer):
         pass
 
 
-async def _handle_ui_http_request(reader, writer):
+async def _handle_ui_http_request(reader, writer, *, private_origin=None):
     peer = writer.get_extra_info("peername")
     method = ""
     path = ""
+    transport_session = None
     try:
         trace = {}
         request = await _read_ui_request(reader, writer, trace)
@@ -10335,10 +10343,20 @@ async def _handle_ui_http_request(reader, writer):
         payload = request["payload"]
         now = time.time()
 
+        if private_origin is not None:
+            transport_session = tailnet_session(headers, method, private_origin)
+            if transport_session is None:
+                _write_response(writer, "HTTP/1.1 403 Forbidden", "Forbidden",
+                                content_type="text/plain; charset=utf-8")
+                return
+
         if path == "/api/login/exchange":
             _handle_ui_login_exchange(writer, method, payload, now)
         else:
-            session, session_cookie_header = _get_authenticated_session(headers, now)
+            if transport_session is None:
+                session, session_cookie_header = _get_authenticated_session(headers, now)
+            else:
+                session, session_cookie_header = transport_session, None
             auth_headers = [f"Set-Cookie: {session_cookie_header}"] if session_cookie_header else []
 
             # 初始化模式只信任本机访问，避免公网首装窗口被抢绑账号。
@@ -11348,7 +11366,7 @@ async def _handle_ui_http_request(reader, writer):
                     phone = payload.get("phone", "")
                     api_id = payload.get("api_id")
                     api_hash = payload.get("api_hash")
-                    session_key = (session or {}).get("session_token", "")
+                    session_key = _ui_account_login_key(session)
                     ok, message, _extra = await ui_account_login_start(phone, session_key, api_id=api_id, api_hash=api_hash)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
@@ -11359,7 +11377,7 @@ async def _handle_ui_http_request(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    session_key = (session or {}).get("session_token", "")
+                    session_key = _ui_account_login_key(session)
                     api_id = payload.get("api_id")
                     api_hash = payload.get("api_hash")
                     ok, message, qr_info = await ui_account_login_qr_start(session_key, api_id=api_id, api_hash=api_hash)
@@ -11372,7 +11390,7 @@ async def _handle_ui_http_request(reader, writer):
                 elif method != "GET":
                     _write_method_not_allowed(writer)
                 else:
-                    session_key = (session or {}).get("session_token", "")
+                    session_key = _ui_account_login_key(session)
                     qr_status = ui_account_login_qr_status(session_key)
                     extra = dict(qr_status)
                     status = str(extra.get("status") or "")
@@ -11387,7 +11405,7 @@ async def _handle_ui_http_request(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    session_key = (session or {}).get("session_token", "")
+                    session_key = _ui_account_login_key(session)
                     ok, message = await ui_account_login_cancel(session_key)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
@@ -11400,7 +11418,7 @@ async def _handle_ui_http_request(reader, writer):
                 else:
                     code = payload.get("code", "")
                     password = payload.get("password")
-                    session_key = (session or {}).get("session_token", "")
+                    session_key = _ui_account_login_key(session)
                     ok, message, account_id = await ui_account_login_verify(code, session_key, password=password)
                     if not ok and message == "need_2fa":
                         body = _make_json_payload(False, error="need_2fa")
@@ -11427,21 +11445,34 @@ async def _handle_ui_http_request(reader, writer):
             pass
     finally:
         await _close_ui_writer(writer)
+        if transport_session is not None:
+            peer = transport_session["account_login_key"]
         if peer:
             print(f"[{datetime.now(TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S')}] ui request: {peer} {method or '-'} {path or '-'}")
 
 
 async def start_ui_server():
-    global _ui_server, _ui_stopping
+    global _ui_server, _ui_stopping, _ui_tailnet_server
     if _ui_server is not None:
         return _ui_server
     _ui_stopping = False
-    _ui_server = await asyncio.start_server(
+    server = await asyncio.start_server(
         handle_ui_http,
         UI_HOST,
         UI_PORT,
         limit=UI_HTTP_MAX_HEADER_BYTES + 1,
     )
+    if UI_TAILNET_SOCKET:
+        try:
+            _ui_tailnet_server = await start_tailnet_listener(
+                UI_TAILNET_SOCKET, partial(handle_ui_http, private_origin=tailnet_origin(UI_PUBLIC_BASE_URL)),
+                limit=UI_HTTP_MAX_HEADER_BYTES + 1,
+            )
+        except BaseException:
+            server.close()
+            await server.wait_closed()
+            raise
+    _ui_server = server
     sockets = _ui_server.sockets or []
     bind_text = ", ".join(str(sock.getsockname()) for sock in sockets) or f"{UI_HOST}:{UI_PORT}"
     console_log(f"🖥️ UI 已启动：{bind_text}", scope="global")
@@ -11449,12 +11480,14 @@ async def start_ui_server():
 
 
 async def stop_ui_server():
-    global _ui_server, _ui_stopping
+    global _ui_server, _ui_stopping, _ui_tailnet_server
     _ui_stopping = True
-    if _ui_server is not None:
-        _ui_server.close()
-        await _ui_server.wait_closed()
-        _ui_server = None
+    servers = [server for server in (_ui_server, _ui_tailnet_server) if server is not None]
+    for server in servers:
+        server.close()
+    for server in servers:
+        await server.wait_closed()
+    _ui_server = _ui_tailnet_server = None
     joined = await cancel_and_join_tasks(set(_ui_request_tasks), timeout=2.0)
     if _pending_login:
         await asyncio.gather(*(_clear_pending_login(key) for key in list(_pending_login)))

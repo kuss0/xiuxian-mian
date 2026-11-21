@@ -94,6 +94,7 @@ cp .env.example .env
 - `LOG_SEND_MODE`：`account` 或 `bot`。
 - `LOG_BOT_TOKEN`：`LOG_SEND_MODE=bot` 时使用。
 - `CHAOGU_UI_PUBLIC_BASE_URL`：公网访问 UI 时建议显式填写。
+- `CHAOGU_UI_TAILNET_SOCKET`：为 [仅 Tailscale 内网的 HTTPS 面板](docs/TAILNET_UI.md) 启用专用 Unix socket。
 - `TIANDAO_MINIAPP_VERIFY_URL` / `TIANDAO_MINIAPP_BOT_USERNAME`：天道 Mini App 验证配置。
 - `XIUXIAN_HOT_RELOAD`：默认 `0`；只在受控 dev/lab 进程中设为 `1`，允许代码变化后热重载 worker。
 
