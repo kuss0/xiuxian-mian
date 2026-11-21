@@ -89,9 +89,10 @@ def test_new_scheduler_ownership_excludes_old_automatic_trial_paths(environment,
     scheduled.assert_not_awaited()
 
 
-def test_confirmed_daily_defeat_preserves_remaining_slots(environment):
+@pytest.mark.parametrize('outcome', [{'kind': 'defeat'}, {'kind': 'timeout', 'deaths': 1}])
+def test_confirmed_daily_defeat_preserves_remaining_slots(environment, outcome):
     _config, action, notice = environment
-    trial._records()['42'] = {'browser_trial': {'kind': 'defeat', 'server_closed': True,
+    trial._records()['42'] = {'browser_trial': {**outcome, 'server_closed': True,
                                                'rewarded': True, 'finished_at': 50}}
     asyncio.run(rewards.scheduler(100))
     action.assert_not_awaited()

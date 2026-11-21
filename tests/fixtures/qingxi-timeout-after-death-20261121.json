@@ -1,0 +1,231 @@
+{
+  "source": "WA rewarded first-tier wheat run, 2026-11-21; identity, operation and run IDs removed",
+  "report": {
+    "kind": "timeout",
+    "arena": "longwind",
+    "tier": 1,
+    "deaths": 1,
+    "deathLog": [
+      [
+        3,
+        341
+      ]
+    ],
+    "retries": 1,
+    "wallSeconds": 1500.3530704975128,
+    "runId": "loss-run"
+  },
+  "network": {
+    "requests": [
+      {
+        "action": "status"
+      },
+      {
+        "action": "start"
+      },
+      {
+        "action": "checkpoint",
+        "wave": 0
+      },
+      {
+        "action": "checkpoint",
+        "wave": 1
+      },
+      {
+        "action": "checkpoint",
+        "wave": 2
+      },
+      {
+        "action": "end"
+      }
+    ],
+    "receipts": [
+      {
+        "ok": true,
+        "trial": {
+          "status": {
+            "activeRun": null,
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 3,
+            "used": 0
+          },
+          "grants": []
+        }
+      },
+      {
+        "ok": true,
+        "trial": {
+          "run": {
+            "id": "loss-run",
+            "arena": "longwind",
+            "tier": 1,
+            "status": "active",
+            "cleared": -1,
+            "rewarded": true
+          },
+          "status": {
+            "activeRun": {
+              "id": "loss-run",
+              "arena": "longwind",
+              "tier": 1,
+              "status": "active",
+              "cleared": -1,
+              "rewarded": true
+            },
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 2,
+            "used": 1
+          },
+          "grants": []
+        }
+      },
+      {
+        "ok": true,
+        "trial": {
+          "cultivation": 0,
+          "anomaly": null,
+          "run": {
+            "id": "loss-run",
+            "arena": "longwind",
+            "tier": 1,
+            "status": "active",
+            "cleared": 0,
+            "rewarded": true
+          },
+          "status": {
+            "activeRun": {
+              "id": "loss-run",
+              "arena": "longwind",
+              "tier": 1,
+              "status": "active",
+              "cleared": 0,
+              "rewarded": true
+            },
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 2,
+            "used": 1
+          },
+          "grants": [
+            {
+              "name": "灵石",
+              "quantity": 100
+            },
+            {
+              "name": "法则碎片·火",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "ok": true,
+        "trial": {
+          "cultivation": 0,
+          "anomaly": null,
+          "run": {
+            "id": "loss-run",
+            "arena": "longwind",
+            "tier": 1,
+            "status": "active",
+            "cleared": 1,
+            "rewarded": true
+          },
+          "status": {
+            "activeRun": {
+              "id": "loss-run",
+              "arena": "longwind",
+              "tier": 1,
+              "status": "active",
+              "cleared": 1,
+              "rewarded": true
+            },
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 2,
+            "used": 1
+          },
+          "grants": [
+            {
+              "name": "灵石",
+              "quantity": 139
+            },
+            {
+              "name": "回灵丹",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "ok": true,
+        "trial": {
+          "cultivation": 0,
+          "anomaly": null,
+          "run": {
+            "id": "loss-run",
+            "arena": "longwind",
+            "tier": 1,
+            "status": "active",
+            "cleared": 2,
+            "rewarded": true
+          },
+          "status": {
+            "activeRun": {
+              "id": "loss-run",
+              "arena": "longwind",
+              "tier": 1,
+              "status": "active",
+              "cleared": 2,
+              "rewarded": true
+            },
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 2,
+            "used": 1
+          },
+          "grants": [
+            {
+              "name": "灵石",
+              "quantity": 139
+            },
+            {
+              "name": "回灵丹",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "ok": true,
+        "trial": {
+          "cultivation": 0,
+          "run": {
+            "id": "loss-run",
+            "arena": "longwind",
+            "tier": 1,
+            "status": "ended",
+            "cleared": 2,
+            "rewarded": true
+          },
+          "status": {
+            "activeRun": null,
+            "arena": "longwind",
+            "day": "2026-11-21",
+            "limit": 3,
+            "remaining": 2,
+            "used": 1
+          },
+          "grants": []
+        }
+      }
+    ]
+  }
+}

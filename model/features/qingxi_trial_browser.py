@@ -40,6 +40,76 @@ def snapshot():
     return copy.deepcopy(_STATUS)
 
 
+def _observed_death_count(status):
+    if not isinstance(status, dict):
+        return 0
+    counts = []
+    count = status.get('deaths')
+    if type(count) is int and count >= 0:
+        counts.append(count)
+    death_log = status.get('deathLog')
+    if isinstance(death_log, list):
+        counts.append(sum(isinstance(row, list) and len(row) == 2
+                          and type(row[0]) is int and 0 <= row[0] <= 3
+                          and type(row[1]) in (int, float) and math.isfinite(row[1]) and row[1] >= 0
+                          for row in death_log))
+    return max(counts, default=0)
+
+
+def confirmed_defeat(status):
+    """A closed, rewarded run with an observed death is a defeat even if the runner times out."""
+    return (isinstance(status, dict)
+            and (status.get('kind') == 'defeat' or _observed_death_count(status) > 0)
+            and status.get('server_closed') is True
+            and status.get('rewarded') is True
+            and status.get('server_cleared') is not True)
+
+
+def defeated_arena_today(record, arena, now):
+    status = record.get('browser_trial') or {}
+    pause = record.get('auto_pause') or {}
+    history = (record.get('defeats_by_arena') or {}).get(arena) or {}
+    candidates = [pause, history]
+    if confirmed_defeat(status):
+        candidates.append({**status, 'reason': 'confirmed_defeat', 'at': status.get('finished_at')})
+    for candidate in candidates:
+        if candidate.get('reason') != 'confirmed_defeat':
+            continue
+        finished = candidate.get('at')
+        if (candidate.get('arena') == arena and type(finished) in (int, float)
+                and math.isfinite(finished) and finished > 0 and trial._day(finished) == trial._day(now)):
+            return True
+    return False
+
+
+def _pause_after_defeat(record, status):
+    pause = {'reason': 'confirmed_defeat', 'run_id': status['run_id'], 'arena': status.get('arena'),
+             'at': status.get('finished_at'), 'requires_verified_win': True}
+    changed = record.get('auto_pause') != pause
+    record['auto_pause'] = pause
+    arena = status.get('arena')
+    if arena in trial.TRIAL_ARENAS:
+        history = record.setdefault('defeats_by_arena', {})
+        changed = changed or history.get(arena) != pause
+        history[arena] = copy.deepcopy(pause)
+    return changed
+
+
+def _clear_verified_arena_pause(record, arena):
+    history = record.get('defeats_by_arena') or {}
+    if isinstance(history.get(arena), dict):
+        history[arena]['requires_verified_win'] = False
+    if (record.get('auto_pause') or {}).get('arena', arena) != arena:
+        return
+    remaining = next((pause for pause in history.values()
+                      if pause.get('reason') == 'confirmed_defeat'
+                      and pause.get('requires_verified_win') is True), None)
+    if remaining:
+        record['auto_pause'] = copy.deepcopy(remaining)
+    else:
+        record.pop('auto_pause', None)
+
+
 def _previous_attempt(record):
     return {key: copy.deepcopy(record[key]) for key in _ATTEMPT_FIELDS if key in record}
 
@@ -153,12 +223,13 @@ def reconcile_persisted_records():
         status = record.get('browser_trial')
         if not isinstance(status, dict) or not status.get('run_id'):
             continue
-        if (status.get('kind') == 'defeat' and status.get('server_closed') is True
-                and status.get('rewarded') is True and not status.get('server_cleared')
-                and (record.get('auto_pause') or {}).get('run_id') != status['run_id']):
-            record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': status['run_id'],
-                                    'at': status.get('finished_at'), 'requires_verified_win': True}
-            changed = True
+        if 'deaths' not in status:
+            report, _profile = _load_trial_notification_details(status)
+            if report:
+                status['deaths'] = _observed_death_count(report)
+                changed = True
+        if confirmed_defeat(status):
+            changed = _pause_after_defeat(record, status) or changed
         probe = copy.deepcopy(record)
         if not _sync_main_result(probe, status) or probe == record:
             continue
@@ -393,11 +464,10 @@ def _format_trial_notification(status, run_report, battle_profile, send_profile)
     if status.get('server_cleared') is True:
         progress = 4
     progress_text = f'{progress}/4波' if progress is not None else '波次待核'
-    confirmed_defeat = (status.get('kind') == 'defeat' and status.get('server_closed') is True
-                        and status.get('rewarded') is True and not status.get('server_cleared'))
+    defeat = confirmed_defeat(status)
     if status.get('server_cleared') is True:
         outcome = '通关'
-    elif confirmed_defeat:
+    elif defeat:
         outcome = '战败'
     elif status.get('server_closed') is True:
         outcome = '未通关'
@@ -472,9 +542,8 @@ async def _notify_result(record):
     status = record.get('browser_trial') or {}
     run_id = status.get('run_id')
     gains, cultivation = status.get('gains') or {}, status.get('cultivation') or 0
-    confirmed_defeat = (status.get('kind') == 'defeat' and status.get('server_closed') is True
-                        and status.get('rewarded') is True and not status.get('server_cleared'))
-    if (not run_id or not (gains or cultivation or confirmed_defeat)
+    defeat = confirmed_defeat(status)
+    if (not run_id or not (gains or cultivation or defeat)
             or (record.get('browser_trial_notice') or {}).get('run_id') == run_id):
         return
     run_report, battle_profile = _load_trial_notification_details(status)
@@ -528,6 +597,8 @@ async def action(payload):
     tier = payload.get('tier', 1)
     if type(tier) is not int or tier != 1:
         return False, '当前仅验证第一重，重数须为整数1', {}
+    if defeated_arena_today(trial._records().get(str(identity_id), {}), arena, time.time()):
+        return False, '该身份此场地今日已确认战败，今日停止试炼', {}
     owner = MiniAppIdentityOwner.capture(identity_id)
     if owner is None or owner.account_id != identity_id or not is_cave_public_identity_available(identity_id):
         return False, '单次浏览器试跑仅支持可用的本人账号', {}
@@ -661,6 +732,8 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
                 raise RuntimeError('identity_became_busy')
             if record.get('phase', 'idle') not in {'idle', 'done'}:
                 raise RuntimeError('trial_requires_review')
+            if defeated_arena_today(record, arena, time.time()):
+                raise RuntimeError('trial_arena_defeated_today')
             if scheduled:
                 used = int(record.get('daily_used') or 0) if record.get('day') == trial._day(started_at) else 0
                 if used >= int(scheduled_config.get('daily_limit', 1)):
@@ -731,8 +804,13 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
                 raise RuntimeError('trial_browser_player_mismatch')
             facts = summarize_network(network)
             results = [json.loads(line) for line in log_file.read_text().splitlines()] if log_file.is_file() else []
+            matched_result = next((row for row in reversed(results)
+                                   if isinstance(row, dict) and row.get('runId') == facts['run_id']
+                                   and row.get('arena') == arena and row.get('tier') == facts['tier']), {})
+            deaths = _observed_death_count(matched_result)
             _STATUS.update(phase='done' if facts['terminal'] else 'stopped', returncode=process.returncode,
-                           finished_at=time.time(), kind=(results[-1].get('kind') if results else 'not_started'),
+                           finished_at=time.time(), kind=(matched_result.get('kind') if matched_result else 'not_started'),
+                           deaths=deaths,
                            rewarded=facts['rewarded'], server_closed=facts['closed'],
                            exhausted=facts['exhausted'], strategy_sha256=TRIAL_STRATEGY_SHA256,
                            server_cleared=facts['cleared'], run_id=facts['run_id'], tier=facts['tier'],
@@ -768,11 +846,10 @@ async def _run(owner, arena, practice_only, job_id, *, scheduled_config=None, ti
             if facts['run_id'] and type(facts['tier']) is int and facts['tier'] != tier:
                 record['phase'] = 'held'
                 record['last_error'] = '浏览器试炼回执重数不符，结果待核对'
-            if facts['closed'] and facts['rewarded'] and _STATUS.get('kind') == 'defeat':
-                record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': facts['run_id'],
-                                        'at': _STATUS.get('finished_at'), 'requires_verified_win': True}
+            if confirmed_defeat(_STATUS):
+                _pause_after_defeat(record, _STATUS)
             elif facts['cleared'] and facts['rewarded'] and facts['run_id'] and record.get('phase') != 'held':
-                record.pop('auto_pause', None)
+                _clear_verified_arena_pause(record, arena)
             if record['phase'] == 'held':
                 record['last_error'] = record.get('last_error') or '浏览器试跑已发开局但结果待核对'
     except asyncio.CancelledError:

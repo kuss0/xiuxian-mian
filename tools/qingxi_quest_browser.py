@@ -6,6 +6,7 @@ policy, evidence, request bounds and shutdown. No trial starts or extra fishing.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -13,8 +14,73 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from model.qingxi_quest_budget import (QUEST_ENTRY_SEC, QUEST_HEALTH_SEC, QUEST_HOME_SEC,
+                                      QUEST_IDENTITY_SEC, QUEST_INSPECT_SEC, QUEST_MAINLINE_DRAIN_SEC,
+                                      QUEST_MAINLINE_SEC)
+
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
+HEALTH_MINIMUM_RATIO = .8
+
+
+NATIVE_HEALTH_HELPER = """window.__qingxiNativeHealth = (()=>{
+    const ids=new WeakMap();let serial=0,lastKnownWorld=null;
+    const identity=value=>{if(!value||(typeof value!=='object'&&typeof value!=='function'))return null;
+      if(!ids.has(value))ids.set(value,++serial);return ids.get(value);};
+    return {
+    snapshot() {
+      const world=readWorld(),combat=world?.combat,q=window.__qx,fc=window.__fc;
+      const present=world&&Object.hasOwn(world,'combat')?
+        (combat===null?false:combat&&typeof combat==='object'?true:null):null;
+      const controller=present===true?fc?.stats?.():null;
+      const matches=present===true?!!controller&&[
+        'hp','hpMax','active','state','overworld','fieldPending','castOutbox'
+      ].every(key=>controller[key]===combat[key]):null;
+      // Read the HUD only after its combat controller already exists and matches.
+      // Its mobile fallback then cannot initialize a controller while observing.
+      const hud=matches===true?window.__rt?.mobileHudState?.():null;
+      const blocked=globalThis.document?.hidden===true?true:present!==true?null:
+        fc?.paused===true||hud?.blocked===true||hud?.portrait===true?true:
+        fc?.paused===false&&hud?.blocked===false&&hud?.portrait===false?false:null;
+      const region=window.__quests?.snapshot?.()?.world?.current;
+      if(world?.environment?.tier===4&&typeof region==='string')lastKnownWorld=region;
+      let stored=null;
+      try { stored=JSON.parse(localStorage.getItem('qingxi-local-pending:'+q?.player)||'[]'); } catch {}
+      return {player:q?.player,error:q?.error,status_error:q?.statusError,cast_error:q?.castError||combat?.castError||null,
+        pending:q?.pending instanceof Map&&(present===false||combat)?
+          (present===false?0:combat.fieldPending+combat.castOutbox)+q.pending.size:null,
+        pending_operations:q?.pending instanceof Map?[...q.pending.values()]:null,stored_pending:stored,
+        memory_pending_count:q?.pending instanceof Map?q.pending.size:null,
+        stored_pending_count:Array.isArray(stored)?stored.length:null,
+        scene_ready:sceneReady(),cave_safe:caveIsSafe(),town_safe:townIsSafe(),
+        scene_tier:world?.environment?.tier,world_current:region,last_known_world:lastKnownWorld,
+        position:world?.actorPosition,draws:world?.draws,control_mode:world?.controlMode,mode:world?.mode,
+        paused:present===false?null:fc?.paused,ghost:fc?.isGhost,runtime_blocked:blocked,
+        flight_active:world?.flight?.active,combat_present:present,combat_matches_runtime:matches,
+        chariot_mounted:world?.flight?.chariotMounted,combat_active:present===false?false:combat?.active,
+        combat_settlement_pending:present===false?false:caveSettlementPending(combat),
+        overworld:combat?.overworld,state:combat?.state,
+        engaged_enemies:present===false?0:Array.isArray(combat?.enemies)?
+          combat.enemies.filter(e=>e?.hp>0&&e?.engaged).length:null,
+        hp:combat?.hp,hp_max:combat?.hpMax,home:state.home?{...state.home}:null,
+        automation_busy:state.busy,automation_running:state.running,
+        runtime_id:identity(window.__rt),combat_id:identity(fc)};
+    }
+  };})();
+  window.__autobot = {"""
+HEALTH_SNAPSHOT = 'window.__qingxiNativeHealth?.snapshot()'
+RETURN_CAVE_START = """window.__qingxiHealthReturn={done:false,started_at:Date.now()};
+Promise.resolve(window.__autobot.returnCave()).then(value=>{
+ Object.assign(window.__qingxiHealthReturn,{done:true,value});
+},error=>{Object.assign(window.__qingxiHealthReturn,{done:true,error:String(error.message||error)});});void 0"""
+RETURN_CAVE_DONE = 'window.__qingxiHealthReturn'
+TOWN_REENTRY_START = """window.__qingxiHealthTown={done:false};
+Promise.resolve(window.__autobot.enter()).then(value=>{
+ Object.assign(window.__qingxiHealthTown,{done:true,value});
+},error=>{Object.assign(window.__qingxiHealthTown,{done:true,error:String(error.message||error)});});void 0"""
+TOWN_REENTRY_DONE = 'window.__qingxiHealthTown'
 
 
 def provenance_version():
@@ -103,6 +169,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
     # Use upstream's own deferred-task path, while the fetch policy remains the
     # final guard. Missing choices/fishing must not prevent unrelated errands.
     patches = {
+        'window.__autobot = {': NATIVE_HEALTH_HELPER,
         'if (!raisedSurface(point)) return null;\n'
         '    const y = fieldEnvironment.groundHeight(point[0], point[2], point[1]);':
             QUEST_NATIVE_TAKEOFF_FALLBACK,
@@ -165,6 +232,183 @@ def write_result(path, payload):
     os.replace(temporary, path)
 
 
+def health_recovery_state(snapshot, player):
+    """Classify only source-backed safe scenes, never all of the town's tier."""
+    if (not isinstance(snapshot, dict) or snapshot.get('player') != player
+            or any(snapshot.get(key) for key in ('error', 'status_error', 'cast_error'))
+            or snapshot.get('combat_settlement_pending') is not False
+            or snapshot.get('scene_ready') is not True
+            or snapshot.get('control_mode') != 'companion' or snapshot.get('mode') != 'walk'
+            or snapshot.get('runtime_blocked') not in (False, None)
+            or snapshot.get('flight_active') is not False or snapshot.get('chariot_mounted') is not False
+            or type(snapshot.get('pending')) is not int or snapshot['pending'] != 0
+            or snapshot.get('pending_operations') != [] or snapshot.get('stored_pending') != []
+            or type(snapshot.get('engaged_enemies')) is not int or snapshot['engaged_enemies'] != 0
+            or snapshot.get('automation_busy') is not False or snapshot.get('automation_running') is not False):
+        return 'unsafe'
+    draws = snapshot.get('draws')
+    if type(draws) is not int or draws < 0:
+        return 'unsafe'
+    tier, position = snapshot.get('scene_tier'), snapshot.get('position')
+    if (type(tier) is not int or not isinstance(position, list) or len(position) != 3
+            or any(type(value) not in (int, float) or not math.isfinite(value) for value in position)):
+        return 'unsafe'
+    if type(snapshot.get('runtime_id')) is not int or snapshot['runtime_id'] <= 0:
+        return 'unsafe'
+    region = snapshot.get('world_current')
+    cave = (snapshot.get('cave_safe') is True and tier != 4 and snapshot.get('combat_active') is False
+            and (region == 'yue' or region is None and snapshot.get('last_known_world') == 'yue'))
+    # Returning to the cave can dispose the town combat controller. Its explicit
+    # absence is safe for normal reentry, but supplies no health evidence.
+    if (cave and snapshot.get('combat_present') is False and snapshot.get('paused') is None
+            and snapshot.get('ghost') is not True):
+        return 'safe_cave'
+    if (snapshot.get('ghost') is not False or snapshot.get('combat_present') is not True
+            or snapshot.get('combat_matches_runtime') is not True
+            or snapshot.get('runtime_blocked') is not False
+            or snapshot.get('paused') is not False
+            or type(snapshot.get('combat_id')) is not int or snapshot['combat_id'] <= 0):
+        return 'unsafe'
+    hp, hp_max = snapshot.get('hp'), snapshot.get('hp_max')
+    if (any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+            for value in (hp, hp_max)) or hp > hp_max):
+        return 'unsafe'
+    if cave:
+        return 'safe_cave'
+    if (snapshot.get('town_safe') is True and region == 'yue' and tier == 4
+            and math.hypot(position[0], position[2]) < 300
+            and snapshot.get('combat_active') is False):
+        return 'safe_town'
+    # A restored wilderness position may be idle while the region controller
+    # remains active. Do not wait there: use the helper's real return entrance.
+    if (region == 'yue' and type(snapshot.get('scene_tier')) is int and snapshot['scene_tier'] == 4
+            and ((snapshot.get('combat_active') is True and snapshot.get('overworld') is True
+                  and snapshot.get('state') == 'fighting')
+                 or (snapshot.get('combat_active') is False and snapshot.get('state') == 'ready'))):
+        return 'return_cave'
+    return 'unsafe'
+
+
+def prepare_native_health(page, result, result_path, player, *, timeout=None,
+                          minimum_ratio=HEALTH_MINIMUM_RATIO, sleeper=None, monotonic=None, wall_time=None):
+    """Use normal return/entry flows and observe native regeneration before a new field run."""
+    sleeper, monotonic, wall_time = sleeper or time.sleep, monotonic or time.monotonic, wall_time or time.time
+    timeout = QUEST_HEALTH_SEC if timeout is None else timeout
+    recovery = {'phase': 'checking', 'started_at': wall_time(), 'minimum_ratio': minimum_ratio,
+                'observations': []}
+    result['health_recovery'] = recovery
+
+    def observe(phase):
+        try:
+            snapshot = page.js(HEALTH_SNAPSHOT)
+        except Exception as error:
+            recovery['exception'] = type(error).__name__
+            blocked('snapshot_error')
+        safe = health_recovery_state(snapshot, player)
+        recovery.update(phase=phase, observed_at=wall_time(), scene=safe)
+        if isinstance(snapshot, dict):
+            summary = {key: snapshot.get(key) for key in (
+                'player', 'scene_tier', 'world_current', 'cave_safe', 'town_safe', 'scene_ready',
+                'draws', 'hp', 'hp_max', 'paused', 'ghost', 'combat_active', 'overworld', 'state',
+                'engaged_enemies', 'flight_active', 'chariot_mounted', 'pending', 'runtime_id', 'combat_id',
+                'memory_pending_count', 'stored_pending_count', 'combat_present', 'combat_matches_runtime', 'runtime_blocked',
+                'combat_settlement_pending', 'home')}
+            recovery['latest'] = summary
+            recovery['observations'] = [*recovery['observations'][-11:], summary]
+        write_result(result_path, result)
+        return snapshot, safe
+
+    def blocked(reason):
+        recovery.update(phase='blocked', reason=reason, observed_at=wall_time())
+        write_result(result_path, result)
+        raise RuntimeError('qingxi_native_health_' + reason)
+
+    def keep_native_scene_visible():
+        try:
+            visible = page.keep_visible()
+        except Exception as error:
+            recovery['exception'] = type(error).__name__
+            blocked('visibility_error')
+        if visible is not True:
+            blocked('hidden_scene')
+
+    keep_native_scene_visible()
+    snapshot, safe = observe('checking')
+    if safe == 'unsafe':
+        blocked('unsafe_scene')
+    if safe == 'safe_cave':
+        blocked('unexpected_cave')
+    recovery['initial'] = dict(recovery['latest'])
+    initial_hp, initial_max = snapshot.get('hp'), snapshot.get('hp_max')
+    if safe == 'return_cave':
+        recovery['phase'] = 'returning'
+        write_result(result_path, result)
+        started_at = wall_time() * 1000
+        try:
+            page.js(RETURN_CAVE_START)
+            page.wait('window.__qingxiHealthReturn?.done', QUEST_HOME_SEC, '原生安全返回洞府', every=2)
+            reply = page.js(RETURN_CAVE_DONE)
+        except TimeoutError:
+            blocked('return_timeout')
+        except Exception as error:
+            recovery['exception'] = type(error).__name__
+            blocked('return_error')
+        snapshot, safe = observe('returning')
+        home = snapshot.get('home') if isinstance(snapshot, dict) else None
+        if (not isinstance(reply, dict) or reply.get('done') is not True or reply.get('error')
+                or reply.get('value') != '已返回洞府'
+                or safe != 'safe_cave' or not isinstance(home, dict) or home.get('verified') is not True
+                or home.get('destination') != 'cave'
+                or type(home.get('at')) not in (int, float)
+                or not math.isfinite(home['at']) or home['at'] < started_at):
+            blocked('return_unverified')
+    if safe == 'safe_cave':
+        # Do not use a disposed old town controller's HP after returning home.
+        # Enter through the normal helper and wait only in its current safe town.
+        recovery['phase'] = 'entering_town'
+        write_result(result_path, result)
+        try:
+            page.js(TOWN_REENTRY_START)
+            page.wait('window.__qingxiHealthTown?.done', QUEST_ENTRY_SEC, '回血前原生入坊', every=2)
+            reply = page.js(TOWN_REENTRY_DONE)
+        except TimeoutError:
+            blocked('reentry_timeout')
+        except Exception as error:
+            recovery['exception'] = type(error).__name__
+            blocked('reentry_error')
+        snapshot, safe = observe('entering_town')
+        if (not isinstance(reply, dict) or reply.get('done') is not True or reply.get('error')
+                or reply.get('value') != '已进入青溪坊'
+                or safe != 'safe_town'):
+            blocked('reentry_unverified')
+    if initial_hp is None or initial_max is None:
+        initial_hp, initial_max = snapshot['hp'], snapshot['hp_max']
+    initially_low = initial_hp / initial_max < minimum_ratio
+    first_draws, deadline = snapshot['draws'], monotonic() + timeout
+    runtime_id, combat_id = snapshot['runtime_id'], snapshot['combat_id']
+    waited_scene = safe
+    while True:
+        if safe not in {'safe_cave', 'safe_town'} or safe != waited_scene:
+            blocked('scene_changed')
+        if snapshot['runtime_id'] != runtime_id or snapshot['combat_id'] != combat_id:
+            blocked('runtime_changed')
+        if snapshot['hp_max'] != initial_max:
+            blocked('profile_changed')
+        if monotonic() >= deadline:
+            blocked('recovery_timeout')
+        recovery.update(draws_advanced=snapshot['draws'] > first_draws,
+                        hp_increased=snapshot['hp'] > initial_hp)
+        if (recovery['draws_advanced'] and snapshot['hp'] / snapshot['hp_max'] >= minimum_ratio
+                and (not initially_low or recovery['hp_increased'])):
+            break
+        keep_native_scene_visible()
+        sleeper(5)
+        snapshot, safe = observe('recovering')
+    recovery.update(phase='ready', finished_at=wall_time())
+    write_result(result_path, result)
+    return recovery
+
+
 def finished_phase(snapshot):
     if snapshot.get('stop_reason'):
         return 'waiting'
@@ -195,9 +439,9 @@ def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=
 
 def enter_page(page, cdp, url, player):
     cdp.call('Page.navigate', {'url': url}, page.s)
-    page.wait('window.__autobot && window.__qx?.player===' + str(player), 90, '任务身份校验', every=1)
+    page.wait('window.__autobot && window.__qx?.player===' + str(player), QUEST_IDENTITY_SEC, '任务身份校验', every=1)
     page.js('window.__qingxiEnter={done:false};window.__autobot.enter().then(value=>{window.__qingxiEnter={done:true,value}});void 0')
-    page.wait('window.__qingxiEnter?.done', 650, '上游助手入坊', every=2)
+    page.wait('window.__qingxiEnter?.done', QUEST_ENTRY_SEC, '上游助手入坊', every=2)
     error = page.js('window.__autobot.report().error')
     if error:
         raise RuntimeError('qingxi_enter_failed: ' + str(error))
@@ -301,13 +545,15 @@ def main():
                     result['entry_error'] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
                     raise
                 if args.workflow == 'quests':
-                    page.js('window.__autobot.inspectQuests("全部任务")', timeout=60)
+                    page.js('window.__autobot.inspectQuests("全部任务")', timeout=QUEST_INSPECT_SEC)
                 if args.read_only:
                     if args.workflow == 'rewards':
                         inspection = page.js('window.__qingxiRewardBatch.inspect()', timeout=300)
                         result['reward_inspection'] = inspection
                     result['phase'] = 'inspected'
                 else:
+                    if args.workflow == 'quests':
+                        prepare_native_health(page, result, args.result, args.expected_player_id)
                     opts = {'kind': '全部任务', 'maxMinutes': min(15, max(.5, args.max_seconds / 60)),
                             'maxTasks': 8, 'rewardChoices': options.get('choices', {})}
                     result['mainline_started_at'] = time.time()
@@ -318,8 +564,8 @@ def main():
                             + '.then(value=>{window.__qingxiRun={done:true,value}},error=>{'
                             'window.__qingxiRun={done:true,error:String(error.message||error)}});void 0')
                     started = time.monotonic()
-                    budget = min(10800 if args.workflow == 'rewards' else 900, max(30, args.max_seconds))
-                    while time.monotonic() - started < budget + 60:
+                    budget = min(10800 if args.workflow == 'rewards' else QUEST_MAINLINE_SEC, max(30, args.max_seconds))
+                    while time.monotonic() - started < budget + QUEST_MAINLINE_DRAIN_SEC:
                         snap = page.js(SNAPSHOT)
                         result.update(phase='running', **snap)
                         write_result(args.result, result)

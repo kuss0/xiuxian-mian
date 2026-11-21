@@ -21,13 +21,13 @@ def owns_identity(identity_id):
 
 def defeated_today(identity_id, now):
     from . import changfeng_trial as trial
+    from .qingxi_trial_browser import confirmed_defeat
     record = trial._records().get(str(identity_id), {}) or {}
     if (record.get('auto_pause') or {}).get('reason') == 'confirmed_defeat':
         return True
     status = record.get('browser_trial') or {}
     finished = status.get('finished_at')
-    return (status.get('kind') == 'defeat' and status.get('server_closed') is True
-            and status.get('rewarded') is True and type(finished) in (int, float)
+    return (confirmed_defeat(status) and type(finished) in (int, float)
             and math.isfinite(finished) and _day(finished) == _day(now))
 
 

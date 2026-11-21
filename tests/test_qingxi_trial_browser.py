@@ -48,11 +48,14 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, 'request_cave_treasure_miniapp_init_data', launch)
     network = {'requests': [], 'receipts': []}
     commands = []
+    run_results = []
 
     async def spawn(*command, **_kwargs):
         commands.append(command)
         path = Path(command[command.index('--log') + 1])
         path.with_suffix('.network.json').write_text(json.dumps(network))
+        if run_results:
+            path.write_text('\n'.join(json.dumps(row) for row in run_results))
         return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
     monkeypatch.setattr(browser.asyncio, 'create_subprocess_exec', spawn)
@@ -62,7 +65,8 @@ def harness(monkeypatch, tmp_path):
             await process.wait()
     monkeypatch.setattr(browser, '_drain_trial_process', drain)
     return SimpleNamespace(owner=owner, record=original, records=records, config=config,
-                           network=network, commands=commands, launch=launch, lock=lock, notice=notice)
+                           network=network, commands=commands, launch=launch, lock=lock, notice=notice,
+                           run_results=run_results)
 
 
 @pytest.fixture
@@ -421,11 +425,162 @@ def test_confirmed_defeat_pause_survives_restart_without_replaying_notice(harnes
     assert not harness.commands
 
 
+def test_closed_rewarded_timeout_with_native_death_is_confirmed_defeat(harness):
+    sample = json.loads((Path(__file__).parent / 'fixtures/qingxi-timeout-after-death-20261121.json').read_text())
+    harness.network.update(sample['network'])
+    harness.run_results.append(sample['report'])
+
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'timeout-after-death'))
+
+    status = harness.record['browser_trial']
+    assert status['kind'] == 'timeout' and status['deaths'] == 1
+    assert browser.confirmed_defeat(status)
+    assert status['gains'] == {'灵石': 378, '法则碎片·火': 1, '回灵丹': 2}
+    assert status['quota']['remaining'] == 2
+    assert harness.record['auto_pause'] == {
+        'reason': 'confirmed_defeat', 'run_id': 'loss-run', 'arena': 'longwind',
+        'at': status['finished_at'], 'requires_verified_win': True,
+    }
+    assert '战败（3/4波）；评级：无' in harness.notice.call_args.args[0]
+
+
+@pytest.mark.parametrize('difference', [{'runId': 'other'}, {'arena': 'bamboo'}, {'tier': 2}])
+@pytest.mark.parametrize('kind', ['timeout', 'defeat'])
+def test_other_run_death_report_cannot_pause_this_trial(harness, victory_network, difference, kind):
+    network = victory_network
+    network['receipts'] = network['receipts'][:3]
+    network['receipts'][-1]['trial']['run']['status'] = 'ended'
+    network['receipts'][-1]['trial']['status'] = {'activeRun': None}
+    harness.network.update(network)
+    harness.run_results.append({
+        'runId': 'browser-run', 'arena': 'longwind', 'tier': 1,
+        'kind': kind, 'deaths': 1, 'deathLog': [[3, 341]], **difference,
+    })
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'mismatched-report'))
+    assert harness.record['browser_trial']['deaths'] == 0
+    assert 'auto_pause' not in harness.record
+
+
+@pytest.mark.parametrize('override', [
+    {'deaths': 0}, {'deaths': True}, {'deaths': -1}, {'deaths': '1'},
+    {'server_closed': False}, {'rewarded': False}, {'server_cleared': True},
+])
+def test_timeout_alone_or_missing_server_evidence_is_not_confirmed_defeat(override):
+    status = {'kind': 'timeout', 'deaths': 1, 'server_closed': True,
+              'rewarded': True, 'server_cleared': False, **override}
+    assert not browser.confirmed_defeat(status)
+
+
+def test_restart_recovers_exact_timeout_death_without_replaying_notice(harness, monkeypatch):
+    harness.record['browser_trial'] = {
+        'job_id': 'timeout-job', 'identity_id': harness.owner.identity_id,
+        'arena': 'longwind', 'run_id': 'timed-out-loss', 'kind': 'timeout',
+        'server_closed': True, 'server_cleared': False, 'rewarded': True,
+        'finished_at': 100, 'tier': 1,
+    }
+    monkeypatch.setattr(browser, 'TRIAL_TOOL_ROOT', browser.TOOL_ROOT)
+    directory = browser.TOOL_ROOT / '.runtime' / str(harness.owner.identity_id) / 'timeout-job'
+    directory.mkdir(parents=True)
+    (directory / 'runs.jsonl').write_text(json.dumps({
+        'runId': 'timed-out-loss', 'arena': 'longwind', 'tier': 1,
+        'kind': 'timeout', 'deaths': 1, 'deathLog': [[3, 341]],
+    }))
+    dirty = Mock()
+    monkeypatch.setattr(browser.trial, 'mark_dirty', dirty)
+
+    browser.trial.reset_changfeng_runtime_on_startup()
+    assert harness.record['auto_pause']['run_id'] == 'timed-out-loss'
+    assert harness.record['browser_trial']['deaths'] == 1
+    browser.trial.reset_changfeng_runtime_on_startup()
+    dirty.assert_called_once()
+    harness.notice.assert_not_awaited()
+
+
 def test_only_verified_manual_win_clears_defeat_pause(harness, victory_network):
     harness.record['auto_pause'] = {'reason': 'confirmed_defeat', 'run_id': 'previous-loss'}
     harness.network.update(victory_network)
     asyncio.run(browser._run(harness.owner, 'longwind', False, 'manual-retest'))
     assert 'auto_pause' not in harness.record
+
+
+def test_manual_start_cannot_repeat_same_arena_on_defeat_day(harness):
+    harness.record['auto_pause'] = {
+        'reason': 'confirmed_defeat', 'run_id': 'today-loss', 'arena': 'longwind',
+        'at': browser.time.time(),
+    }
+    ok, message, _result = asyncio.run(browser.action({
+        'action': 'start', 'send_as_id': harness.owner.identity_id, 'arena': 'longwind',
+    }))
+    assert not ok and '今日已确认战败' in message
+    assert not harness.commands
+    harness.launch.assert_not_awaited()
+
+
+def test_same_day_defeat_gate_is_checked_again_before_launch(harness):
+    harness.record['auto_pause'] = {
+        'reason': 'confirmed_defeat', 'run_id': 'today-loss', 'arena': 'longwind',
+        'at': browser.time.time(),
+    }
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'queued-before-loss'))
+    assert browser.snapshot()['error'] == 'RuntimeError'
+    assert not harness.commands
+    harness.launch.assert_not_awaited()
+
+
+def test_other_arena_victory_does_not_clear_defeat_pause(harness, victory_network):
+    harness.record['auto_pause'] = {
+        'reason': 'confirmed_defeat', 'run_id': 'today-bamboo-loss', 'arena': 'bamboo',
+        'at': browser.time.time(),
+    }
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'other-arena-win'))
+    assert harness.record['auto_pause']['run_id'] == 'today-bamboo-loss'
+
+
+def test_same_arena_manual_validation_can_resume_next_day(harness, victory_network):
+    harness.record['auto_pause'] = {
+        'reason': 'confirmed_defeat', 'run_id': 'yesterday-loss', 'arena': 'longwind',
+        'at': browser.time.time() - 86400,
+    }
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'next-day-win'))
+    assert 'auto_pause' not in harness.record
+
+
+def test_two_arena_defeats_each_remain_blocked_after_other_result(harness):
+    for arena in ('longwind', 'bamboo'):
+        browser._pause_after_defeat(harness.record, {
+            'run_id': 'loss-' + arena, 'arena': arena, 'finished_at': browser.time.time(),
+        })
+    assert harness.record['auto_pause']['arena'] == 'bamboo'
+    for arena in ('longwind', 'bamboo'):
+        assert browser.defeated_arena_today(harness.record, arena, browser.time.time())
+        assert not browser.defeated_arena_today(harness.record, arena, browser.time.time() + 86400)
+
+
+def test_next_day_validation_preserves_other_arena_review_pause(harness, victory_network):
+    for arena in ('bamboo', 'longwind'):
+        browser._pause_after_defeat(harness.record, {
+            'run_id': 'yesterday-' + arena, 'arena': arena,
+            'finished_at': browser.time.time() - 86400,
+        })
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'longwind', False, 'verified-longwind'))
+
+    assert harness.record['defeats_by_arena']['longwind']['requires_verified_win'] is False
+    assert harness.record['defeats_by_arena']['bamboo']['requires_verified_win'] is True
+    assert harness.record['auto_pause']['arena'] == 'bamboo'
+    ok, message = asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))
+    assert not ok and '已确认战败' in message
+
+    for receipt in victory_network['receipts']:
+        receipt['trial']['run'].update(arena='bamboo', id='bamboo-win')
+        if 'status' in receipt['trial']:
+            receipt['trial']['status']['arena'] = 'bamboo'
+    harness.network.update(victory_network)
+    asyncio.run(browser._run(harness.owner, 'bamboo', False, 'verified-bamboo'))
+    assert 'auto_pause' not in harness.record
+    assert not any(row['requires_verified_win'] for row in harness.record['defeats_by_arena'].values())
 
 
 def test_terminal_server_receipt_preserves_original_and_counts_one_extra(harness):

@@ -953,6 +953,7 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
     result = ready_npc_stop_result
     if failure.startswith('low_health'):
         result.update(phase='held', hp=1656.48, server_checked=failure == 'low_health',
+                      final_status={'fresh': failure == 'low_health'},
                       report={'error': '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'})
     if failure == 'unknown_defeat':
         result.update(pending=1, pending_operations=[{'action': 'field-defeat'}])
@@ -982,6 +983,134 @@ def test_browser_exit_hands_ready_npc_to_protocol_without_relabeling_failure(
         assert record['browser']['phase'] == result['phase']
         assert record['browser']['report']['error'] == result['report']['error']
         flight.assert_awaited_once()
+
+
+@pytest.fixture
+def native_low_health_return_result():
+    import json
+    from pathlib import Path
+
+    # Field subset of the 2026-11-21 native 2.0.78 receipt, with a test identity.
+    return json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'qingxi-native-low-health-return-20261121.json').read_text())
+
+
+@pytest.mark.parametrize('taint', ['', 'stale_status', 'flight_locked', 'pending', 'unknown_error'])
+def test_native_low_health_exit_requires_fresh_status_and_closed_flight(
+        monkeypatch, tmp_path, native_low_health_return_result, taint):
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    from model.features import cave_treasure_miniapp, qingxi_trial_browser
+
+    for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    result = native_low_health_return_result
+    if taint == 'stale_status':
+        result['final_status']['fresh'] = False
+    elif taint == 'pending':
+        result['stored_pending'] = [{'operation_id': 'unknown'}]
+    elif taint == 'unknown_error':
+        result['report']['error'] += '；击杀结算未确认'
+    process = SimpleNamespace(returncode=1, wait=AsyncMock(return_value=1))
+    async def launch(*command, **kwargs):
+        Path(command[command.index('--result') + 1]).write_text(json.dumps(result))
+        return process
+    monkeypatch.setattr(qingxi_trial_browser, 'TOOL_ROOT', tmp_path)
+    monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data',
+                        AsyncMock(return_value='offline-entry'))
+    monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr(quests, '_drain_browser_process', AsyncMock())
+    monkeypatch.setattr(quests, 'save', Mock())
+    flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
+    record = {}
+    operation = quests.run_gameplay(SimpleNamespace(identity_id=42), 'offline', 'offline', record,
+                                   lambda: True, verify_flight=flight)
+    if taint:
+        reason = 'qingxi_flight_requires_review' if taint == 'flight_locked' else 'qingxi_browser_requires_review'
+        with pytest.raises(RuntimeError, match=reason):
+            asyncio.run(operation)
+    else:
+        asyncio.run(operation)
+        assert record['browser']['phase'] == 'waiting'
+        assert record['browser']['flight_checked'] is True
+    assert record['gameplay_uncertain'] is bool(taint)
+    assert flight.await_count == int(taint in {'', 'flight_locked'})
+
+
+def test_native_low_health_hold_recovers_on_a_new_status_read(
+        monkeypatch, tmp_path, native_low_health_return_result):
+    import json
+
+    result = native_low_health_return_result
+    result.update(phase='held', server_checked=False)
+    result['final_status']['fresh'] = False
+    ended = result['final_status']['at']
+    (tmp_path / 'result.json').write_text(json.dumps(result))
+    record = {'phase': 'held', 'gameplay_uncertain': True, 'observed_at': ended - 1,
+              'browser': {'evidence_dir': str(tmp_path)}}
+    flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': False}})
+    monkeypatch.setattr(quests, 'save', Mock())
+    monkeypatch.setattr(quests.time, 'time', lambda: ended + 2)
+    asyncio.run(quests.review_browser_hold(flight, record, 42))
+    flight.assert_not_awaited()
+    assert record['gameplay_uncertain'] is True
+
+    record['observed_at'] = ended + 1
+    asyncio.run(quests.review_browser_hold(flight, record, 42))
+    flight.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    assert record['gameplay_uncertain'] is False
+    assert record['browser_review']['reason'] == 'verified_low_health_safe_return'
+
+
+def test_mainline_parent_leaves_time_for_native_return_recovery_and_reentry(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    from model.features import cave_treasure_miniapp, qingxi_trial_browser
+
+    for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    result_path = None
+    process = SimpleNamespace(returncode=None)
+    async def finish():
+        # Allow the watchdog to check the deadline before the worker completes.
+        await asyncio.sleep(0)
+        if process.returncode is None:
+            result_path.write_text(json.dumps({
+                'player': 42, 'phase': 'done', 'server_checked': True,
+                'health_recovery': {'phase': 'ready'}, 'final_status': {'fresh': True},
+            }))
+            process.returncode = 0
+        return process.returncode
+    process.wait = finish
+    async def launch(*command, **kwargs):
+        nonlocal result_path
+        result_path = Path(command[command.index('--result') + 1])
+        return process
+    async def stop(*args):
+        if process.returncode is None:
+            process.returncode = -15
+    elapsed = iter((0, 4210))
+    monkeypatch.setattr(quests, 'time', SimpleNamespace(time=lambda: 12345,
+                                                       monotonic=lambda: next(elapsed, 4210)))
+    monkeypatch.setattr(qingxi_trial_browser, 'TOOL_ROOT', tmp_path)
+    monkeypatch.setattr(cave_treasure_miniapp, 'request_cave_treasure_miniapp_init_data',
+                        AsyncMock(return_value='offline-entry'))
+    monkeypatch.setattr(quests.asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr(quests, '_drain_browser_process', stop)
+    monkeypatch.setattr(quests, 'save', Mock())
+    result = {}
+    flight = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': False}})
+    asyncio.run(quests.run_gameplay(SimpleNamespace(identity_id=42), 'offline', 'offline', result,
+                                    lambda: True, verify_flight=flight))
+    assert process.returncode == 0
+    assert result['browser']['health_recovery'] == {'phase': 'ready'}
+    assert result['gameplay_uncertain'] is False
 
 
 @pytest.mark.parametrize('taint', ['', 'identity', 'running', 'pending', 'pending_gap', 'stored', 'combat',

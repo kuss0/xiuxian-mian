@@ -16,6 +16,7 @@ import uuid
 
 from ..activity_occupancy import get_activity_block_reason
 from ..persistence import mark_dirty, save_state
+from ..qingxi_quest_budget import QUEST_MAINLINE_SEC, QUEST_WORKER_SEC
 from ..runtime import send_audit_log, track_background_task
 from ..state import (get_expedition_config, get_expedition_run_state, get_global_enabled,
                      is_cave_public_identity_available)
@@ -605,10 +606,17 @@ def safe_browser_town_stop(result, identity_id):
 
 
 def safe_low_health_return(result, identity_id):
-    return (safe_browser_town_stop(result, identity_id)
-            and (result.get('report') or {}).get('error') ==
-            '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'
-            and type(result.get('hp')) in (int, float) and math.isfinite(result['hp']) and result['hp'] > 0)
+    """Recognize the native low-health stop after the browser reached safety."""
+    if not safe_browser_town_stop(result, identity_id):
+        return False
+    hp = result.get('hp')
+    if type(hp) not in (int, float) or not math.isfinite(hp) or hp <= 0:
+        return False
+    error = result['report']['error']
+    return (error == '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'
+            or (result['upstream_version'] == '2.0.78' and re.fullmatch(
+                r'野外气血低于 30% 且无法立即回血(?:（[^（）\r\n]+剩余 (?:[1-9][0-9]?|100)% 气血）)?'
+                r'，已中止任务并尝试返回洞府', error) is not None))
 
 
 def ready_npc_navigation_handoff(result, identity_id):
@@ -1315,14 +1323,15 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
-        deadline_seconds = 11100 if reward_batch and not inspection_only else 1500
+        deadline_seconds = ((1500 if inspection_only else 11100) if reward_batch else QUEST_WORKER_SEC)
         record.update(phase='running', deadline=time.time() + deadline_seconds, gameplay_uncertain=True,
                       browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.78',
                                'workflow': 'rewards' if reward_batch else 'quests'})
         save()
         command = [str(python), str(script), '--tool-root', str(TOOL_ROOT), '--url-file', str(launch),
                    '--profile-dir', str(directory.parent / 'profile'), '--result', str(directory / 'result.json'),
-                   '--expected-player-id', str(owner.identity_id), '--options-file', str(options), '--max-seconds', '900']
+                   '--expected-player-id', str(owner.identity_id), '--options-file', str(options),
+                   '--max-seconds', str(QUEST_MAINLINE_SEC)]
         if reward_batch:
             command[-1] = '900' if inspection_only else '10800'
             command.extend(['--workflow', 'rewards'])
@@ -1356,7 +1365,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         result = json.loads((directory / 'result.json').read_text())
         record['browser'].update({k: result.get(k) for k in (
             'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
-            'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report', 'reward_batch', 'reward_inspection')})
+            'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report',
+            'health_recovery', 'reward_batch', 'reward_inspection')})
         record['browser']['evidence'] = evidence_digest(result)
         existing = {row.get('reward_id', row['operation_id']) for row in record.get('receipts', [])}
         for row in result.get('reward_receipts', []):
@@ -1366,7 +1376,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                 existing.add(reward_id)
         save()
         confirmed_stop = ((result.get('server_checked') is True and (
-                              process.returncode == 0 or safe_low_health_return(result, owner.identity_id)))
+                              process.returncode == 0 or (
+                                  safe_low_health_return(result, owner.identity_id)
+                                  and (result.get('final_status') or {}).get('fresh') is True)))
                           or ready_npc_navigation_handoff(result, owner.identity_id))
         if not confirmed_stop or result.get('player') != owner.identity_id:
             raise RuntimeError('qingxi_browser_requires_review')
