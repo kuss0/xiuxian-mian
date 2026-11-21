@@ -189,3 +189,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - q14 服务端确认符芯由 **0 增至 14/15**；阵盘仍 **0/2**，q14 仍 active。无 q14 turn-in，不计算奖励或通过。损伤归零前 HP 始终回满/安全；当前没有正在运行的 worker。
 - 本次 q14 job没有五分钟目标超时，不会有 `field_fight_timeout` 快照；先前失地→敌人计数同步→飞行追击等 27 笔场战结算已确认成功。结束位置洞府 `[2.55,0,0.7]`，`server_checked=true`、pending=0、q14 fresh仍差一个符芯和全部阵盘目标。运行证据 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-5a3ed717e6e6427b801845c58d99aac6/result.json`，快照 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/q14-live-evidence.json`。
 - 下一自然日继续 q14 时重新查看已完成数量和场景，不从已获奖励倒推目标；只处理 remaining=1 符芯以及阵盘2枚。麦田本日战败暂停及竹林 trial次数状态无变化。总体26槽仍0/26通过。
+
+## 20:25 WA qx_q14 交付
+
+- WA q14 continuation job `quest-679199afcc8142a390101cfc029a2bae` 使用 fresh 原生入口、满血开启，服务器累计符芯 **15/15**、阵盘 **2/2**；之后脚本按任务目标返回交付。q14 最终服务端状态 `rewarded`，2026-11-21 20:25 新鲜 task status 确认，pending 清空、战斗关闭、位置安全洞府 `[2.55,0,0.7]`、flight closed。下一 active gap 是 q15「灯尽契散」拾取原契血印 0/1。证据 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/q14-followup-live-evidence.json` 和原始 job 路径。
+- 本次途中多笔原生御空航线受阻，最终在 q15 长途移动目标 `[9.9,1,-1]` 处找不到步行路线并返回洞府；没有未决写请求或未知结果。不在本次追加一轮重试。它覆盖完成 q14，不覆盖日奖励槽/试炼槽。WA 当前 q11–q14 为 rewarded，q15 active；吧唧当前仍 q11/q12 rewarded、q13/q14 active，尚无 q15 进度。
+- 当前时间约 20:25。WA 次日元婴计时在约 22:04 CST，WA 天星裂缝 22:27 CST；q15 下一次 30 分钟以上运行可能撞上。等待该活动窗口安全过去后，再 fresh-check WA Q15 并推进吧唧 q13 采集，维持单浏览器。
+- 本次之后仍没有真实每日副本领奖或 6 次试炼通过证据；26 格事实表仍 0/26，所有清溪自动化开关保持关闭。
