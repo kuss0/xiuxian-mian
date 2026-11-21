@@ -345,6 +345,8 @@ def _default_wanxin_commission():
         "claim_helper_username": "",
         "cancel_due_at": 0,
         "cancel_msg_id": 0,
+        "strip_failed_at": 0,
+        "failed_strip_retry_at": 0,
     }
 
 
@@ -618,6 +620,8 @@ def normalize_wanxin_observation(value=_WANXIN_OBSERVATION_UNSET):
     commission["claimed_elsewhere"] = _normalize_bool(commission.get("claimed_elsewhere"), False)
     commission["cancel_due_at"] = max(0.0, _safe_float(commission.get("cancel_due_at"), 0))
     commission["cancel_msg_id"] = max(0, _safe_int(commission.get("cancel_msg_id"), 0))
+    for key in ("strip_failed_at", "failed_strip_retry_at"):
+        commission[key] = max(0.0, _safe_float(commission.get(key), 0))
     for key in ("owner_username", "helper_username", "claim_helper_username"):
         commission[key] = str(commission.get(key) or "").strip().lstrip("@")
     observed["commission"] = commission
@@ -1583,6 +1587,16 @@ def _consume_commission(observed, *, owner_id):
     observed["assist"] = assist
 
 
+def _remember_failed_strip(observed, at):
+    commission = observed["commission"]
+    commission["strip_failed_at"] = max(commission["strip_failed_at"], at)
+    published_at = timestamp(commission.get("published_at"))
+    if published_at:
+        commission["failed_strip_retry_at"] = max(
+            commission["failed_strip_retry_at"], published_at + WANXIN_COMMISSION_TTL_SEC + CD_BUFFER_SEC,
+        )
+
+
 def _assist_identity_ready(observed):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
@@ -1611,6 +1625,8 @@ def _recover_external_commission_claim_from_log(observed, now):
         observed, evidence.acceptance.end["at"], evidence.acceptance.parsed["helper_username"],
         "委托已被其他阴罗咒师接取",
     )
+    if evidence.failure is not None:
+        _remember_failed_strip(observed, evidence.failure.end["at"])
     return True
 
 
@@ -1638,7 +1654,16 @@ def _recover_claimed_commission_completion_from_log(observed, now):
             or _unresolved_wanxin_blocks(observed, WANXIN_ACTION_STRIP)):
         return False
     evidence = _external_commission_evidence(observed, now)
-    if evidence is None or evidence.completion is None:
+    if evidence is None:
+        return False
+    if evidence.completion is None:
+        if evidence.failure is not None and evidence.failure.end["at"] > commission["strip_failed_at"]:
+            _remember_failed_strip(observed, evidence.failure.end["at"])
+            if evidence.failure.revision["at"] > timestamp(observed.get("panel_observed_at")):
+                _apply_panel_values(observed, evidence.failure.parsed.get("values") or {}, evidence.failure.revision["at"])
+            observed["auto_last_result"] = "外部咒师剥离失败，委托保留至完成或到期"
+            _schedule_next(observed, now)
+            return True
         return False
     return _apply_external_commission_completion(observed, evidence, now)
 
@@ -1807,7 +1832,10 @@ def project_assist_resource_reply(update, text):
         _apply_success_cooldown(observed, action, source.result_at, parsed)
         _apply_panel_values(observed, parsed.get("values") or {}, source.result_at)
         if action == WANXIN_ACTION_STRIP:
-            _consume_commission(observed, owner_id=owner_id)
+            if reply.phase == "success":
+                _consume_commission(observed, owner_id=owner_id)
+            else:
+                _remember_failed_strip(observed, source.result_at)
         else:
             observed["assist"]["bannered_commission_id"] = observed["commission"]["id"]
         observed["assist"]["last_contrib_gain"] = int(parsed.get("contrib_gain", 0) or 0)
@@ -2123,7 +2151,7 @@ def _next_due_action(observed, now, actions):
 def _assist_action_needed(observed, action):
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
     commission_id = int(commission.get("id", 0) or 0)
-    if commission_id <= 0 or not commission.get("accepted"):
+    if commission_id <= 0 or not commission.get("accepted") or commission.get("strip_failed_at"):
         return False
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     identify_required = bool(assist.get("identify_enabled"))
@@ -2285,6 +2313,8 @@ async def _send_assist_action(observed, action, now):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    if commission.get("strip_failed_at"):
+        return False
     current_owner_username = _owner_username()
     owner_username = str(current_owner_username or commission.get("owner_username") or "").strip().lstrip("@")
     if current_owner_username and current_owner_username.casefold() != str(commission.get("owner_username") or "").strip().lstrip("@").casefold():
@@ -2430,12 +2460,15 @@ def _owner_needs_commission(observed, now):
         return False
     if not _assist_identity_ready(observed):
         return False
-    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
-    if int(commission.get("id", 0) or 0) > 0:
-        return False
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     if not assist.get("strip_enabled"):
         return False
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    if int(commission.get("id", 0) or 0) > 0:
+        # Publication is the normal server check after expiry. Keep the old
+        # contract until a real reply confirms a replacement or its closure.
+        return bool(commission.get("strip_failed_at")
+                    and 0 < commission.get("failed_strip_retry_at", 0) <= now)
     return _due_time_for_action(observed, WANXIN_ACTION_STRIP) <= now
 
 
@@ -2717,6 +2750,8 @@ def _project_owner_reply(observed, parsed, now, *, owner_id, action, command_msg
         if command_msg_id > 0:
             commission["publish_msg_id"] = command_msg_id
         if commission["id"] != previous_commission_id:
+            commission["strip_failed_at"] = 0
+            commission["failed_strip_retry_at"] = 0
             commission["claimed_elsewhere"] = False
             commission["claim_helper_username"] = ""
             commission["cancel_due_at"] = 0
@@ -2727,6 +2762,9 @@ def _project_owner_reply(observed, parsed, now, *, owner_id, action, command_msg
             commission["helper_username"] = ""
             observed["assist"]["identified_commission_id"] = 0
             observed["assist"]["bannered_commission_id"] = 0
+        if (ptype == "commission_existing" and commission.get("strip_failed_at")
+                and parsed.get("remaining_seconds") is not None):
+            commission["failed_strip_retry_at"] = float(now) + parsed["remaining_seconds"] + CD_BUFFER_SEC
         observed["auto_last_result"] = f"{'已有' if ptype == 'commission_existing' else '委托已发布'}：{commission['id'] or '未知'}"
         observed["auto_last_error"] = "" if commission["id"] else "委托存在但未解析到ID"
         observed["auto_next_time"] = float(now)

@@ -1570,7 +1570,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(observed["commission"]["accepted"])
             self.assertEqual(0, observed["assist"]["next_strip_time"])
 
-    async def test_strip_failure_consumes_contract_but_resource_block_keeps_it(self):
+    async def test_strip_failure_and_resource_block_keep_contract(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_300.0
@@ -1612,9 +1612,12 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         with state_module.use_identity(owner_id):
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual(0, observed["commission"]["id"])
-            self.assertFalse(observed["commission"]["accepted"])
+            self.assertEqual(88, observed["commission"]["id"])
+            self.assertTrue(observed["commission"]["accepted"])
+            self.assertEqual(now, observed["commission"]["strip_failed_at"])
             self.assertGreater(observed["assist"]["next_strip_time"], now + wanxin.WANXIN_STRIP_CD_SEC)
+            for action in wanxin.WANXIN_ASSIST_ACTIONS:
+                self.assertFalse(wanxin._assist_action_needed(observed, action))
 
         prepare(7401)
         with state_module.use_identity(helper_id):

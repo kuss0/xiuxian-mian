@@ -110,6 +110,22 @@ def test_native_external_completion_consumes_only_its_proved_commission(owner, m
     assert owner["moon_soul"] == 52
 
 
+def test_external_strip_failure_is_not_completion_and_cannot_consume_contract(owner, monkeypatch):
+    entries = logs(completed=True)
+    entries[-1]["text"] = (
+        "【剥离咒源失败】\n封魂咒骤然反扑，阴罗幡煞气被吞去 120 点，"
+        "@outside_one 修为折损 500，@owner_one 魂封 +4。"
+    )
+    evidence = find(entries, owner["commission"])
+    assert evidence is not None and evidence.completion is None and evidence.failure is not None
+    before = copy.deepcopy(owner["commission"])
+    provide(monkeypatch, entries)
+    assert wanxin._recover_external_commission_claim_from_log(owner, BASE + 30)
+    assert owner["commission"]["id"] == before["id"]
+    assert owner["commission"]["strip_failed_at"] == BASE + 22
+    assert not wanxin._recover_claimed_commission_completion_from_log(owner, BASE + 30)
+
+
 @pytest.mark.parametrize("damage", ["sender", "helper", "clock", "accept", "strip_command", "replacement", "edited_outcome"])
 def test_external_completion_cannot_consume_from_an_unrelated_result(owner, monkeypatch, damage):
     owner["commission"].update(claimed_elsewhere=True, claim_helper_username="outside_one")

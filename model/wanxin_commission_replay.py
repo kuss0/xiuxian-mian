@@ -64,6 +64,7 @@ class CommissionEvidence:
     publication: NativeReply
     acceptance: NativeReply
     completion: NativeReply | None
+    failure: NativeReply | None = None
 
 
 def _parsed_reply(native, family, parse_reply):
@@ -299,9 +300,12 @@ def find_commission_evidence(entries, *, owner_id, helper_id, commission, identi
     if len(accepts) != 1 or sender_matches_identity(accepts[0].command_sender, helper_id):
         return None
     acceptance = accepts[0]
-    completions = [item for item in replies if item.action == "strip" and target_matches(item.argument)
+    outcomes = [item for item in replies if item.action == "strip" and target_matches(item.argument)
                    and item.command_sender == acceptance.command_sender
                    and item.parsed and item.parsed.get("type") in {"assist_strip_success", "assist_strip_failed"}
                    and target_matches(item.parsed.get("target_username"))
                    and compare_points(acceptance.end, item.start) == -1]
-    return CommissionEvidence(publication, acceptance, completions[0] if len(completions) == 1 else None)
+    outcome = outcomes[0] if len(outcomes) == 1 else None
+    success = outcome if outcome and outcome.parsed["type"] == "assist_strip_success" else None
+    failure = outcome if outcome and outcome.parsed["type"] == "assist_strip_failed" else None
+    return CommissionEvidence(publication, acceptance, success, failure)
