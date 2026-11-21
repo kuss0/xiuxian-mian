@@ -117,6 +117,30 @@ QUEST_COMBAT_LOOT = """async function fightEnemy(enemyId, owner) {
     finally { if (owner === state.generation && state.story) state.story.collectingFieldLoot = false; }
   }
   async function fightEnemyCore(enemyId, owner) {"""
+QUEST_FIGHT_TIMEOUT_DIAGNOSTIC = """{
+          const combat=readCombat(),player=position3(myPos()),enemy=position3(target.position);
+          const metrics=combat?.metrics||{};
+          const receiptIds=new Set([enemyId,target.id,target.fieldId,target.spawnId].filter(Boolean));
+          window.__qx.fieldFightTimeout={at:Date.now()/1000,startedAt:fightStartedAt/1000,
+            deadlineAt:deadline/1000,requestedEnemyId:String(enemyId).slice(0,100),
+            target:{id:String(target.id||'').slice(0,100),fieldId:target.fieldId||null,
+              spawnId:target.spawnId||null,name:String(target.name||'').slice(0,80),role:String(target.role||'').slice(0,60),
+              hp:Number.isFinite(target.hp)?target.hp:null,maxHp:Number.isFinite(target.maxHp)?target.maxHp:null,
+              engaged:!!target.engaged,returning:!!target.returning,state:String(target.state||'').slice(0,40),
+              move:String(target.move||'').slice(0,40),position:enemy,home:position3(target.home),
+              leashRadius:Number.isFinite(target.leashRadius)?target.leashRadius:null},
+            playerPosition:player,distance:player&&enemy?dist(player,enemy):null,
+            combat:{active:combat?.active===true,state:String(combat?.state||'').slice(0,40),
+              hp:Number.isFinite(combat?.hp)?combat.hp:null,hpMax:Number.isFinite(combat?.hpMax)?combat.hpMax:null,
+              paused:combat?.paused===true,fieldPending:Number.isInteger(combat?.fieldPending)?combat.fieldPending:null,
+              castOutbox:Number.isInteger(combat?.castOutbox)?combat.castOutbox:null,
+              metrics:Object.fromEntries(['enemyHits','blocks','parries','dodges','potions','playerHits','swordHits','treasureHits']
+                .filter(key=>Number.isFinite(metrics[key])).map(key=>[key,metrics[key]]))},
+            recentSettlements:fieldSettlements.filter(row=>receiptIds.has(row.enemyId)).slice(-4).map(row=>({
+              sequence:row.sequence,enemyId:row.enemyId,ok:row.ok,error:row.error,
+              damage:row.damage,hits:row.hits,at:row.at}))};
+          throw new Error('战斗超时：'+target.name);
+        }"""
 QUEST_NAVIGATION_REVIEW = """if (!path && obstacles.length && !obstaclesReviewed) {
             // Inferred obstacles can close the only exit beside real scenery.
             // Review them once; the game's collision/height checks still apply.
@@ -182,6 +206,10 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         "if (!window.__rt.startQuestCombat?.(objective.arena)) throw new Error('游戏未接受郊外战斗入口，请确认人物已进入区域');":
             QUEST_COMBAT_ENTRY,
         'async function fightEnemy(enemyId, owner) {': QUEST_COMBAT_LOOT,
+        'const deadline = Date.now() + 5 * 60000;':
+            'const fightStartedAt=Date.now(), deadline=fightStartedAt+5*60000;',
+        "if (Date.now() > deadline) throw new Error('战斗超时：' + target.name);":
+            "if (Date.now() > deadline) " + QUEST_FIGHT_TIMEOUT_DIAGNOSTIC,
         'const target = livingEnemies(s).find(e => e.id === enemyId) || fieldThreat(s);':
             'const requested = livingEnemies(s).find(e => e.id === enemyId);\n'
             '        const target = (requested?.engaged ? requested : null) || fieldThreat(s) || requested;',
@@ -219,7 +247,7 @@ SNAPSHOT = r"""(() => {
     catch{return null}})(),
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
-  reward_batch:window.__qingxiRewardBatch?.state,
+  reward_batch:window.__qingxiRewardBatch?.state,field_fight_timeout:window.__qx?.fieldFightTimeout||null,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
     recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
   run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};

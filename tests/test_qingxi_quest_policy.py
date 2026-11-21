@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from tools.qingxi_quest_browser import (GUARD, QUEST_COMBAT_ENTRY, QUEST_COMBAT_LOOT,
-                                      QUEST_NAVIGATION_REVIEW, VENDOR, browser_script, finished_phase)
+                                      QUEST_FIGHT_TIMEOUT_DIAGNOSTIC, QUEST_NAVIGATION_REVIEW,
+                                      VENDOR, browser_script, finished_phase)
 
 
 HARNESS = r"""
@@ -525,6 +526,31 @@ BODY
     path = tmp_path / 'loot.cjs'
     path.write_text(script)
     subprocess.run(['node', str(path)], capture_output=True, check=True, timeout=8)
+
+
+def test_qingxi_fight_timeout_retains_exact_native_target_and_receipts(tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to exercise browser diagnostics')
+    script = """const assert=require('node:assert/strict');
+const window={__qx:{}};const fightStartedAt=100000,deadline=400000,enemyId='lantern:086';
+const target={id:'field-11',fieldId:'lantern:086',spawnId:'lantern:086',name:'长枪手',role:'spear',
+ hp:1200,maxHp:4000,engaged:true,returning:false,state:'attack',move:'thrust',
+ position:[12,0,18],home:[10,0,17],leashRadius:35};
+const fieldSettlements=[{sequence:10,enemyId:'lantern:086',ok:true,error:null,damage:26350,hits:36,at:123},
+ {sequence:11,enemyId:'lantern:087',ok:true,error:null,damage:1,hits:1,at:124}];
+const combat={active:true,state:'fighting',hp:14000,hpMax:15086,paused:false,fieldPending:0,castOutbox:0,
+ metrics:{enemyHits:4,blocks:2,extra:'ignored'}};
+const readCombat=()=>combat,myPos=()=>[8,0,9],position3=x=>Array.isArray(x)?x.slice():null;
+const dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+try { DIAGNOSTIC } catch(error) { assert.equal(error.message,'战斗超时：长枪手'); }
+const d=window.__qx.fieldFightTimeout;
+assert.equal(d.startedAt,100);assert.equal(d.deadlineAt,400);assert.equal(d.requestedEnemyId,'lantern:086');
+assert.equal(d.target.hp,1200);assert.equal(d.target.engaged,true);assert.equal(d.distance,Math.hypot(4,9));
+assert.equal(d.combat.hp,14000);assert.deepEqual(d.combat.metrics,{enemyHits:4,blocks:2});
+assert.deepEqual(d.recentSettlements,[{sequence:10,enemyId:'lantern:086',ok:true,error:null,damage:26350,hits:36,at:123}]);
+""".replace('DIAGNOSTIC', QUEST_FIGHT_TIMEOUT_DIAGNOSTIC)
+    path=tmp_path/'fight-timeout.cjs';path.write_text(script)
+    subprocess.run(['node',str(path)],capture_output=True,check=True,timeout=8)
 
 
 @pytest.mark.parametrize('scenario', ['loading', 'overworld', 'wrong_area', 'instance', 'timeout'])
