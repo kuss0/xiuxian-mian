@@ -161,3 +161,11 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - qx_q11 箭簇由 **2/10** 连续增加至 **10/10**，服务端状态为 `rewarded`。共 17 个有回执的野外结算；单个敌人多次重建时不重复计入不同任务奖励。任务服务端刷新新鲜，pending 内存与磁盘均空，战斗 inactive，原生飞行关闭；退回安全洞府 `[2.55,0,0.7]`。任务调度状态恢复 `waiting_gameplay, gameplay_uncertain=false`，下一 qx_q12 为 active。
 - 此运行历时约 20 分钟，虽未超过新 4450 秒父预算；qx_q12 接取后因 `[57,1,5]` 无步行路线结束。按原流程安全返回，q12未产生新进度/奖励，当前无在途 worker 或 Chromium。证据见 `/root/xiuxian-qingxi-7plus6-release-20261121/health-defeat-1725/native-health-live-evidence.json` 和原始目录 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-dfa4c6c5992743209dfa9805334a4b6d/`。这次实机通过**只验收低血安全恢复闸门及 qx_q11 真实交付**，不代表 qx_q12 或任何 7+6 奖励槽通过；试炼麦田战败事实不变。
 - 下一步先查 qx_q12 区域寻路失败成因，再在没有未决、身份和场景全 fresh 时续推 WA 主线；不重跑已领奖 qx_q11，不尝试 WA 麦田第二场。吧唧仍在正常闭关次轮，选择下一场需先看服务器零点前的剩余时段与活动占用。
+
+## 18:30 WA qx_q12 续跑
+
+- 18:10 左右经新鲜状态确认 WA `waiting_gameplay/gameplay_uncertain=false`，qx_q12=`active`、ferrules=0/8；原三个任务接受均有独立成功 operation receipt，不重复 accept。无 worker、pending、已知组队运行或零点前高优先级活动，遂从洞府入口只续同一 q12。
+- 新 job `quest-085c33dee8624ee3a7949a82d86942d1`。低血门直接通过：入坊 HP 已满。原铁匠屋檐导航点 `[57,1,5]` 未重现；正常寻路后服务器确认 qx_q12 ferrules **4/8**。之后 `长枪手` 单体战斗达到固定 5 分钟目标时限，战斗没有取得胜利；10 笔击杀结算均 `ok=true`，最近敌人 `lantern:086`；无失败/拒绝结算。这与回执等待超时不同，但原始结果没有留存超时时当前敌人 HP/距离/leash 状态，无法判断是目标返家、攻击动作无效或其他原因。
+- 现已安全返回洞府 `[2.55,0,0.7]`，最终 fresh task status true、pending=0、stored pending empty、combat inactive，flight check true。WA record 为 `waiting_gameplay/gameplay_uncertain=false`，新鲜观测 q12 active 4/8，q13/q14 仍 active；试炼长风 confirmed_defeat 同一天禁跑保留不变。没有继续重试同一敌人或接受 q12。
+- 为下一次单场续跑已准备一个**隔离的诊断候选**：只在原生 5 分钟战斗超时时记录所请求/实际目标、HP、位置、engaged/returning、home/leash、玩家距离、战斗指标及匹配目标最近 4 个结算；不变更 5 分钟时限、打法、请求或回执。Node 夹具和源版本锚点 2 项通过、Ruff/diff 通过；尚未全量测试、提交或生产发布。因此下次真号仍需遵守现有生产策略；若原样再次超时，停止该身份的该任务 combat 写操作并重新采集证据。
+- 原始任务证据 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-085c33dee8624ee3a7949a82d86942d1/`；脱敏摘要 `/root/xiuxian-qingxi-7plus6-release-20261121/health-defeat-1725/qx12-live-evidence.json`。这只是 q12 部分进度，不计七副本或试炼通过。下一窗口先完成隔离诊断补丁全量回归与发布判断，再依据 fresh 状态续 q12，不重复任务领取；0/26 验收结论不变。
