@@ -182,3 +182,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - WA job `quest-f7c9a0e4bbbf497eb92fba3aee987d37` 从安全洞府继续已接受的 q12，满气血启动。没有重复接取 q12，正常战斗与 corpse-pickup 最终让 q12=8/8 ready 并经正常 turn-in 变 rewarded；对应任务接受 run_id 与回执保留在运行状态。此次无 `field_fight_timeout`，没有作超时诊断结论。随后的 q13 也收到药匣/铜钥两份成功拾取回执，turn-in `3dfca8dd-9dd6-4e99-96b5-74b8bd189520` 成功、q13=rewarded，奖励灵石×478、回灵丹×2、清灵草种子×2。
 - q14 已 active，但符芯 0/15、阵盘 0/2。末端试图继续御空进入竹林时，多条正常原生御空航线失败，助手无可用落点后按原流程返回洞府；最终 server_checked=true、pending=0、stored_pending=[]、战斗 inactive、洞府落点 `[2.55,0,0.7]`、flight closure 新鲜读回，身份记录 `waiting_gameplay/gameplay_uncertain=false`。证据 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/qx12-completed-evidence.json`、`qx13-live-evidence.json` 和原始 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-f7c9a0e4bbbf497eb92fba3aee987d37/`。
 - 目前主线 q11、q12、q13 为 rewarded，q14 未完成；这不会直接使任何每日有奖副本槽变成通过。WA 麦田仍保持当日确认战败停跑，竹林试炼今日未开；两个青溪自动总开关仍关闭，26 格仍 0/26 通过。下一轮先用 fresh status/flight 和有效窗口续当前已接受 q14，不重跑 q11–q13、不重复奖励交付。
+
+## 20:08 WA qx_q14 当日有界续跑
+
+- WA job `quest-5a3ed717e6e6427b801845c58d99aac6` 的正常 q14 流程在安全区域一次任务 worker 内运行至本任务 900 秒时限。新鲜最终任务状态成功、内存和磁盘 pending 空、战斗 inactive、返回洞府；flight closure 也有 fresh check。未超父级 4450 秒总预算，自动化记录 `phase=bounded_stop/gameplay_uncertain=false`，故可安全续跑。
+- q14 服务端确认符芯由 **0 增至 14/15**；阵盘仍 **0/2**，q14 仍 active。无 q14 turn-in，不计算奖励或通过。损伤归零前 HP 始终回满/安全；当前没有正在运行的 worker。
+- 本次 q14 job没有五分钟目标超时，不会有 `field_fight_timeout` 快照；先前失地→敌人计数同步→飞行追击等 27 笔场战结算已确认成功。结束位置洞府 `[2.55,0,0.7]`，`server_checked=true`、pending=0、q14 fresh仍差一个符芯和全部阵盘目标。运行证据 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-5a3ed717e6e6427b801845c58d99aac6/result.json`，快照 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/q14-live-evidence.json`。
+- 下一自然日继续 q14 时重新查看已完成数量和场景，不从已获奖励倒推目标；只处理 remaining=1 符芯以及阵盘2枚。麦田本日战败暂停及竹林 trial次数状态无变化。总体26槽仍0/26通过。
