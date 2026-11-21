@@ -175,3 +175,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - `a0a07361` 在 pinned upstream task worker 适配层及纯 Node 诊断夹具增加 timeout-only 本地证据：被请求/实际目标身份、血量、状态、当前与 home 坐标、leash 半径、玩家距离、原生 combat metrics 和严格匹配的最近结算。它只在既有 5 分钟目标时限结束时取样并抛出原来同文错误；不改变计时、目标选择、攻击/走位、请求/结算或停止行为。
 - 夹具+source pin 2 项通过，Ruff、Python 编译、注入脚本与策略 JS 语法通过；合入前隔离全量回归 **18915 passed, 1561 subtests passed, 549.71s**。`data/quiz/quiz_bank.json` 保持为唯一生产未提交运行时改动。
 - 发布前通过认证 UI 确认队列为空、无青溪浏览器；一致性 SQLite 备份为 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/pre-restart-state-final.db`。待仅重启主服务并确认三服务恢复、队列/worker/status 与开关原值后，续 q12 使用此诊断。q12=4/8，q11=rewarded；试炼开关仍关闭，WA 麦田当天仍 confirmed_defeat；26 格仍 0/26。
+
+## 19:42 WA qx_q12/13 续推及服务重启核验
+
+- 已提交 `a0a07361` 超时现场诊断与 `5509f3dd` 发布核验记录并推送 `xiuxian-mian/main`；19:09:05 仅重启 `xiuxian.service`。重启后主服务 NRestarts=0，24 身份恢复，safety watchdog/health observer active，queue=0；青溪两个主开关仍关闭。试炼长风自动暂停及 4/8 q12 fresh 状态保留。
+- WA job `quest-f7c9a0e4bbbf497eb92fba3aee987d37` 从安全洞府继续已接受的 q12，满气血启动。没有重复接取 q12，正常战斗与 corpse-pickup 最终让 q12=8/8 ready 并经正常 turn-in 变 rewarded；对应任务接受 run_id 与回执保留在运行状态。此次无 `field_fight_timeout`，没有作超时诊断结论。随后的 q13 也收到药匣/铜钥两份成功拾取回执，turn-in `3dfca8dd-9dd6-4e99-96b5-74b8bd189520` 成功、q13=rewarded，奖励灵石×478、回灵丹×2、清灵草种子×2。
+- q14 已 active，但符芯 0/15、阵盘 0/2。末端试图继续御空进入竹林时，多条正常原生御空航线失败，助手无可用落点后按原流程返回洞府；最终 server_checked=true、pending=0、stored_pending=[]、战斗 inactive、洞府落点 `[2.55,0,0.7]`、flight closure 新鲜读回，身份记录 `waiting_gameplay/gameplay_uncertain=false`。证据 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/qx12-completed-evidence.json`、`qx13-live-evidence.json` 和原始 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-f7c9a0e4bbbf497eb92fba3aee987d37/`。
+- 目前主线 q11、q12、q13 为 rewarded，q14 未完成；这不会直接使任何每日有奖副本槽变成通过。WA 麦田仍保持当日确认战败停跑，竹林试炼今日未开；两个青溪自动总开关仍关闭，26 格仍 0/26 通过。下一轮先用 fresh status/flight 和有效窗口续当前已接受 q14，不重跑 q11–q13、不重复奖励交付。
