@@ -169,3 +169,9 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 现已安全返回洞府 `[2.55,0,0.7]`，最终 fresh task status true、pending=0、stored pending empty、combat inactive，flight check true。WA record 为 `waiting_gameplay/gameplay_uncertain=false`，新鲜观测 q12 active 4/8，q13/q14 仍 active；试炼长风 confirmed_defeat 同一天禁跑保留不变。没有继续重试同一敌人或接受 q12。
 - 为下一次单场续跑已准备一个**隔离的诊断候选**：只在原生 5 分钟战斗超时时记录所请求/实际目标、HP、位置、engaged/returning、home/leash、玩家距离、战斗指标及匹配目标最近 4 个结算；不变更 5 分钟时限、打法、请求或回执。Node 夹具和源版本锚点 2 项通过、Ruff/diff 通过；尚未全量测试、提交或生产发布。因此下次真号仍需遵守现有生产策略；若原样再次超时，停止该身份的该任务 combat 写操作并重新采集证据。
 - 原始任务证据 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-085c33dee8624ee3a7949a82d86942d1/`；脱敏摘要 `/root/xiuxian-qingxi-7plus6-release-20261121/health-defeat-1725/qx12-live-evidence.json`。这只是 q12 部分进度，不计七副本或试炼通过。下一窗口先完成隔离诊断补丁全量回归与发布判断，再依据 fresh 状态续 q12，不重复任务领取；0/26 验收结论不变。
+
+## 19:08 qx_q12 战斗超时诊断补丁发布
+
+- `a0a07361` 在 pinned upstream task worker 适配层及纯 Node 诊断夹具增加 timeout-only 本地证据：被请求/实际目标身份、血量、状态、当前与 home 坐标、leash 半径、玩家距离、原生 combat metrics 和严格匹配的最近结算。它只在既有 5 分钟目标时限结束时取样并抛出原来同文错误；不改变计时、目标选择、攻击/走位、请求/结算或停止行为。
+- 夹具+source pin 2 项通过，Ruff、Python 编译、注入脚本与策略 JS 语法通过；合入前隔离全量回归 **18915 passed, 1561 subtests passed, 549.71s**。`data/quiz/quiz_bank.json` 保持为唯一生产未提交运行时改动。
+- 发布前通过认证 UI 确认队列为空、无青溪浏览器；一致性 SQLite 备份为 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/pre-restart-state-final.db`。待仅重启主服务并确认三服务恢复、队列/worker/status 与开关原值后，续 q12 使用此诊断。q12=4/8，q11=rewarded；试炼开关仍关闭，WA 麦田当天仍 confirmed_defeat；26 格仍 0/26。
