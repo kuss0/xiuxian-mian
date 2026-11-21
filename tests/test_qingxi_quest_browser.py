@@ -13,6 +13,34 @@ import pytest
 from tools import qingxi_quest_browser as worker
 
 
+def test_native_warmup_capture_precedes_runtime_publication_only_for_active_quests():
+    capture = "if (slot === '__rt') qingxiWarmup.capture(obj);"
+    source = worker.browser_script(42)
+    assert source.count(capture) == 1
+    assert source.index('const obj = Reflect.apply(target, receiver, args);') < source.index(capture)
+    assert source.index(capture) < source.index('else window[slot] = obj;')
+    assert source.index('var qingxiWarmup') < source.index(capture)
+    assert 'native_warmup:window.qingxiWarmup?.snapshot?.()' in worker.SNAPSHOT
+    for options in ({'read_only': True}, {'reward_batch': True}, {'reward_batch': True, 'daily_id': 'moonpalace'}):
+        scoped = worker.browser_script(42, **options)
+        assert capture not in scoped
+        assert 'var qingxiWarmup' not in scoped
+
+
+@pytest.mark.parametrize('copies', [0, 2])
+def test_native_warmup_capture_refuses_missing_or_duplicate_factory_anchor(monkeypatch, tmp_path, copies):
+    import hashlib
+    capture = '          const obj = Reflect.apply(target, receiver, args);\n'
+    source = (worker.VENDOR / 'trial-bot.user.js').read_text()
+    assert source.count(capture) == 1
+    source = source.replace(capture, capture * copies)
+    (tmp_path / 'trial-bot.user.js').write_text(source)
+    (tmp_path / 'source.json').write_text(json.dumps({'sha256': hashlib.sha256(source.encode()).hexdigest()}))
+    monkeypatch.setattr(worker, 'VENDOR', tmp_path)
+    with pytest.raises(RuntimeError, match='qingxi_upstream_policy_anchor_changed'):
+        worker.browser_script(42)
+
+
 @pytest.mark.parametrize('mode', ['new', 'joined', 'failed', 'still_stale'])
 def test_final_refresh_requeries_only_a_successful_stale_native_join(tmp_path, mode):
     node = shutil.which('node')

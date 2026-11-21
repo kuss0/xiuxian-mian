@@ -252,3 +252,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 后续单一浏览器 `quest-eee8abc80d0b40b8be49052db3a7d846` 在健康前置的原生返回洞府流程停止。人物已安装 NGW 模型但 `modelReady=false/modelLoading=true`，tier3 场景继续渲染、全血15086，无战斗、无飞行、内存与磁盘 pending 均空。420秒返回场景核验超时，22:54:21 末端原生任务状态 fresh；`mainline_started_at` 未出现，浏览器只有4项成功 status 回执、0次 cast，q20没有新增进度。
 - worker/Chromium 已退出，无 cleanup/shutdown error；宿主保留 `held/gameplay_uncertain=true`，错误 `qingxi_native_health_return_unverified`。22:58 正常只读 refresh 后仍保留 held，没有伪造 modelReady、放宽安全返回判定或重开同号浏览器；本轮未取得宿主后续飞行关闭鲜读，不将其写成完整恢复。官方本地源码将这种状态缩到 installModel 后的 prepareEffects/compileAsync 等待链；缺少现场 GPU 异常，不能声称已唯一确认根因。独立离线复现仍未发布。
 - 脱敏证据 `fight-timeout-diag-1855/wa-q20-preflight-render-hold-evidence.json`、`wa-q20-native-loading-diagnostic.json`、`wa-q20-live-samples.jsonl`。WA 两试炼当日停跑、两个自动开关 false、**0/26** 与三日观察未开始均不变。吧唧 q15 已 fresh 确认可续，先让 22:59:53 的灵宠阵法正常调度窗口过去，再决定下一次单浏览器主线运行。
+
+## 23:12 吧唧 q15 低血保护返回
+
+- 核对发现 22:59:53 灵宠阵法计时属于已关闭模块，`pet_formation_enabled=false`，没有活动发出或未决队列。23:02 仅安排吧唧 `quest-302f6207848c4e4dbc4fec7adb862f2d` 续 q15。正常场景加载、健康检查通过，23:07:35 满血9744开始主线；路线受阻后按原生飞行/步行继续，未使用分享版直接传送。
+- 途中被黑衣剑宗接战，末段两次各约3791伤害使气血跌至约22%，触发原有30%低血保护；23:11 原生安全返回洞府，最终HP2143.68/9744、位置 `[-1.05,0.8375,-0.8]`。q15 原契血印仍未取得、q16 locked，没有任务奖励。本轮不是战败，不消费试炼或每日副本配额，也不计验收通过。
+- 末端任务状态fresh、pending=0、stored_pending=[]、战斗关闭，宿主另取新鲜飞行关闭回执；worker/Chromium均已退出，宿主 `waiting_gameplay/gameplay_uncertain=false`，无 cleanup/shutdown error。70笔原生cast事件、1笔field-engage/1笔field-release均有成功回执，不把cast上传成功写成击杀或任务完成；末端未发送请求的deadline停止标签也不能覆盖真实低血原因。
+- 脱敏证据 `fight-timeout-diag-1855/baji-q15-low-health-stop-evidence.json`，原始目录如上，现场采样 `baji-q15-live-samples.jsonl`。没有五分钟目标超时快照，未记录到低血前完整敌招细节；先分析路线与反击，不原样重跑。主号 **0/26**，三日观察未开始；WA仍保持上一节render held，两自动开关仍false。

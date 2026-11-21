@@ -1,0 +1,1188 @@
+{
+  "result": {
+    "workflow": "quests",
+    "phase": "held",
+    "upstream_version": "2.0.78",
+    "navigation_policy": 4,
+    "transport_policy": 1,
+    "error": "qingxi_native_health_return_unverified",
+    "server_checked": true,
+    "combat_active": false,
+    "run": null,
+    "pending": 0,
+    "pending_operations": [],
+    "stored_pending": [],
+    "requests": 4,
+    "casts": 0,
+    "status_error": "",
+    "cast_error": "",
+    "stop_reason": null,
+    "reward_receipts": [],
+    "player": 42,
+    "entry_started_at": 1700000000.233,
+    "final_status": {
+      "fresh": true,
+      "at": 1700000609.079
+    },
+    "receipts": [
+      {
+        "resource": "quests",
+        "action": "status",
+        "operation_id": false,
+        "ok": true,
+        "http_status": 200,
+        "error": "",
+        "parse_error": "",
+        "content_type": "application/json",
+        "grants": [],
+        "cultivation": 0,
+        "pickedItems": [],
+        "shape": [
+          "grants",
+          "ok",
+          "questBag",
+          "quests"
+        ],
+        "at": 1700000014.428
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "operation_id": false,
+        "ok": true,
+        "http_status": 200,
+        "error": "",
+        "parse_error": "",
+        "content_type": "application/json",
+        "grants": [],
+        "cultivation": 0,
+        "pickedItems": [],
+        "shape": [
+          "grants",
+          "ok",
+          "questBag",
+          "quests"
+        ],
+        "at": 1700000162.987
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "operation_id": false,
+        "ok": true,
+        "http_status": 200,
+        "error": "",
+        "parse_error": "",
+        "content_type": "application/json",
+        "grants": [],
+        "cultivation": 0,
+        "pickedItems": [],
+        "shape": [
+          "grants",
+          "ok",
+          "questBag",
+          "quests"
+        ],
+        "at": 1700000186.147
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "operation_id": false,
+        "ok": true,
+        "http_status": 200,
+        "error": "",
+        "parse_error": "",
+        "content_type": "application/json",
+        "grants": [],
+        "cultivation": 0,
+        "pickedItems": [],
+        "shape": [
+          "grants",
+          "ok",
+          "questBag",
+          "quests"
+        ],
+        "at": 1700000609.058
+      }
+    ],
+    "report": {
+      "error": "等待超时：返回洞府场景",
+      "story": null,
+      "questSummary": null,
+      "fieldSettlements": []
+    },
+    "health_recovery": {
+      "phase": "blocked",
+      "reason": "return_unverified",
+      "latest": {
+        "combat_active": false,
+        "combat_settlement_pending": false,
+        "memory_pending_count": 0,
+        "stored_pending_count": 0,
+        "player": 42,
+        "home": {
+          "destination": "cave",
+          "verified": false,
+          "error": "等待超时：返回洞府场景",
+          "at": 1700000607206
+        },
+        "scene_tier": 3,
+        "scene_ready": false,
+        "cave_safe": false,
+        "ghost": false,
+        "flight_active": false,
+        "chariot_mounted": false,
+        "engaged_enemies": 0,
+        "pending": 0,
+        "combat_present": true,
+        "combat_matches_runtime": true,
+        "hp": 15086,
+        "hp_max": 15086,
+        "world_current": "yue",
+        "state": "ready",
+        "overworld": false,
+        "town_safe": false,
+        "paused": false,
+        "runtime_blocked": false,
+        "runtime_id": 1,
+        "combat_id": 3
+      },
+      "scene": "unsafe",
+      "initial": {
+        "player": 42,
+        "world_current": "yue",
+        "scene_tier": 4,
+        "scene_ready": true,
+        "state": "ready",
+        "overworld": false,
+        "cave_safe": false,
+        "town_safe": false,
+        "ghost": false,
+        "paused": false,
+        "flight_active": false,
+        "chariot_mounted": false,
+        "combat_active": false,
+        "combat_settlement_pending": false,
+        "runtime_blocked": false,
+        "engaged_enemies": 0,
+        "pending": 0,
+        "memory_pending_count": 0,
+        "stored_pending_count": 0,
+        "combat_present": true,
+        "combat_matches_runtime": true,
+        "hp": 15086,
+        "hp_max": 15086,
+        "runtime_id": 1,
+        "combat_id": 2,
+        "home": null
+      }
+    },
+    "overworld": false,
+    "state": "ready"
+  },
+  "previous_result": {
+    "phase": "waiting",
+    "workflow": "quests",
+    "upstream_version": "2.0.78",
+    "server_checked": true,
+    "pending": 0,
+    "stored_pending": [],
+    "pending_operations": [],
+    "combat_active": false,
+    "overworld": false,
+    "state": "ready",
+    "error": "",
+    "status_error": "",
+    "cast_error": "",
+    "player": 42,
+    "final_status": {
+      "fresh": true,
+      "at": 1699992618.829
+    },
+    "receipts": [
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699991928.735
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992201.106
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992217.176
+      },
+      {
+        "resource": "flight",
+        "action": "start",
+        "ok": true,
+        "operation_id": "prior-op-3",
+        "at": 1699992218.324
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992234.216
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992264.848
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-6",
+        "at": 1699992265.779
+      },
+      {
+        "resource": "quests",
+        "action": "field-engage",
+        "ok": true,
+        "operation_id": "prior-op-7",
+        "at": 1699992271.517
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-8",
+        "at": 1699992271.518
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-9",
+        "at": 1699992273.978
+      },
+      {
+        "resource": "quests",
+        "action": "field-engage",
+        "ok": true,
+        "operation_id": "prior-op-10",
+        "at": 1699992276.499
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-11",
+        "at": 1699992277.12
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-12",
+        "at": 1699992279.87
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992281.527
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-14",
+        "at": 1699992281.969
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-15",
+        "at": 1699992285.057
+      },
+      {
+        "resource": "quests",
+        "action": "field-engage",
+        "ok": true,
+        "operation_id": "prior-op-16",
+        "at": 1699992287.444
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-17",
+        "at": 1699992287.639
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-18",
+        "at": 1699992289.825
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-19",
+        "at": 1699992292.854
+      },
+      {
+        "resource": "quests",
+        "action": "field-defeat",
+        "ok": true,
+        "operation_id": "prior-op-20",
+        "at": 1699992292.858
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-21",
+        "at": 1699992295.198
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-22",
+        "at": 1699992298.347
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992298.771
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-24",
+        "at": 1699992300.754
+      },
+      {
+        "resource": "quests",
+        "action": "field-defeat",
+        "ok": true,
+        "operation_id": "prior-op-25",
+        "at": 1699992303.67
+      },
+      {
+        "resource": "quests",
+        "action": "field-defeat",
+        "ok": true,
+        "operation_id": "prior-op-26",
+        "at": 1699992308.632
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992313.634
+      },
+      {
+        "resource": "flight",
+        "action": "start",
+        "ok": true,
+        "operation_id": "prior-op-28",
+        "at": 1699992313.984
+      },
+      {
+        "resource": "quests",
+        "action": "field-engage",
+        "ok": true,
+        "operation_id": "prior-op-29",
+        "at": 1699992327.637
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-30",
+        "at": 1699992327.857
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-31",
+        "at": 1699992328.132
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-32",
+        "at": 1699992329.761
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992331.024
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-34",
+        "at": 1699992331.03
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-35",
+        "at": 1699992332.287
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-36",
+        "at": 1699992333.7
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-37",
+        "at": 1699992334.965
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-38",
+        "at": 1699992335.233
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-39",
+        "at": 1699992337.418
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-40",
+        "at": 1699992338.796
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-41",
+        "at": 1699992340.306
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-42",
+        "at": 1699992340.832
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-43",
+        "at": 1699992341.644
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992342.864
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-45",
+        "at": 1699992343.084
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-46",
+        "at": 1699992344.556
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-47",
+        "at": 1699992345.921
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-48",
+        "at": 1699992347.334
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-49",
+        "at": 1699992349
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-50",
+        "at": 1699992349.755
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-51",
+        "at": 1699992350.67
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-52",
+        "at": 1699992352.562
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-53",
+        "at": 1699992356.889
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992358.084
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-55",
+        "at": 1699992360.826
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-56",
+        "at": 1699992366.436
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-57",
+        "at": 1699992371.618
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992373.69
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-59",
+        "at": 1699992376.093
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-60",
+        "at": 1699992377.83
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-61",
+        "at": 1699992379.503
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-62",
+        "at": 1699992380.765
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-63",
+        "at": 1699992382.207
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-64",
+        "at": 1699992384.018
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-65",
+        "at": 1699992385.611
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-66",
+        "at": 1699992387.382
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992388.886
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-68",
+        "at": 1699992389.223
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-69",
+        "at": 1699992390.668
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-70",
+        "at": 1699992392.321
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-71",
+        "at": 1699992394.992
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-72",
+        "at": 1699992398.082
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-73",
+        "at": 1699992399.904
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-74",
+        "at": 1699992400.241
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-75",
+        "at": 1699992401.94
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-76",
+        "at": 1699992403.387
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992404.303
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-78",
+        "at": 1699992405.09
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-79",
+        "at": 1699992405.683
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-80",
+        "at": 1699992409.936
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-81",
+        "at": 1699992415.06
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992419.332
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-83",
+        "at": 1699992420.385
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-84",
+        "at": 1699992420.686
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-85",
+        "at": 1699992425.28
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-86",
+        "at": 1699992427.064
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-87",
+        "at": 1699992428.917
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-88",
+        "at": 1699992429.314
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-89",
+        "at": 1699992430.072
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-90",
+        "at": 1699992431.519
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-91",
+        "at": 1699992433.446
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-92",
+        "at": 1699992434.225
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992434.446
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-94",
+        "at": 1699992435.166
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-95",
+        "at": 1699992437.34
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-96",
+        "at": 1699992439.197
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-97",
+        "at": 1699992440.921
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-98",
+        "at": 1699992441.675
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-99",
+        "at": 1699992442.593
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-100",
+        "at": 1699992444.392
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-101",
+        "at": 1699992446.044
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-102",
+        "at": 1699992447.704
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-103",
+        "at": 1699992449.473
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992449.743
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-105",
+        "at": 1699992450.779
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-106",
+        "at": 1699992451.807
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-107",
+        "at": 1699992452.151
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-108",
+        "at": 1699992454.371
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-109",
+        "at": 1699992456.281
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-110",
+        "at": 1699992460.418
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-111",
+        "at": 1699992462.847
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992465.135
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-113",
+        "at": 1699992468.277
+      },
+      {
+        "resource": "quests",
+        "action": "field-defeat",
+        "ok": true,
+        "operation_id": "prior-op-114",
+        "at": 1699992470.136
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992475.115
+      },
+      {
+        "resource": "field-cast",
+        "action": "events",
+        "ok": true,
+        "operation_id": "prior-op-116",
+        "at": 1699992475.621
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992480.217
+      },
+      {
+        "resource": "quests",
+        "action": "corpse-open",
+        "ok": true,
+        "operation_id": "prior-op-118",
+        "at": 1699992485.214
+      },
+      {
+        "resource": "quests",
+        "action": "corpse-pickup",
+        "ok": true,
+        "operation_id": "prior-op-119",
+        "at": 1699992490.501
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992495.217
+      },
+      {
+        "resource": "flight",
+        "action": "start",
+        "ok": true,
+        "operation_id": "prior-op-121",
+        "at": 1699992495.616
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992512.046
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992527.951
+      },
+      {
+        "resource": "quests",
+        "action": "turn-in",
+        "ok": true,
+        "operation_id": "prior-op-124",
+        "at": 1699992545.6
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992550.931
+      },
+      {
+        "resource": "flight",
+        "action": "start",
+        "ok": true,
+        "operation_id": "prior-op-126",
+        "at": 1699992552.001
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992560.582
+      },
+      {
+        "resource": "quests",
+        "action": "accept",
+        "ok": true,
+        "operation_id": "prior-op-128",
+        "at": 1699992570.959
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "ok": true,
+        "operation_id": false,
+        "at": 1699992575.984
+      },
+      {
+        "resource": "quests",
+        "action": "gather-start",
+        "ok": true,
+        "operation_id": "prior-op-130",
+        "at": 1699992584.367
+      },
+      {
+        "resource": "quests",
+        "action": "gather-cancel",
+        "ok": true,
+        "operation_id": "prior-op-131",
+        "at": 1699992589.371
+      },
+      {
+        "resource": "flight",
+        "action": "status",
+        "ok": false,
+        "operation_id": false,
+        "at": 1699992616.35
+      },
+      {
+        "resource": "quests",
+        "action": "status",
+        "operation_id": false,
+        "ok": true,
+        "http_status": 200,
+        "error": "",
+        "parse_error": "",
+        "content_type": "application/json",
+        "grants": [],
+        "cultivation": 0,
+        "pickedItems": [],
+        "shape": [
+          "grants",
+          "ok",
+          "questBag",
+          "quests"
+        ],
+        "at": 1699992618.773
+      }
+    ]
+  },
+  "current_browser": {
+    "phase": "held",
+    "version": "2.0.78",
+    "workflow": "quests",
+    "error": "qingxi_native_health_return_unverified",
+    "entry_error": null,
+    "cleanup_error": null,
+    "server_checked": true,
+    "final_status": {
+      "fresh": true,
+      "at": 1700000609.079
+    },
+    "pending": 0
+  },
+  "previous_browser": {
+    "phase": "waiting",
+    "version": "2.0.78",
+    "workflow": "quests",
+    "server_checked": true,
+    "error": "",
+    "entry_error": null,
+    "cleanup_error": null,
+    "status_error": "",
+    "pending": 0,
+    "final_status": {
+      "fresh": true,
+      "at": 1699992618.829
+    },
+    "flight_checked": true,
+    "flight_checked_at": 1699992621.038
+  }
+}

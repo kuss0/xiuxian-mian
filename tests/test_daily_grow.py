@@ -51,7 +51,11 @@ class DailyGrowTargetTests(unittest.TestCase):
             )
 
     def test_due_time_is_stable_within_a_day_and_inside_the_window(self):
-        now = time.time()
+        local = time.localtime()
+        # Keep the two samples on the same civil day even if the full suite
+        # happens to execute across local midnight.
+        now = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 12, 0, 0,
+                           local.tm_wday, local.tm_yday, local.tm_isdst))
         first = daily_grow.account_due_ts(8659059191, now)
         self.assertEqual(first, daily_grow.account_due_ts(8659059191, now + 60))
         hour = time.localtime(first).tm_hour

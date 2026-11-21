@@ -836,8 +836,12 @@ def test_scheduled_browser_rejects_before_launch(harness, monkeypatch, blocked):
     harness.launch.assert_not_awaited()
 
 
-def test_real_exhausted_status_without_start_defers_to_next_day(harness):
-    harness.record['daily_used'] = 0
+def test_real_exhausted_status_without_start_defers_to_next_day(harness, monkeypatch):
+    # Ten minutes before the server's day boundary. A correct next-day start
+    # can be less than an hour away.
+    now = 1795276200.0  # 2026-11-21 23:50 CST
+    monkeypatch.setattr(browser.time, 'time', lambda: now)
+    harness.record.update(day='2026-11-21', daily_used=0)
     harness.network.update(requests=[{'action': 'status'}], receipts=[{
         'ok': True, 'trial': {'status': {'remaining': 0, 'used': 3, 'limit': 3, 'activeRun': None}},
     }])
@@ -845,7 +849,7 @@ def test_real_exhausted_status_without_start_defers_to_next_day(harness):
     assert harness.record['phase'] == 'done'
     assert harness.record['daily_used'] == 0
     assert harness.record['exhausted'] is True
-    assert harness.record['next_at'] > browser.time.time() + 3600
+    assert browser.trial._day(harness.record['next_at']) == '2026-11-22'
     assert not asyncio.run(browser.run_scheduled_once(harness.owner.identity_id))[0]
     assert len(harness.commands) == 1
     harness.notice.assert_not_awaited()

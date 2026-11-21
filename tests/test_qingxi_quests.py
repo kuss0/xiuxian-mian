@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -1571,3 +1573,193 @@ def test_review_keeps_unresolved_evidence_in_the_record(monkeypatch, tmp_path):
     assert evidence['failed_receipts'] == [receipts[1]]
     assert [row['action'] for row in evidence['last_receipts']] == ['status', 'field-engage']
     assert (evidence['hp'], evidence['combat_active']) == (9000, False)
+
+
+@pytest.fixture
+def native_return_review_case(tmp_path, monkeypatch):
+    path = Path(__file__).with_name('fixtures') / 'qingxi-native-health-return-timeout-20261121.json'
+    case = json.loads(path.read_text())
+    result = case['result']
+    now = result['final_status']['at'] + 20
+    monkeypatch.setattr(quests.time, 'time', lambda: now)
+    record = _held_record(tmp_path, result)
+    record['browser'].update(case['current_browser'])
+    previous_dir = tmp_path / 'previous'
+    previous_dir.mkdir()
+    previous_path = previous_dir / 'result.json'
+    previous_path.write_text(json.dumps(case['previous_result']))
+    record['previous_browser'] = {**case['previous_browser'], 'evidence_dir': str(previous_dir)}
+    # The actual response exposes the roster and regions without global
+    # active/engagement flags. The review only closes this worker's hold.
+    record['field_status_evidence'] = quests.field_status_evidence(
+        {'states': {}, 'field': {'enemies': [{'id': 'bamboo:001'}], 'regions': []}},
+        record, verified_player_id=42, observed_at=now - .1)
+    return record, result, case['previous_result'], previous_path, now
+
+
+@pytest.mark.parametrize('scope, field, value', [
+    ('', '', None),
+    ('result', 'player', 43),
+    ('result', 'workflow', 'rewards'),
+    ('result', 'phase', 'running'),
+    ('result', 'upstream_version', 'unknown'),
+    ('result', 'upstream_version', []),
+    ('result', 'transport_policy', 0),
+    ('result', 'mainline_started_at', 1),
+    ('result', 'run', {'done': False}),
+    ('result', 'pending_operations', [{'action': 'gather-start'}]),
+    ('result', 'stored_pending', [{'action': 'gather-finish'}]),
+    ('result', 'casts', 1),
+    ('result', 'casts', False),
+    ('result', 'pending', False),
+    ('result', 'requests', 5),
+    ('result', 'reward_receipts', [{'grants': [1]}]),
+    ('result', 'entry_error', 'other_error'),
+    ('result', 'cleanup_error', 'TimeoutError'),
+    ('result', 'browser_shutdown_error', 'TimeoutError'),
+    ('result', 'browser_close_error', 'TimeoutError'),
+    ('browser', 'error', 'other_error'),
+    ('browser', 'workflow', 'rewards'),
+    ('browser', 'server_checked', False),
+    ('browser', 'cleanup_error', 'TimeoutError'),
+    ('browser', 'version', '2.0.53'),
+    ('browser', 'evidence_dir', []),
+    ('record', 'gather', {'gatherId': 'old'}),
+    ('record', 'pending', {'operationId': 'old'}),
+    ('record', 'previous_browser', None),
+    ('previous', 'flight_checked', False),
+    ('previous', 'evidence_dir', []),
+    ('previous', 'error', 'other_error'),
+    ('previous', 'final_status', {'fresh': False}),
+    ('previous_result', 'player', 43),
+    ('previous_result', 'server_checked', False),
+    ('previous_result', 'stored_pending', [{'action': 'field-engage'}]),
+    ('previous_result', 'combat_active', True),
+    ('previous_result', 'browser_shutdown_error', 'TimeoutError'),
+    ('initial', 'combat_active', True),
+    ('initial', 'combat_matches_runtime', False),
+    ('initial', 'state', 'defeat'),
+    ('initial', 'overworld', True),
+    ('initial', 'flight_active', True),
+    ('initial', 'hp', 1),
+    ('initial', 'runtime_id', 7),
+    ('initial', 'combat_id', 1),
+    ('home', 'error', '等待超时：加载入口'),
+    ('home', 'verified', True),
+    ('scene', 'scene_ready', True),
+    ('scene', 'scene_tier', 4),
+    ('scene', 'flight_active', True),
+    ('scene', 'chariot_mounted', True),
+    ('scene', 'ghost', True),
+    ('scene', 'hp', 1),
+    ('scene', 'hp', 0),
+    ('scene', 'hp', float('nan')),
+    ('scene', 'hp_max', float('inf')),
+    ('scene', 'combat_present', False),
+    ('scene', 'combat_matches_runtime', False),
+    ('scene', 'engaged_enemies', False),
+    ('receipt', 'action', 'gather-finish'),
+    ('receipt', 'operation_id', 'write-operation'),
+    ('receipt', 'ok', False),
+    ('receipt', 'at', 1),
+    ('final', 'fresh', False),
+    ('fresh', 'observed_at', 1_699_999_999),
+    ('fresh', 'verified_player_id', 43),
+    ('fresh', 'field_active', True),
+    ('fresh', 'field_engagement', True),
+    ('fresh', 'field_engagement', {'present': True, 'type': 'object', 'active': True}),
+    ('flight', 'mana', {'flightLocked': True}),
+    ('flight', 'playerId', 43),
+])
+def test_review_native_health_return_timeout_requires_complete_evidence(
+        monkeypatch, tmp_path, native_return_review_case, scope, field, value):
+    record, result, prior, prior_path, now = native_return_review_case
+    flight = {'ok': True, 'mana': {'flightLocked': False}}
+    if scope:
+        target = {
+            'result': result, 'browser': record['browser'], 'record': record,
+            'home': result['health_recovery']['latest']['home'], 'receipt': result['receipts'][-1],
+            'initial': result['health_recovery']['initial'], 'scene': result['health_recovery']['latest'],
+            'previous': record['previous_browser'], 'previous_result': prior,
+            'final': result['final_status'], 'fresh': record['field_status_evidence'], 'flight': flight,
+        }[scope]
+        target[field] = value
+        (tmp_path / 'result.json').write_text(json.dumps(result))
+        prior_path.write_text(json.dumps(prior))
+    persisted = (tmp_path / 'result.json').read_bytes()
+    call, save = AsyncMock(return_value=flight), Mock()
+    monkeypatch.setattr(quests, 'save', save)
+
+    asyncio.run(quests.review_browser_hold(call, record, 42))
+
+    if scope in {'', 'flight'}:
+        call.assert_awaited_once_with('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+    else:
+        call.assert_not_awaited()
+    assert record['gameplay_uncertain'] is bool(scope)
+    assert record['phase'] == ('held' if scope else 'waiting_gameplay')
+    assert (tmp_path / 'result.json').read_bytes() == persisted
+    if scope:
+        save.assert_not_called()
+        assert 'browser_review' not in record
+    else:
+        save.assert_called_once()
+        assert record['next_at'] == now + 60
+        assert record['browser_review'] == {
+            'at': now, 'evidence_dir': str(tmp_path), 'reason': 'pre_mainline_read_only_render_failure',
+            'flight': {'ok': True, 'flightLocked': False},
+        }
+        assert record['field_status_evidence']['field_active'] == 'unknown'
+        assert record['field_status_evidence']['field_engagement'] == 'unknown'
+
+
+@pytest.mark.parametrize('value', [None, [], {'gameplay_uncertain': True},
+                                  {'gameplay_uncertain': True, 'browser': []}])
+def test_native_return_review_rejects_missing_or_malformed_record(monkeypatch, value):
+    save = Mock()
+    monkeypatch.setattr(quests, 'save', save)
+    call = AsyncMock()
+    assert not quests.native_health_return_reviewable({}, value, 42)
+    asyncio.run(quests.review_browser_hold(call, value, 42))
+    call.assert_not_awaited()
+    save.assert_not_called()
+
+
+@pytest.mark.parametrize('taint', [
+    'evidence_dir', 'browser', 'late_pending', 'stale', 'current_file', 'previous_file', 'save',
+])
+def test_native_return_review_rechecks_after_flight_and_rolls_back_failed_save(
+        monkeypatch, tmp_path, native_return_review_case, taint):
+    record, result, prior, prior_path, _now = native_return_review_case
+    record['browser']['evidence'] = {}
+    before = copy.deepcopy(record)
+
+    async def flight(action, **payload):
+        assert action == 'status' and payload == {'_api_path': '/api/miniapp/xianxia-dwelling/flight'}
+        if taint == 'evidence_dir':
+            record['browser']['evidence_dir'] = str(tmp_path / 'replacement')
+        elif taint == 'browser':
+            record['browser'] = copy.deepcopy(record['browser'])
+        elif taint == 'late_pending':
+            record['pending'] = {'operationId': 'other'}
+        elif taint == 'stale':
+            record['field_status_evidence']['observed_at'] -= 60
+        elif taint == 'current_file':
+            result['receipt_edit_after_review'] = True
+            (tmp_path / 'result.json').write_text(json.dumps(result))
+        elif taint == 'previous_file':
+            prior['server_checked'] = False
+            prior_path.write_text(json.dumps(prior))
+        return {'ok': True, 'mana': {'flightLocked': False}}
+
+    save = Mock(side_effect=OSError('save failed') if taint == 'save' else None)
+    monkeypatch.setattr(quests, 'save', save)
+    if taint == 'save':
+        with pytest.raises(OSError, match='save failed'):
+            asyncio.run(quests.review_browser_hold(flight, record, 42))
+        assert record == before
+    else:
+        asyncio.run(quests.review_browser_hold(flight, record, 42))
+        save.assert_not_called()
+    assert record['gameplay_uncertain'] is True and record['phase'] == 'held'
+    assert 'browser_review' not in record

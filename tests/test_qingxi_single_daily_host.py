@@ -15,6 +15,10 @@ from test_qingxi_single_daily_proof import claimed_result
 @pytest.mark.parametrize('taint', ['', 'wrong_run', 'missing_flight', 'flight_locked', 'unknown', 'journal'])
 def test_single_worker_keeps_ownership_until_same_run_and_fresh_flight(monkeypatch, tmp_path, taint):
     from model.features import cave_treasure_miniapp, qingxi_trial_browser
+
+    # Use noon on the fixture's server day so this test can reach the worker
+    # regardless of the real time. The midnight gate has its own test below.
+    monkeypatch.setattr(quests.time, 'time', lambda: 1795233600.0)
     for name in ('.venv/bin/python', 'tools/longwind_trial_bot.py'):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)

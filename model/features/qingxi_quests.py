@@ -676,9 +676,162 @@ def ready_npc_navigation_handoff(result, identity_id):
     return None
 
 
+NATIVE_HEALTH_RETURN_UNVERIFIED = 'qingxi_native_health_return_unverified'
+NATIVE_HOME_TIMEOUT = '等待超时：返回洞府场景'
+NATIVE_HEALTH_REVIEW = 'pre_mainline_read_only_render_failure'
+
+
+def _native_review_time(value):
+    return type(value) in (int, float) and 0 < value < math.inf
+
+
+def _native_review_status_receipt(row):
+    return (isinstance(row, dict) and row.get('resource') == 'quests'
+            and row.get('action') == 'status' and row.get('operation_id') is False
+            and row.get('ok') is True and row.get('http_status') == 200
+            and row.get('error') == row.get('parse_error') == ''
+            and str(row.get('content_type', '')).split(';', 1)[0] == 'application/json'
+            and row.get('shape') == ['grants', 'ok', 'questBag', 'quests']
+            and row.get('grants') == row.get('pickedItems') == []
+            and type(row.get('cultivation')) is int and row['cultivation'] == 0)
+
+
+def _prior_native_review_closed(record, identity_id, entry, stop_errors):
+    previous, current = record.get('previous_browser'), record['browser']
+    if not isinstance(previous, dict):
+        return False
+    previous_dir = previous.get('evidence_dir')
+    if (not isinstance(previous_dir, str) or not previous_dir
+            or not isinstance(current.get('evidence_dir'), str) or not current['evidence_dir']
+            or previous_dir == current['evidence_dir'] or previous.get('flight_checked') is not True):
+        return False
+    result = _browser_evidence({'browser': previous})
+    final, receipts = result.get('final_status'), result.get('receipts')
+    if (result.get('player') != identity_id or result.get('combat_active') is not False
+            or result.get('overworld') is not False or result.get('state') != 'ready'
+            or result.get('pending_operations') != [] or result.get('stored_pending') != []
+            or not isinstance(final, dict) or final.get('fresh') is not True
+            or not isinstance(receipts, list) or not receipts or not _native_review_status_receipt(receipts[-1])
+            or any(not isinstance(row, dict) or (row.get('ok') is not True and not (
+                row.get('resource') == 'flight' and row.get('action') == 'status'
+                and row.get('operation_id') is False)) for row in receipts)):
+        return False
+    if (not all(item.get('workflow') == 'quests' and item.get('phase') in ('done', 'waiting', 'bounded_stop')
+                and item.get('server_checked') is True and type(item.get('pending')) is int and item['pending'] == 0
+                and not any(item.get(key) for key in (*stop_errors, 'error')) for item in (previous, result))
+            or previous.get('phase') != result.get('phase')
+            or previous.get('version') != '2.0.78'
+            or previous.get('version') != result.get('upstream_version')
+            or previous.get('final_status') != final):
+        return False
+    status_at, ended, flight_at = receipts[-1].get('at'), final.get('at'), previous.get('flight_checked_at')
+    return (all(map(_native_review_time, (status_at, ended, flight_at, entry)))
+            and status_at <= ended <= flight_at <= entry and ended - status_at < 60)
+
+
+def native_health_return_reviewable(result, record, identity_id):
+    """Recognize the return timeout before the task worker began gameplay."""
+    if not isinstance(result, dict) or not isinstance(record, dict) or not isinstance(record.get('browser'), dict):
+        return False
+    browser = record['browser']
+    version = result.get('upstream_version')
+    def zero(value):
+        return type(value) is int and value == 0
+    stop_errors = ('entry_error', 'snapshot_error', 'cleanup_error', 'status_error',
+                   'cast_error', 'browser_shutdown_error', 'browser_close_error')
+    if (record.get('phase') != 'held' or record.get('pending') or record.get('gather')
+            or browser.get('workflow') != 'quests' or browser.get('phase') != 'held'
+            or browser.get('error') != NATIVE_HEALTH_RETURN_UNVERIFIED
+            or browser.get('server_checked') is not True
+            or result.get('error') != NATIVE_HEALTH_RETURN_UNVERIFIED
+            or result.get('workflow') != 'quests' or result.get('phase') != 'held'
+            or result.get('player') != identity_id
+            or version != '2.0.78' or browser.get('version') != version
+            or type(result.get('transport_policy')) is not int or result['transport_policy'] != 1
+            or type(result.get('navigation_policy')) is not int or result['navigation_policy'] != 4
+            or result.get('mainline_started_at') is not None or result.get('run') is not None
+            or result.get('server_checked') is not True or result.get('combat_active') is not False
+            or result.get('overworld') is not False or result.get('state') != 'ready'
+            or not zero(result.get('pending')) or result.get('pending_operations') != []
+            or result.get('stored_pending') != [] or not zero(result.get('casts'))
+            or result.get('reward_receipts') != []
+            or result.get('stop_reason') or browser.get('stop_reason')
+            or any(result.get(key) or browser.get(key) for key in stop_errors)):
+        return False
+
+    recovery = result.get('health_recovery')
+    report = result.get('report')
+    if (not isinstance(recovery, dict) or recovery.get('phase') != 'blocked'
+            or recovery.get('reason') != 'return_unverified' or recovery.get('scene') != 'unsafe'
+            or not isinstance(report, dict) or report.get('error') != NATIVE_HOME_TIMEOUT
+            or report.get('story') is not None or report.get('questSummary') is not None
+            or report.get('fieldSettlements') != []):
+        return False
+    initial, latest = recovery.get('initial'), recovery.get('latest')
+    for scene in (initial, latest):
+        if (not isinstance(scene, dict) or scene.get('player') != identity_id
+                or scene.get('world_current') != 'yue' or scene.get('state') != 'ready'
+                or any(scene.get(key) is not False for key in (
+                    'overworld', 'cave_safe', 'town_safe', 'ghost', 'paused', 'flight_active',
+                    'chariot_mounted', 'combat_active', 'combat_settlement_pending', 'runtime_blocked'))
+                or any(not zero(scene.get(key)) for key in (
+                    'engaged_enemies', 'pending', 'memory_pending_count', 'stored_pending_count'))
+                or scene.get('combat_present') is not True or scene.get('combat_matches_runtime') is not True
+                or not _native_review_time(scene.get('hp')) or not _native_review_time(scene.get('hp_max'))
+                or scene['hp'] != scene['hp_max']):
+            return False
+    if (initial.get('scene_tier') != 4 or initial.get('scene_ready') is not True
+            or 'home' not in initial or initial['home'] is not None
+            or latest.get('scene_tier') != 3 or latest.get('scene_ready') is not False
+            or initial['hp'] != latest['hp'] or type(initial.get('runtime_id')) is not int
+            or initial['runtime_id'] < 1 or type(latest.get('runtime_id')) is not int
+            or initial['runtime_id'] != latest['runtime_id']
+            or type(initial.get('combat_id')) is not int or initial['combat_id'] < 1
+            or type(latest.get('combat_id')) is not int or latest['combat_id'] != initial['combat_id'] + 1):
+        return False
+    home = latest.get('home')
+    if (not isinstance(home, dict) or home.get('destination') != 'cave'
+            or home.get('verified') is not False or home.get('error') != NATIVE_HOME_TIMEOUT):
+        return False
+
+    receipts = result.get('receipts')
+    if (not isinstance(receipts, list) or len(receipts) != 4 or type(result.get('requests')) is not int
+            or result['requests'] != len(receipts)):
+        return False
+    if not all(map(_native_review_status_receipt, receipts)):
+        return False
+    final = result.get('final_status')
+    fresh = record.get('field_status_evidence')
+    if (not isinstance(final, dict) or final.get('fresh') is not True or final != browser.get('final_status')
+            or type(browser.get('pending')) is not int or browser['pending'] != 0
+            or not isinstance(fresh, dict) or fresh.get('verified_player_id') != identity_id
+            or fresh.get('pending_source') != 'browser_result'
+            or (fresh.get('field_active') is not False and fresh.get('field_active') != 'unknown')
+            or 'field_engagement' not in fresh):
+        return False
+    engagement = fresh['field_engagement']
+    if engagement is not None and engagement is not False and engagement != 'unknown':
+        return False
+
+    # The browser's final receipt followed the failed return. The host's
+    # identity-checked quest status must have been read again for this review.
+    entry, home_ms, ended = result.get('entry_started_at'), home.get('at'), final.get('at')
+    states_at, observed = fresh.get('observed_at'), record.get('observed_at')
+    receipt_times = [row.get('at') for row in receipts]
+    times = [entry, home_ms, ended, states_at, observed, *receipt_times]
+    if not all(map(_native_review_time, times)):
+        return False
+    now = time.time()
+    return (entry <= receipt_times[0] < receipt_times[1] < receipt_times[2]
+            < home_ms / 1000 <= receipt_times[3] <= ended <= states_at <= observed <= now
+            and ended - receipt_times[3] < 60 and now - states_at < 60
+            and _prior_native_review_closed(record, identity_id, entry, stop_errors))
+
+
 async def review_browser_hold(call, record, identity_id):
     """Called only after the owning identity's quest status was freshly read."""
-    if not record.get('gameplay_uncertain'):
+    if (not isinstance(record, dict) or not record.get('gameplay_uncertain')
+            or not isinstance(record.get('browser'), dict)):
         return
     browser = record.get('browser') or {}
     if browser.get('workflow') == 'rewards':
@@ -686,12 +839,30 @@ async def review_browser_hold(call, record, identity_id):
         # resources. Keep this batch held until its complete native status set
         # and pending journal are reviewed together.
         return
+    if browser.get('error') == NATIVE_HEALTH_RETURN_UNVERIFIED and not isinstance(browser.get('evidence_dir'), str):
+        return
     reason = ''
     result = _browser_evidence(record)
     if result and isinstance(record.get('browser'), dict) and 'evidence' not in record['browser']:
         # The caller persists the record right after this review.
         record['browser']['evidence'] = evidence_digest(result)
-    if (result.get('player') == identity_id and result.get('entry_error')
+    if NATIVE_HEALTH_RETURN_UNVERIFIED in (browser.get('error'), result.get('error')):
+        if native_health_return_reviewable(result, record, identity_id):
+            evidence_dir = browser.get('evidence_dir')
+            previous = copy.deepcopy(record['previous_browser'])
+            fresh = copy.deepcopy(record['field_status_evidence'])
+            flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
+            if (server_flight_closed(flight)
+                    and (flight.get('playerId') is None or str(flight['playerId']) == str(identity_id))
+                    and record.get('browser') is browser
+                    and record.get('gameplay_uncertain') is True
+                    and browser.get('evidence_dir') == evidence_dir
+                    and record.get('previous_browser') == previous
+                    and record.get('field_status_evidence') == fresh
+                    and _browser_evidence(record) == result
+                    and native_health_return_reviewable(result, record, identity_id)):
+                reason = NATIVE_HEALTH_REVIEW
+    elif (result.get('player') == identity_id and result.get('entry_error')
             and not result.get('mainline_started_at') and result.get('server_checked') is True
             and (result.get('final_status') or {}).get('fresh') is True
             and result.get('pending') == 0 and result.get('stored_pending') == []
@@ -845,7 +1016,8 @@ async def review_browser_hold(call, record, identity_id):
             'quest_progress_stalled', 'quest_movement_not_ready', 'KeyboardInterrupt'}:
         reason = 'server_checked_safe_stop'
     if reason:
-        rollback = copy.deepcopy(record) if reason == 'rate_limited_flight_start_closed' else None
+        rollback = copy.deepcopy(record) if reason in {
+            'rate_limited_flight_start_closed', NATIVE_HEALTH_REVIEW} else None
         record.update(gameplay_uncertain=False, phase='held' if record.get('pending') or record.get('gather')
                       else 'waiting_gameplay', last_error='', next_at=time.time() + 60)
         record['browser_review'] = {'at': time.time(), 'evidence_dir': browser.get('evidence_dir'), 'reason': reason}
@@ -861,6 +1033,8 @@ async def review_browser_hold(call, record, identity_id):
             record['browser_review']['flight'] = {'ok': flight.get('ok'), 'flightLocked': flight['mana']['flightLocked']}
         if reason == 'rate_limited_flight_start_closed':
             record['browser_review']['rejected_flight_pending'] = result['pending_operations']
+        if reason == NATIVE_HEALTH_REVIEW:
+            record['browser_review']['flight'] = {'ok': True, 'flightLocked': False}
         if reason == 'operator_reviewed_field_pending':
             rows = result['pending_operations']
             record['browser_review'].update(

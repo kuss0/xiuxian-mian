@@ -228,6 +228,13 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         "              (state.story?.flightLastFailure || recovery.reason));":
             QUEST_NAVIGATION_EVIDENCE,
     }
+    warmup = ''
+    if not read_only and not reward_batch:
+        # Install on the factory result before its caller can create a resident
+        # and await prepareEffects. Scope the renderer change to quest workers.
+        warmup = Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
+        capture = '          const obj = Reflect.apply(target, receiver, args);\n'
+        patches[capture] = capture + "          if (slot === '__rt') qingxiWarmup.capture(obj);\n"
     for before, after in patches.items():
         if script.count(before) != 1:
             raise RuntimeError('qingxi_upstream_policy_anchor_changed')
@@ -249,7 +256,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
             if script.count(before) != 1:
                 raise RuntimeError('qingxi_single_daily_anchor_changed')
             script = script.replace(before, after)
-    source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + script
+    source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + warmup + script
     if reward_batch:
         source += '\n' + Path(__file__).with_name('qingxi_reward_batch.js').read_text().replace('__PLAYER__', str(player))
     return source
@@ -261,6 +268,7 @@ SNAPSHOT = r"""(() => {
   requests:window.__qx?.requests,casts:window.__qx?.casts,status_error:window.__qx?.statusError,states:q?.states||{},
   cast_error:window.__qx?.castError,
   navigation_failure:window.__qx?.navigationFailure,
+  native_warmup:window.qingxiWarmup?.snapshot?.(),
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
   state:s?.state,combat_active:s?.active,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
@@ -538,7 +546,7 @@ def finish_page(page, result, player):
     except Exception as exc:
         result['snapshot_error'] = type(exc).__name__
     try:
-        page.js('window.__autobot.stop();window.__fc?.stop()')
+        page.js('window.__autobot.stop();window.__fc?.stop();window.qingxiWarmup?.revoke?.()')
         page.wait('(window.__fc?.stats?.().fieldPending||0)===0 && (window.__fc?.stats?.().castOutbox||0)===0 && window.__qx.pending.size===0',
                   45, '真实战斗回执', every=1)
         check = page.js(FINAL_REFRESH, timeout=30)
