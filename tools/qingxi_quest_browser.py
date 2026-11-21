@@ -445,6 +445,46 @@ def prepare_native_health(page, result, result_path, player, *, timeout=None,
         write_result(result_path, result)
         raise RuntimeError('qingxi_native_health_' + reason)
 
+    def native_transition(operation, start, receipt, budget):
+        transition = {'stage': 'dispatch', 'read_timeouts': 0}
+        recovery.setdefault('transitions', {})[operation] = transition
+        write_result(result_path, result)
+        dispatched_at = wall_time() * 1000
+        try:
+            page.js(start)
+        except TimeoutError as error:
+            recovery['exception'] = type(error).__name__
+            blocked(operation + '_timeout')
+        except Exception as error:
+            recovery['exception'] = type(error).__name__
+            blocked(operation + '_error')
+
+        transition['stage'] = 'waiting_receipt'
+        write_result(result_path, result)
+        deadline = monotonic() + budget
+        while (remaining := deadline - monotonic()) > 0:
+            try:
+                reply = page.js(receipt, timeout=min(30, remaining))
+            except Exception as error:
+                # The pinned CDP client converts a Runtime.evaluate recv timeout
+                # into TimeoutError. Read the same receipt again after that error.
+                message = str(error)
+                if not (isinstance(error, TimeoutError) and
+                        (message == 'Runtime.evaluate' or message.startswith('Runtime.evaluate exceeded '))):
+                    recovery['exception'] = type(error).__name__
+                    blocked(operation + '_error')
+                transition['read_timeouts'] += 1
+                transition['last_read_timeout_at'] = wall_time()
+                write_result(result_path, result)
+            else:
+                if monotonic() < deadline and isinstance(reply, dict) and reply.get('done') is True:
+                    transition['stage'] = 'receipt_received'
+                    return reply, dispatched_at
+            remaining = deadline - monotonic()
+            if remaining > 0:
+                sleeper(min(2, remaining))
+        blocked(operation + '_timeout')
+
     def keep_native_scene_visible():
         try:
             visible = page.keep_visible()
@@ -464,17 +504,7 @@ def prepare_native_health(page, result, result_path, player, *, timeout=None,
     initial_hp, initial_max = snapshot.get('hp'), snapshot.get('hp_max')
     if safe == 'return_cave':
         recovery['phase'] = 'returning'
-        write_result(result_path, result)
-        started_at = wall_time() * 1000
-        try:
-            page.js(RETURN_CAVE_START)
-            page.wait('window.__qingxiHealthReturn?.done', QUEST_HOME_SEC, '原生安全返回洞府', every=2)
-            reply = page.js(RETURN_CAVE_DONE)
-        except TimeoutError:
-            blocked('return_timeout')
-        except Exception as error:
-            recovery['exception'] = type(error).__name__
-            blocked('return_error')
+        reply, started_at = native_transition('return', RETURN_CAVE_START, RETURN_CAVE_DONE, QUEST_HOME_SEC)
         snapshot, safe = observe('returning')
         home = snapshot.get('home') if isinstance(snapshot, dict) else None
         if (not isinstance(reply, dict) or reply.get('done') is not True or reply.get('error')
@@ -488,16 +518,7 @@ def prepare_native_health(page, result, result_path, player, *, timeout=None,
         # Do not use a disposed old town controller's HP after returning home.
         # Enter through the normal helper and wait only in its current safe town.
         recovery['phase'] = 'entering_town'
-        write_result(result_path, result)
-        try:
-            page.js(TOWN_REENTRY_START)
-            page.wait('window.__qingxiHealthTown?.done', QUEST_ENTRY_SEC, '回血前原生入坊', every=2)
-            reply = page.js(TOWN_REENTRY_DONE)
-        except TimeoutError:
-            blocked('reentry_timeout')
-        except Exception as error:
-            recovery['exception'] = type(error).__name__
-            blocked('reentry_error')
+        reply, _ = native_transition('reentry', TOWN_REENTRY_START, TOWN_REENTRY_DONE, QUEST_ENTRY_SEC)
         snapshot, safe = observe('entering_town')
         if (not isinstance(reply, dict) or reply.get('done') is not True or reply.get('error')
                 or reply.get('value') != '已进入青溪坊'

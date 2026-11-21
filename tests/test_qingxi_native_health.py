@@ -84,11 +84,11 @@ def health_snapshot(**changes):
     return snapshot
 
 
-def run_worker(monkeypatch, tmp_path, snapshots, **flags):
+def run_worker(monkeypatch, tmp_path, snapshots, *, transition_failure=None, **flags):
     """Run main(), including the real health gate and final refresh."""
     clock = SimpleNamespace(now=0)
     def sleep(seconds):
-        clock.now += 305
+        clock.now += seconds if seconds <= 2 else 305
     monkeypatch.setattr(worker, 'time', SimpleNamespace(
         sleep=sleep, monotonic=lambda: clock.now, time=lambda: 1795239469 + clock.now))
     final = dict(player=42, error='', status_error='', casts=0, requests=2,
@@ -106,8 +106,12 @@ def run_worker(monkeypatch, tmp_path, snapshots, **flags):
             return copy.deepcopy(current)
         if expression in (worker.RETURN_CAVE_START, worker.TOWN_REENTRY_START):
             actions.append(expression)
+            if transition_failure is not None:
+                transition_failure(expression, clock, kwargs.get('timeout'))
             return None
         if expression in (worker.RETURN_CAVE_DONE, worker.TOWN_REENTRY_DONE):
+            if transition_failure is not None:
+                transition_failure(expression, clock, kwargs['timeout'])
             return {'done': True, 'error': '', 'started_at': 1795239469000,
                     'value': '已返回洞府' if expression == worker.RETURN_CAVE_DONE else '已进入青溪坊'}
         if expression == worker.SNAPSHOT:
@@ -160,7 +164,8 @@ def test_native_recovery_gates_mainline_after_real_health_increase(monkeypatch, 
     assert result['states']['qx_q11']['progress']['arrows'] == 2
 
 
-def test_native_recovery_returns_and_reenters_through_verified_home(monkeypatch, tmp_path):
+@pytest.mark.parametrize('read_timeout', [False, True])
+def test_native_recovery_returns_and_reenters_through_verified_home(monkeypatch, tmp_path, read_timeout):
     cave = dict(cave_safe=True, town_safe=False, scene_tier=1, world_current=None,
                 runtime_id=2, combat_id=None, combat_present=False, combat_matches_runtime=None,
                 combat_active=False, paused=None, ghost=None, hp=None, hp_max=None,
@@ -174,11 +179,74 @@ def test_native_recovery_returns_and_reenters_through_verified_home(monkeypatch,
         health_snapshot(runtime_id=3, combat_id=3, hp=9000, draws=30),
         health_snapshot(runtime_id=3, combat_id=3, hp=12500, draws=40),
     ]
-    code, result, reads, actions = run_worker(monkeypatch, tmp_path, snapshots)
+    timed_out = set()
+    def transition_failure(expression, clock, timeout):
+        if timeout is not None and expression not in timed_out:
+            timed_out.add(expression)
+            clock.now += timeout
+            raise TimeoutError('Runtime.evaluate exceeded 30s')
+
+    code, result, reads, actions = run_worker(
+        monkeypatch, tmp_path, snapshots, transition_failure=transition_failure if read_timeout else None)
     assert code == 0
     assert result['health_recovery']['phase'] == 'ready'
     assert actions == [worker.RETURN_CAVE_START, worker.TOWN_REENTRY_START, 'mainline']
     assert any(snapshot['home'] and snapshot['home']['verified'] is True for snapshot in reads)
+    if read_timeout:
+        assert timed_out == {worker.RETURN_CAVE_DONE, worker.TOWN_REENTRY_DONE}
+        transitions = result['health_recovery']['transitions']
+        assert all(transitions[name]['read_timeouts'] == 1 for name in ('return', 'reentry'))
+
+
+def test_native_return_read_timeouts_use_remaining_transition_budget(monkeypatch, tmp_path):
+    snapshot = health_snapshot(town_safe=False, position=[500, 0, 500], combat_active=True,
+                               overworld=True, state='fighting')
+    calls = []
+    def transition_failure(expression, clock, timeout):
+        if expression == worker.RETURN_CAVE_DONE:
+            calls.append((clock.now, timeout))
+            clock.now += timeout
+            raise TimeoutError('Runtime.evaluate exceeded 30s')
+
+    code, result, _, actions = run_worker(monkeypatch, tmp_path, [snapshot], transition_failure=transition_failure)
+    assert code == 1
+    assert actions == [worker.RETURN_CAVE_START]
+    assert 'mainline_started_at' not in result
+    assert result['health_recovery']['reason'] == 'return_timeout'
+    transition = result['health_recovery']['transitions']['return']
+    assert transition['stage'] == 'waiting_receipt'
+    assert transition['read_timeouts'] == len(calls) > 1
+    first, last = calls[0], calls[-1]
+    assert first[1] == 30
+    assert last[0] + last[1] == first[0] + worker.QUEST_HOME_SEC
+    assert 0 < last[1] < first[1]
+
+
+@pytest.mark.parametrize(('failure_expression', 'error', 'reason', 'stage'), [
+    (worker.RETURN_CAVE_START, TimeoutError('Runtime.evaluate exceeded 30s'), 'return_timeout', 'dispatch'),
+    (worker.RETURN_CAVE_DONE, ConnectionError('CDP disconnected'), 'return_error', 'waiting_receipt'),
+    (worker.RETURN_CAVE_DONE, TimeoutError('socket send timed out'), 'return_error', 'waiting_receipt'),
+])
+def test_native_return_remains_held_on_dispatch_timeout_or_transport_error(
+        monkeypatch, tmp_path, failure_expression, error, reason, stage):
+    snapshot = health_snapshot(town_safe=False, position=[500, 0, 500], combat_active=True,
+                               overworld=True, state='fighting')
+    attempted = []
+    def transition_failure(expression, clock, timeout):
+        attempted.append(expression)
+        if expression == failure_expression:
+            raise error
+
+    code, result, _, actions = run_worker(monkeypatch, tmp_path, [snapshot], transition_failure=transition_failure)
+    assert code == 1
+    assert attempted.count(failure_expression) == 1
+    assert attempted[-1] == failure_expression
+    assert actions == [worker.RETURN_CAVE_START]
+    assert 'mainline_started_at' not in result
+    recovery = result['health_recovery']
+    assert recovery['reason'] == reason
+    assert recovery['exception'] == type(error).__name__
+    assert recovery['transitions']['return'] == {'stage': stage, 'read_timeouts': 0}
 
 
 def test_native_recovery_does_not_use_stale_home_verification(monkeypatch, tmp_path):
