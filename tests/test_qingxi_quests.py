@@ -1597,6 +1597,120 @@ def native_return_review_case(tmp_path, monkeypatch):
     return record, result, case['previous_result'], previous_path, now
 
 
+@pytest.fixture
+def native_return_cdp_case(tmp_path, monkeypatch):
+    fixture = Path(__file__).with_name('fixtures') / 'qingxi-pre-mainline-cdp-return-timeout-20261122.json'
+    case = json.loads(fixture.read_text())
+    record = case['host_record']
+    current_path = tmp_path / 'current' / 'result.json'
+    prior_path = tmp_path / 'previous' / 'result.json'
+    for path, key in ((current_path, 'result'), (prior_path, 'previous_result')):
+        path.parent.mkdir()
+        path.write_text(json.dumps(case[key]))
+    record.update(browser={**case['current_browser'], 'evidence_dir': str(current_path.parent)},
+                  previous_browser={**case['previous_browser'], 'evidence_dir': str(prior_path.parent)},
+                  browser_review={**case['browser_review'], 'evidence_dir': str(prior_path.parent)})
+    now = case['result']['final_status']['at'] + 90
+    monkeypatch.setattr(quests.time, 'time', lambda: now)
+    return case, record, current_path, prior_path, now
+
+
+@pytest.mark.parametrize('fault', [None, 'stale', 'field_active', 'field_engagement', 'unexpected_stop',
+                                   'write_receipt', 'old_review_missing', 'old_review_wrong_job',
+                                   'old_review_after_entry', 'old_flight_locked', 'old_result_changed',
+                                   'new_cleanup_error', 'new_pending', 'new_started', 'flight_locked',
+                                   'bad_directory', 'new_worker', 'bad_runtime', 'old_health_changed',
+                                   'wrong_identity', 'late_file_change',
+                                   'late_review_change', 'save_failed'])
+def test_native_return_cdp_hold_requires_new_status_and_closed_original_job(
+        native_return_cdp_case, monkeypatch, fault):
+    case, record, current_path, prior_path, now = native_return_cdp_case
+    result, previous = case['result'], case['previous_result']
+    prior_review = copy.deepcopy(record['browser_review'])
+    assert not quests.native_return_cdp_reviewable(result, record, 42), 'captured status was pre-run'
+
+    if fault != 'stale':
+        record['observed_at'] = now - .1
+        record['field_status_evidence']['observed_at'] = now - .2
+    if fault in {'field_active', 'field_engagement'}:
+        record['field_status_evidence'][fault] = True
+    if fault == 'unexpected_stop':
+        result['stop_reason']['quest_id'] = 'qx_q20'
+        record['browser']['stop_reason']['quest_id'] = 'qx_q20'
+    if fault == 'write_receipt':
+        result['receipts'][0]['operation_id'] = 'unverified'
+        record['browser']['evidence'] = quests.evidence_digest(result)
+    if fault == 'new_cleanup_error':
+        result['browser_shutdown_error'] = 'TimeoutError'
+    if fault == 'new_pending':
+        result['stored_pending'] = [{'action': 'field-engage'}]
+        record['browser']['evidence'] = quests.evidence_digest(result)
+    if fault == 'new_started':
+        result['mainline_started_at'] = result['entry_started_at'] + 1
+    if fault == 'bad_directory':
+        record['browser']['evidence_dir'] = {'path': 'unexpected'}
+    if fault == 'new_worker':
+        transitions = {'return': {'stage': 'dispatch', 'read_timeouts': 0}}
+        result['health_recovery']['transitions'] = transitions
+        record['browser']['health_recovery']['transitions'] = transitions
+    if fault == 'bad_runtime':
+        for report in (result, record['browser']):
+            recovery = report['health_recovery']
+            for scene in (recovery['initial'], recovery['latest'], *recovery['observations']):
+                scene['combat_id'] = {'id': 1}
+    if fault == 'old_review_missing':
+        del record['browser_review']
+    if fault == 'old_review_wrong_job':
+        record['browser_review']['evidence_dir'] = str(current_path.parent)
+    if fault == 'old_review_after_entry':
+        record['browser_review']['at'] = result['entry_started_at'] + 1
+    if fault == 'old_flight_locked':
+        record['browser_review']['flight']['flightLocked'] = True
+    if fault == 'old_result_changed':
+        previous['pending_operations'] = [{'action': 'field-engage'}]
+        prior_path.write_text(json.dumps(previous))
+    if fault == 'old_health_changed':
+        previous['health_recovery']['latest']['combat_active'] = True
+        prior_path.write_text(json.dumps(previous))
+    current_path.write_text(json.dumps(result))
+    before = copy.deepcopy(record)
+
+    async def fetch_flight(action, **payload):
+        assert action == 'status' and payload == {'_api_path': '/api/miniapp/xianxia-dwelling/flight'}
+        if fault == 'late_file_change':
+            previous['receipt_edit_after_review'] = True
+            prior_path.write_text(json.dumps(previous))
+        if fault == 'late_review_change':
+            record['browser_review']['at'] += 1
+        return {'ok': True, 'playerId': 43 if fault == 'wrong_identity' else 42,
+                'mana': {'flightLocked': fault == 'flight_locked'}}
+
+    flight = AsyncMock(side_effect=fetch_flight)
+    save = Mock(side_effect=OSError('save failed') if fault == 'save_failed' else None)
+    monkeypatch.setattr(quests, 'save', save)
+    if fault == 'save_failed':
+        with pytest.raises(OSError, match='save failed'):
+            asyncio.run(quests.review_browser_hold(flight, record, 42))
+        assert record == before
+    else:
+        asyncio.run(quests.review_browser_hold(flight, record, 42))
+        if fault:
+            save.assert_not_called()
+    if fault in {None, 'flight_locked', 'wrong_identity', 'late_file_change', 'late_review_change', 'save_failed'}:
+        flight.assert_awaited_once()
+    else:
+        flight.assert_not_awaited()
+    assert record['gameplay_uncertain'] is bool(fault)
+    assert record['phase'] == ('held' if fault else 'waiting_gameplay')
+    if fault is None:
+        save.assert_called_once()
+        assert record['browser_review']['reason'] == quests.NATIVE_RETURN_CDP_REVIEW
+        assert record['browser_review']['previous_review'] == prior_review
+        assert record['field_status_evidence']['field_active'] == 'unknown'
+        assert record['field_status_evidence']['field_engagement'] == 'unknown'
+        assert json.loads(current_path.read_text()) == result
+
+
 @pytest.mark.parametrize('scope, field, value', [
     ('', '', None),
     ('result', 'player', 43),
