@@ -218,3 +218,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 此浏览器正常取得铜钥，q13 服务端 `rewarded`，turn-in `a4685c78-ebee-48db-9ded-bf90d07a8a6f`，奖励灵石×378、回灵丹×2、清灵草种子×2。野外结算有回执，无五分钟目标超时；中途任务状态读取暂不可用后恢复，未变成未知写请求。
 - 后续 q14 因原生竹林航线/步行落点失败结束，未采到符芯/阵盘。最终任务状态 fresh，战斗 inactive，pending=0、stored_pending=[]，返回洞府，宿主飞行关闭，新鲜 q14 仍 active；worker/Chromium 已清理。21:19:20 本地汇总一次、`notice_state=sent`；NPC 默认通知可走低优先级汇总，尚未取得这一条的独立 Telegram 投递回执，不把本地 sent 等同逐条确认。
 - 摘要 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/baji-q13-live-evidence.json`。21:21:42 复核队列、原任务和飞行均闭合后，仅续已接受 q14，新 job `quest-b2b135e9585d40489cfcdc47b244e029`；旧 q13 不重复接取或领奖。WA q20 等裂缝窗口后再安排；主号 26 槽仍 **0/26**。
+
+## 21:43 吧唧 q14 部分进度与回归空窗
+
+- q14 续跑正常到达竹林，符芯由 0 增至 **12/15**，阵盘仍 **0/2**，任务 active。原生请求在本轮期限后、实际发送前被拒绝，stop reason=`quest_request_expired_before_send`；未形成未知写入或重复 accept，没有五分钟目标超时。
+- 返回洞府，满血 9744、战斗关闭、pending=0、stored_pending=[]、任务 final fresh、飞行闭合、worker/Chromium 清理完成；宿主 `waiting_gameplay/gameplay_uncertain=false`。后续只续剩余 3 符芯与 2 阵盘，不能把部分进度当成 q14 完成。
+- 脱敏摘要 `fight-timeout-diag-1855/baji-q14-partial-live-evidence.json`。21:43 队列空、无浏览器、两个自动开关仍 false，进入隔离全量回归；生产运行版本未变。单副本候选实验提交 `a50559ae`，发布验证树 `/root/xiuxian-qingxi-single-daily-release-lab-20261121`，801 项相关测试及两项撤修反例通过，尚待全量和生产核验。
+- 旁路候选均未部署：跃斩提前侧滚 `/root/xiuxian-bamboo-leap-lab-20261121/README.md` 仅有条件反例及官方命中子集验证；缓存 v2 `/tmp/qingxi-cdp-assets-v2-20261121-review.md` 修了授权生命周期和 CDP deadline，91 项离线测试，不证明真实命中或性能收益。原始 m19 哈希不变。
