@@ -24,6 +24,7 @@ from model.qingxi_single_daily import SINGLE_DAILY_RUN_SEC, valid_daily_id
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
 HEALTH_MINIMUM_RATIO = .8
+Q23_DEFER_REASON = 'q23_timed_gather_deferred'
 
 
 NATIVE_HEALTH_HELPER = """window.__qingxiNativeHealth = (()=>{
@@ -187,6 +188,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         raise RuntimeError('qingxi_upstream_source_changed')
     config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
               'rewardBatch': reward_batch, 'singleDaily': daily_id,
+              'q23TimedGather': not (read_only or reward_batch),
               'singleDailyRunSeconds': SINGLE_DAILY_RUN_SEC if daily_id is not None else None,
               'reviewedCastPending': reviewed_cast_pending or [],
               'reviewedReleasePending': reviewed_release_pending or [],
@@ -235,6 +237,45 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         warmup = Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
         capture = '          const obj = Reflect.apply(target, receiver, args);\n'
         patches[capture] = capture + "          if (slot === '__rt') qingxiWarmup.capture(obj);\n"
+        gather = '  async function gatherNode(node, owner) {'
+        q23_gather = Path(__file__).with_name('qingxi_q23_gather.js').read_text().replace(
+            '__Q23_DEFER_REASON__', json.dumps(Q23_DEFER_REASON))
+        patches.update({
+            gather: q23_gather + '\n  async function gatherNode(node, owner, timedBottle = false) {',
+            '  async function storyRequest(action, data, owner) {':
+                '  async function storyRequest(action, data, owner, timedPosition = null) {',
+            '    const result = await window.__quests.fieldRequest(action, data);\n    storyCheck(owner);':
+                '    const result = timedPosition ? await q23StartGather(action, data, owner, timedPosition)\n'
+                '      : await window.__quests.fieldRequest(action, data);\n    storyCheck(owner);',
+            "      const result = await storyRequest('gather-start', { nodeId: node.id }, owner);":
+                "      const result = await storyRequest('gather-start', { nodeId: node.id }, owner,\n"
+                '        timedBottle ? startPosition : null);',
+            '    const objective = row.objectives.find(o => o.progress < o.required);':
+                '    const timedBottle = q.id === "qx_q23";\n'
+                '    const objective = row.objectives.find(o => o.progress < o.required);\n'
+                '    if (timedBottle && (!q23Unfilled(storyData()) || objective?.id !== "bottle" ||\n'
+                '        objective.type !== "interact" || objective.worldObject !== Q23_BOTTLE ||\n'
+                '        objective.timeLimit !== 300 || objective.required !== 1 || objective.progress !== 0))\n'
+                '      throw new Q23GatherDeferred("瓶任务状态待核对");',
+            '      await gatherNode(node, owner);':
+                '      if (timedBottle && !q23NodeMatches(storyData(), node.id))\n'
+                '        throw new Q23GatherDeferred("封煞瓶节点待核对");\n'
+                '      await gatherNode(node, owner, timedBottle);',
+            "      if (!node) throw new Error('任务采集物尚未出现：' + objective.text);":
+                '      if (!node && timedBottle) throw new Q23GatherDeferred("封煞瓶节点待核对");\n'
+                "      if (!node) throw new Error('任务采集物尚未出现：' + objective.text);",
+            '    return workflow(async owner => {\n      await prepareTown(owner);\n'
+            "      await until(() => !!window.__quests, 30000, '主线控制器', owner);":
+                '    const q23WorkerDeadline = Date.now() + maxMinutes * 60000;\n'
+                '    return workflow(async owner => {\n      await prepareTown(owner);\n'
+                "      await until(() => !!window.__quests, 30000, '主线控制器', owner);",
+            'deadline: Date.now() + maxMinutes * 60000, current: null, completed: 0, deferred: []':
+                'deadline: Date.now() + maxMinutes * 60000, q23WorkerDeadline, current: null, completed: 0, deferred: []',
+            '            if (error instanceof SettlementError) {\n              await skipSettlement(error, owner);':
+                '            if (row.id === "qx_q23" && error instanceof Q23GatherDeferred)\n'
+                '              return await q23FinishDeferred(error, owner);\n'
+                '            if (error instanceof SettlementError) {\n              await skipSettlement(error, owner);',
+        })
     for before, after in patches.items():
         if script.count(before) != 1:
             raise RuntimeError('qingxi_upstream_policy_anchor_changed')
@@ -301,6 +342,7 @@ SNAPSHOT = r"""(() => {
   reward_batch:window.__qingxiRewardBatch?.state,reward_one:window.__qingxiRewardBatch?.oneState,
   field_fight_timeout:window.__qx?.fieldFightTimeout||null,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
+    ...(window.__qx?.stopReason?.reason === 'q23_timed_gather_deferred' ? {home:r.home} : {}),
     recent:r.recent?.slice(-12),damage,fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
   run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};
 })()"""
@@ -501,6 +543,24 @@ def finished_phase(snapshot):
     return 'held'
 
 
+def q23_defer_verified(result):
+    report = result.get('report') or {}
+    home = report.get('home') or {}
+    run = result.get('run') or {}
+    final = result.get('final_status') or {}
+    return (result.get('phase') == 'waiting' and result.get('server_checked') is True
+            and final.get('fresh') is True
+            and result.get('stop_reason') == {'reason': Q23_DEFER_REASON, 'quest_id': 'qx_q23'}
+            and type(result.get('pending')) is int and result['pending'] == 0
+            and result.get('pending_operations') == []
+            and result.get('stored_pending') == [] and result.get('combat_active') is False
+            and home.get('destination') == 'cave' and home.get('verified') is True
+            and run.get('done') is True and run.get('value') == '血煞封瓶暂缓'
+            and not run.get('error') and not report.get('error')
+            and not any(result.get(key) for key in ('error', 'status_error', 'cast_error', 'snapshot_error',
+                'cleanup_error', 'browser_shutdown_error', 'browser_close_error')))
+
+
 def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None,
                 reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None,
                 reward_batch=False, daily_id=None):
@@ -699,6 +759,10 @@ def main():
         result.update(phase='held', error=str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__)
     finally:
         os.umask(previous_umask)
+        if ((result.get('stop_reason') or {}).get('reason') == Q23_DEFER_REASON
+                and not q23_defer_verified(result)):
+            result['phase'] = 'held'
+            result.setdefault('error', 'qingxi_q23_defer_requires_review')
         if args.workflow == 'rewards' and not args.read_only and (
                 (result.get('reward_one' if args.daily_id is not None else 'reward_batch') or {}).get('phase') not in {'complete', 'partial'}):
             result['phase'] = 'held'

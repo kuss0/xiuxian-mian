@@ -167,7 +167,8 @@ def plan_next(data, rules, choices=None):
         return {'action': action, 'questId': quest['id'], 'npcId': npc_id,
                 'position': position, 'region': region}
 
-    for q in quests:
+    # An already filled Q23 bottle should reach its receiver before other errands.
+    for q in sorted(quests, key=lambda quest: quest['id'] != 'qx_q23'):
         slot = states.get(q['id'], {})
         if slot.get('status') != 'ready':
             continue
@@ -184,6 +185,16 @@ def plan_next(data, rules, choices=None):
     for q in quests:
         slot = states.get(q['id'], {})
         if slot.get('status') != 'active':
+            continue
+        if q['id'] == 'qx_q23':
+            # New fills need the native workflow's deadline and wire-time check.
+            # An existing or unverified timer is never permission to refill.
+            timers = slot.get('timers', {})
+            progress = slot.get('progress', {})
+            unstarted = (isinstance(timers, dict) and not timers and isinstance(progress, dict)
+                         and type(progress.get('bottle', 0)) is int and progress.get('bottle', 0) == 0)
+            gaps.append({'quest_id': q['id'], 'title': q['title'], 'objective_type': 'interact',
+                         'reason': 'timed_bottle_requires_browser' if unstarted else 'timed_bottle_state_requires_review'})
             continue
         for objective in q['objectives']:
             need = (slot.get('required') or {}).get(objective['id'], objective.get('required', 1))
@@ -220,7 +231,8 @@ def plan_next(data, rules, choices=None):
 
 
 def browser_required(gaps):
-    return any(g.get('reason') not in {'reward_choice_required', 'invalid_objective_quantity'}
+    return any(g.get('reason') not in {'reward_choice_required', 'invalid_objective_quantity',
+                                      'timed_bottle_state_requires_review'}
                and g.get('objective_type') != 'catch' for g in gaps)
 
 

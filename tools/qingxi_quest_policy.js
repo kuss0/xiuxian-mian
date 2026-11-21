@@ -25,6 +25,12 @@
   const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function q23BottleNodeIds() {
+    const nodes = window.__quests?.snapshot?.()?.nodes;
+    if (!Array.isArray(nodes)) return [];
+    return nodes.filter(node => typeof node?.id === 'string' && node.id &&
+      (node.itemId || node.worldObject || node.id) === 'qxq_sealing_bottle').map(node => node.id);
+  }
   function stop(reason, questId) {
     q.stopReason = {reason, quest_id: questId || ''};
     throw Error(reason);
@@ -260,12 +266,28 @@
     const prefix = '/api/miniapp/xianxia-dwelling/';
     if (url.origin !== location.origin || !url.pathname.startsWith(prefix)) return original(input, options);
     const resource = url.pathname.slice(prefix.length);
-    let body;
+    const guardQ23 = config.q23TimedGather && resource === 'quests';
+    const requestIsObject = input instanceof Request;
+    const entryOptions = guardQ23 ? {...options} : options;
+    const entryLease = guardQ23 ? q.q23Gather : null;
+    // A Request object's body may need an asynchronous read. Keep the ingress
+    // node identities before yielding, including the lease current at entry.
+    const entryBottleIds = guardQ23 && requestIsObject && entryOptions.body == null ? q23BottleNodeIds() : null;
+    let body, rawBody;
     try {
-      const raw = options?.body ?? (input instanceof Request ? await input.clone().text() : '{}');
-      body = JSON.parse(raw);
+      rawBody = entryOptions?.body ?? (requestIsObject ? await input.clone().text() : '{}');
+      body = JSON.parse(rawBody);
     } catch { throw Error('quest_request_unreadable'); }
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('quest_request_unreadable');
+    const gather = guardQ23 && ['gather-start', 'pickup'].includes(body.action);
+    const q23Gather = gather ? entryLease : null;
+    const bottleAtEntry = gather && (entryBottleIds ?? q23BottleNodeIds()).includes(body.nodeId);
+    // Keep the parsed request and the outgoing request on the same node,
+    // operation ID and endpoint if the caller changes its options in the queue.
+    if (guardQ23 && typeof rawBody !== 'string') throw Error('quest_request_unreadable');
+    const wireInput = guardQ23 && !requestIsObject ? url.href : input;
+    const wireOptions = guardQ23 && (entryOptions.body != null || !requestIsObject)
+      ? {...entryOptions, body: rawBody} : entryOptions;
     // Native flight heartbeats have a 3s deadline, three failures force landing,
     // and stop falls back to session expiry. Preserve that cleanup even when a
     // quest is held; takeoff, quest writes and combat remain guarded.
@@ -341,10 +363,20 @@
         const wait = 5000 - (performance.now() - q.last);
         if (wait > 0) await sleep(wait);
         check(resource, body);
+        if (q23Gather) {
+          // The official client queued this body before our request queue and
+          // rate limiter. Validate the same lease before recording any intent.
+          if (q.q23Gather !== q23Gather || body.action !== 'gather-start' ||
+              body.nodeId !== q23Gather.nodeId || q23Gather.sent)
+            throw Error('quest_q23_gather_scope');
+          q23Gather.beforeSend(body);
+        } else if (gather && (bottleAtEntry || q.q23Gather || q23BottleNodeIds().includes(body.nodeId))) {
+          throw Error('quest_q23_gather_scope');
+        }
         q.last = performance.now();
         q.requests++;
       }
-      if (options?.signal?.aborted) stop('quest_request_expired_before_send');
+      if (wireOptions?.signal?.aborted) stop('quest_request_expired_before_send');
       if (instances[resource] && body.action === 'start') q.starts.add(resource);
       if (config.rewardBatch && resource === 'trial' && body.action === 'start') trialStarts[body.arena]++;
       if (key) {
@@ -355,8 +387,9 @@
       }
       let response, decoded;
       try {
-        const wire = key ? sent(options) : null;
-        response = await original(input, wire ? wire.options : options);
+        const wire = key ? sent(wireOptions) : null;
+        if (q23Gather) q23Gather.sent = true;
+        response = await original(wireInput, wire ? wire.options : wireOptions);
         decoded = await readResponse(response);
         if (wire?.expired()) decoded.nativeExpired = true;
       } catch (error) {
