@@ -153,3 +153,11 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 最终隔离全量回归 `18914 passed, 1561 subtests passed in 546.46s`，全量 Ruff、Python 编译、注入助手及策略/整批 JS 语法、diff check 通过。回血撤修复 6 例失败，试炼旧运行时代码下 5 例业务回归失败。生产记录的只读副本演算恢复 WA 麦田 `deaths=1` 及 confirmed_defeat，重复对账不再修改，也不误挡竹林；未写生产 DB。实际回血尚未验收，26 格仍 0 通过，整批和任务调度保持关闭。
 
 发布备份与全量日志：`/root/xiuxian-qingxi-7plus6-release-20261121/health-defeat-1725/`。下轮只手动验 WA 主线恢复，今日麦田禁跑；不以本修复测试作为通关。17:28 只读调度核对无已知近期组队活动/官方定时冲突，WA 裂缝仍为 22:27:33；普通宠物与小世界计时只作并行观察，未发现会改变原生青溪场景或配额的证据。
+
+## 18:01 WA 原生回血实机与 qx_q11
+
+- `f88b15f1` 于 17:38:59 发布后，重启恢复 24 个身份，主服务、safety watchdog、health observer active，发送队列 0。重启对账从原 WA 麦田目录恢复同一 run 的 `deaths=1` 与 longwind confirmed_defeat；竹林当天未被错误挡住，原试炼通知仍为一次。
+- WA 任务 job `dfa4c6c5992743209dfa9805334a4b6d` 从洞府外野战位置开始。新鲜当前原生气血 **4525.8/15086**（约 30%），流程正常 `returnCave`，核验新 `home.verified=true`，重新通过助手入坊。安全坊市保持当前 runtime/combat 一致、未暂停/非鬼魂、无飞行/交战/未决写入。原生 draws 前进；气血由 **4525.8** 增至 **12445.95/15086**（约 82.5%），历时 **255.5 秒**，且有正向气血增长，随后才记录 `mainline_started_at`。该 run 最终气血回满。
+- qx_q11 箭簇由 **2/10** 连续增加至 **10/10**，服务端状态为 `rewarded`。共 17 个有回执的野外结算；单个敌人多次重建时不重复计入不同任务奖励。任务服务端刷新新鲜，pending 内存与磁盘均空，战斗 inactive，原生飞行关闭；退回安全洞府 `[2.55,0,0.7]`。任务调度状态恢复 `waiting_gameplay, gameplay_uncertain=false`，下一 qx_q12 为 active。
+- 此运行历时约 20 分钟，虽未超过新 4450 秒父预算；qx_q12 接取后因 `[57,1,5]` 无步行路线结束。按原流程安全返回，q12未产生新进度/奖励，当前无在途 worker 或 Chromium。证据见 `/root/xiuxian-qingxi-7plus6-release-20261121/health-defeat-1725/native-health-live-evidence.json` 和原始目录 `/root/2026/qingxi-trial-v13-20261105/.runtime/8659059191/quest-dfa4c6c5992743209dfa9805334a4b6d/`。这次实机通过**只验收低血安全恢复闸门及 qx_q11 真实交付**，不代表 qx_q12 或任何 7+6 奖励槽通过；试炼麦田战败事实不变。
+- 下一步先查 qx_q12 区域寻路失败成因，再在没有未决、身份和场景全 fresh 时续推 WA 主线；不重跑已领奖 qx_q11，不尝试 WA 麦田第二场。吧唧仍在正常闭关次轮，选择下一场需先看服务器零点前的剩余时段与活动占用。
