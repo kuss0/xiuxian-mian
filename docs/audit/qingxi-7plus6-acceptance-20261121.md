@@ -211,3 +211,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 宿主持久化竹林及麦田各自 `defeats_by_arena`，两个场地今天均停，旧麦田暂停没有被新局覆盖遗失。21:04 九项只读核对再次确认两场地各 used=1 且关闭，服务端飞行关闭；未放宽 held 或战败规则。通知恰一次，bot 确认回执 `451d61b890424e75af6e308b2d108497`。
 - 证据摘要 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/bamboo-first-tier-defeat-evidence.json`；原目录 `/root/2026/qingxi-trial-m19-wa-canary-20261116/.runtime/8659059191/fdd4867cdecd484f96c913db285d6f74/`。原生读取样本与首领截图保存在摘要同级。新斗法档案有六槽，包含朱雀环，后续分析不得套用旧五槽假设。
 - 26 格仍 **0/26**，今天不再尝试 WA 双试炼，转离线打法分析和主线。21:04 通过认证配置明确 q21=`endure`、q25=`elixir`，分别选回灵丹×2/×3，服务连续战斗携带；仅登记，尚未据此领奖。两个自动开关维持 false，q31 不可更改宗门选择仍未填。旧配置备份 `quest-reward-choices-before.json`。
+
+## 21:22 吧唧 q13 交付，继续 q14
+
+- 21:04 认证 `refresh` 复核吧唧原旧 holds 已解除，q13 药匣 1、铜钥缺失，q14 active。无 pending/gather 或不确定占用；当晚无已知近期组队/官方定时冲突。21:05 只开一个主线浏览器 `quest-9ea88b1b6d5a4a60b8da293a0ce5fd5a`，身份 **301299112** 核验通过，原生健康闸门通过后血量恢复至 **9744**。
+- 此浏览器正常取得铜钥，q13 服务端 `rewarded`，turn-in `a4685c78-ebee-48db-9ded-bf90d07a8a6f`，奖励灵石×378、回灵丹×2、清灵草种子×2。野外结算有回执，无五分钟目标超时；中途任务状态读取暂不可用后恢复，未变成未知写请求。
+- 后续 q14 因原生竹林航线/步行落点失败结束，未采到符芯/阵盘。最终任务状态 fresh，战斗 inactive，pending=0、stored_pending=[]，返回洞府，宿主飞行关闭，新鲜 q14 仍 active；worker/Chromium 已清理。21:19:20 本地汇总一次、`notice_state=sent`；NPC 默认通知可走低优先级汇总，尚未取得这一条的独立 Telegram 投递回执，不把本地 sent 等同逐条确认。
+- 摘要 `/root/xiuxian-qingxi-7plus6-release-20261121/fight-timeout-diag-1855/baji-q13-live-evidence.json`。21:21:42 复核队列、原任务和飞行均闭合后，仅续已接受 q14，新 job `quest-b2b135e9585d40489cfcdc47b244e029`；旧 q13 不重复接取或领奖。WA q20 等裂缝窗口后再安排；主号 26 槽仍 **0/26**。
