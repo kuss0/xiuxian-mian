@@ -372,13 +372,15 @@ def _target(runtime):
     return target
 
 
-def test_wanxin_strip_failure_debits_provider_and_consumes_only_target_commission(runtime):
+def test_wanxin_strip_failure_debits_provider_and_retains_target_commission(runtime):
     target = _target(runtime)
     text = "【剥离咒源失败】\n@provider_one 替 @target_one 剥离阴罗残咒，阴罗幡煞气被吞去 120 点。\n@provider_one 修为折损 500点"
     assert observe(event(".剥离咒源 @target_one", text))
     assert value()["value"] == 1880
     assert cultivation.cultivation_balance(IDENTITY)["value"] == 499500
-    assert target["wanxin_observation"]["commission"]["id"] == 0
+    commission = target["wanxin_observation"]["commission"]
+    assert commission["id"] == 10
+    assert commission["strip_failed_at"] > 0
     assert not observe(event(".剥离咒源 @target_one", text))
 
 
@@ -519,7 +521,8 @@ def test_held_wanxin_strip_retains_reservations_and_late_result_preserves_owner_
     observed = target["wanxin_observation"]
     assert observed["pending"] == active
     assert not observed["unresolved_actions"]
-    assert observed["commission"]["id"] == 0
+    assert observed["commission"]["id"] == 10
+    assert observed["commission"]["strip_failed_at"] > 0
     assert accounting.current_operation(IDENTITY, op_id)["phase"] == "complete"
     assert value()["value"] == 1880
     assert cultivation.cultivation_balance(IDENTITY)["value"] == 499500
@@ -706,7 +709,9 @@ def test_wanxin_resource_early_reply_after_disable_is_not_overwritten(runtime, m
         assert asyncio.run(wanxin._cleanup_wanxin_pending_only(310))
     assert not target["wanxin_observation"]["pending"]
     assert not target["wanxin_observation"]["unresolved_actions"]
-    assert target["wanxin_observation"]["commission"]["id"] == 0
+    commission = target["wanxin_observation"]["commission"]
+    assert commission["id"] == 10
+    assert commission["strip_failed_at"] > 0
     assert runtime[accounting.STATE_KEY]["operations"][0]["phase"] == "complete"
     assert cultivation.cultivation_balance(IDENTITY)["value"] == 499500
 
@@ -1114,7 +1119,8 @@ def test_abandoned_wanxin_resource_send_keeps_reservation_and_resolves_its_late_
     observed = target["wanxin_observation"]
     assert observed["pending"] == active
     assert not observed["unresolved_actions"]
-    assert observed["commission"]["id"] == 0
+    assert observed["commission"]["id"] == 10
+    assert observed["commission"]["strip_failed_at"] > 0
     assert accounting.current_operation(IDENTITY, op_id)["phase"] == "complete"
     assert value()["value"] == 1880
     assert cultivation.cultivation_balance(IDENTITY)["value"] == 499500
