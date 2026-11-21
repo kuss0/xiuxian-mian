@@ -231,3 +231,11 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 最终隔离回归 **19236 passed, 1561 subtests passed in 557.61s**，全量 Ruff、编译、JS 语法及 diff 检查通过。代码与测试树一致，单副本 `2976feee`、预检 `05be021d` 已推 `xiuxian-mian/main`；22:02:32 仅重启主服务，24 身份恢复、三服务 active、UI 200、queue=0、NRestarts=0，无残留浏览器。
 - 认证状态确认两主号无 pending/gather/不确定占用，主线/配额/奖励选择和 WA 双场地停跑记录均保留。单副本虽已提供 `reward_one+daily_id`，尚未进入真实七副本验收；阶段四的双场地单场闸门仍未通过，两个自动开关 false、**0/26**、三日观察未开始。详细核验 `qingxi-single-daily-release-20261121.md`。
 - 用户新分享包已隔离审查，见 `qingxi-share-reference-review-20261121.md`。仅提炼出用药拒绝续防候选及导航/诊断参考，未把其5副本+双试炼流程当7+6，未加载其启动器、默认多次重试或不可更改宗门默认值。分享包与三个策略/缓存实验均未发布。
+
+## 22:30 吧唧 q14 交付及 WA 裂缝窗口闭合
+
+- 吧唧 job `quest-3769f4eee54a4cb09566d15e2ef4358b` 从 q14 符芯12/15、阵盘0/2继续；正常达到15/15、2/2并原生交付，turn-in `267e7165-b1fc-403c-b839-bf90b0a02148`，奖励灵石×321、清灵草×4、阴魂丝×2。q15已接受 active，原契血印尚未取得。
+- 本轮到15分钟主线边界后 `bounded_stop`，正常返回洞府；最终任务状态fresh、满血9744、战斗inactive、pending=0、stored_pending=[]、宿主飞行关闭、无cleanup_error，worker/Chromium清理完成。宿主 `waiting_gameplay/gameplay_uncertain=false`，没有重复领奖或重接q14。证据 `fight-timeout-diag-1855/baji-q14-completed-live-evidence.json`。
+- WA窗口独立观察：22:17:36 `.推命 探索` 1649262→22:17:40真实回复1649263。改命沿用原始回复与10:17:14裂缝结果1647302的“改命待发”未过期链，不声称22:17重新查盘或改命；后续已记动作无消费/清除。22:27:36 `.探寻裂缝` 1649292，起始与最终回复为1649293，22:27:44服务端终局明确“探寻成功/推命命中/改命待发”。
+- 裂缝奖励木/土/水碎片各1、九天神雷木×1，天机+1、贡献+30。模块 reply_to/reply_due/pending_result均清零，预测已消费、改命按真实结果更新至11-22 01:28:44。`blocked_replan` 是消费后正常待重算。通用CommandAttempt账本仍open，不将模块闭合写成通用账本全closed；该账本不在本目标改动范围。
+- WA双试炼本日停跑不变；**0/26**。分享包提炼出的药品拒绝续防仅在 `/root/xiuxian-qingxi-potion-release-lab-20261121` 跑隔离全量，原m19双hash和生产策略未改，当前无实机浏览器。
