@@ -266,3 +266,11 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 00:22:07 仅重启 `xiuxian.service`。MainPID `2419586`，NRestarts=0，主服务、watchdog、健康观察均 active。UI 200、发送队列空、无 Chromium，原题库运行时文件未纳入提交。SQLite 一致性备份位于 `native-warmup-release-final/pre-release-state.db`。
 - 00:23:02 正常只读 `refresh` 核实 WA 身份和 task status，并确认服务端飞行已关闭。记录 `pre_mainline_read_only_render_failure`，宿主转 `waiting_gameplay/gameplay_uncertain=false`，保留原失败现场。当前服务器 field 聚合值仍未知。本次分类依据是当前 worker 未开始主线且只有 4 条 status、0 casts，上一局证实闭合以及本次 fresh flight；无关未知写入继续保持 held。
 - 图形保护仍待实机核验，在新的有效窗口观察精确方法匹配、保护安装、原生模型就绪和正常收尾。00:26 预检不再报 WA 占用。下一高优先级节点为 00:55:58 天星准备和 01:05:58 野外历练；该窗口之后根据真实回执和排程继续 WA q20。吧唧 q15 受击诊断候选处于隔离工作树，未部署。两号 **0/26**，三日观察未开始。
+
+## 11-22 00:46 受击证据保存发布与新日核对
+
+- `9f799571` 已推送 `xiuxian-mian/main`，00:44:30 仅重启主服务；MainPID `2438646`、NRestarts=0，24身份、UI200、queue0，watchdog/健康观察active，无残留浏览器。隔离全量 **19330 passed、1561 subtests passed**，42项定向及静态检查通过。备份 `q15-damage-release-0043/pre-release-state.db`。
+- worker 只保存原助手已有的有界受击记录（末12条、每条最多3名候选敌人），数值单位保持原样，未改打法或增加原生命令。昨日吧唧低血前的详细记录没有保存，不能由此补造。候选描述 `qingxi-q15-damage-diagnostic-candidate-20261122.md` 中的“未部署”是离线交付时点，现以本节为准。
+- 新鲜九项只读核对确认 WA 两试炼日为 `2026-11-22`、各used=0/remaining=3/activeRun=null，七副本仍未解锁。两主号无不确定占用，两个自动开关false，gameplay_enabled=true。下一次WA仍需完整原生健康闸门；实机GPU保护、q20推进、首场通关均待验证。
+- q23预算候选未部署。独立审查发现无lease请求排队期间瓶节点消失/变更会漏过识别，正在隔离实验树补线前双采样否定用例。当前未到q23，不将该候选称为线上修复。
+- 并行核对公共入口野外一分钟续跑：两号真实状态显示 `available=true/cooldown_hours=0`、daily_remaining递减，各次POST及回执独立。jihejish于00:45:34第8局后排至11-23 00:47:57；这是服务端剩余次数下的现有本地间隔，未见重复结算，未更改节奏/天星开关。WA仍留出00:55准备、01:05历练窗口。主号 **0/26**，三日观察未开始。
