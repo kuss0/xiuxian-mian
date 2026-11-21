@@ -15,6 +15,12 @@
   const instanceStatusKeys = {'moon-palace':'moon', 'blood-land':'blood', 'south-gate':'siege',
     'refugee-escort':'escort', 'mulan-shrine':'shrine', 'baiqiao-puppet':'puppet', 'jianzhong-trial':'jianzhong'};
   const trialStarts = {longwind:0, bamboo:0};
+  const singleResources = {moonpalace:'moon-palace', bloodland:'blood-land', southgate:'south-gate',
+    escort:'refugee-escort', mulanshrine:'mulan-shrine', bqpuppet:'baiqiao-puppet', jianzhong:'jianzhong-trial'};
+  const singleResource = config.singleDaily == null ? null : singleResources[config.singleDaily];
+  if (config.singleDaily != null && (!config.rewardBatch || typeof config.singleDaily !== 'string'
+      || !Object.hasOwn(singleResources, config.singleDaily))) q.error = 'single_daily_scope';
+  q.singleDailyReceipts = [];
   const journalKey = 'qingxi-local-pending:' + config.player;
   const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
@@ -79,6 +85,8 @@
     const readonly = resource === 'battle/doufa-profile' ? profileRead :
       body.action === 'status' || (body.action == null &&
         ['overview', 'details', 'section', 'town/review'].includes(resource));
+    if (singleResource && !readonly && (resource === 'trial' ||
+        (instances[resource] && resource !== singleResource))) stop('single_daily_write_scope');
     if (resource === 'trial' && !readonly) {
       if (!config.rewardBatch) stop('quest_runner_trial_forbidden');
       if (body.action === 'start' && q.rewardStop) stop('reward_batch_defeat_stop');
@@ -127,6 +135,27 @@
       pickedItems: Array.isArray(data?.pickedItems) ? data.pickedItems.map(g => ({itemId: g.itemId, quantity: g.quantity})) : [],
       shape: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [],
       at: Date.now() / 1000};
+    if (singleResource && resource === singleResource && body.action !== 'status') {
+      if (data?.playerId != null && String(data.playerId) !== String(config.player)) {
+        q.error = 'single_daily_player_mismatch'; throw Error(q.error);
+      }
+      const runIds = [payload?.run?.id, body.runId, payload?.runId].filter(id => id != null);
+      if (runIds.some(id => typeof id !== 'string' || !id) || new Set(runIds).size > 1) {
+        q.error = 'single_daily_run_mismatch'; throw Error(q.error);
+      }
+      Object.assign(row, {player_id:q.player, run_id:runIds[0] || null,
+        run_rewarded:payload?.run?.rewarded ?? null, result_kind:payload?.result?.kind || payload?.kind || null,
+        result_rewarded:payload?.rewarded ?? null, request_result:body.result || null});
+      if (payload?.ok === false || payload?.error || payload?.pending || payload?.anomaly) {
+        row.ok = false; row.error = 'single_daily_response_unconfirmed';
+      }
+      if (q.singleDailyReceipts.length >= 12) { q.error='single_daily_receipt_budget'; throw Error(q.error); }
+      // Preserve missing/invalid reward fields for single-run proof. The common
+      // receipt defaults are presentation values and cannot prove explicit zero.
+      q.singleDailyReceipts.push({...row,
+        grants:Array.isArray(payload?.grants) ? payload.grants.map(g => ({name:g?.name, quantity:g?.quantity})) : null,
+        cultivation:payload?.cultivation ?? null});
+    }
     q.receipts.push(row);
     if (config.rewardBatch && resource === 'trial' && row.ok && payload?.run?.status === 'defeated')
       q.rewardStop = {reason:'confirmed_defeat',run_id:payload.run.id,arena:payload.run.arena};
@@ -276,6 +305,12 @@
           stop('daily_reward_status_unverified');
         if (q.rewardDay && q.rewardDay !== status.day) stop('reward_batch_day_changed');
         q.rewardDay = status.day;
+      }
+      if (singleResource) {
+        const day = stamp => new Date(stamp + 8 * 3600000).toISOString().slice(0, 10), now=Date.now();
+        if (!Number.isSafeInteger(config.singleDailyRunSeconds) || config.singleDailyRunSeconds <= 0
+            || config.singleDailyRunSeconds > 3600 || status.day !== day(now)
+            || status.day !== day(now + config.singleDailyRunSeconds * 1000)) stop('single_daily_midnight_budget');
       }
     }
     if (config.rewardBatch && resource === 'trial' && body.action === 'start') {

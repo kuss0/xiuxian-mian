@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from model.qingxi_quest_budget import (QUEST_ENTRY_SEC, QUEST_HEALTH_SEC, QUEST_HOME_SEC,
                                       QUEST_IDENTITY_SEC, QUEST_INSPECT_SEC, QUEST_MAINLINE_DRAIN_SEC,
                                       QUEST_MAINLINE_SEC)
+from model.qingxi_single_daily import SINGLE_DAILY_RUN_SEC, valid_daily_id
 
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
@@ -177,13 +178,16 @@ QUEST_NAVIGATION_EVIDENCE = """if (!path) {
 
 def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pending=None, confirmed_cast_receipts=None,
                    reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None,
-                   reward_batch=False):
+                   reward_batch=False, daily_id=None):
+    if daily_id is not None and (not reward_batch or not valid_daily_id(daily_id)):
+        raise ValueError('single_daily_scope')
     source = (VENDOR / 'trial-bot.user.js').read_bytes()
     provenance = json.loads((VENDOR / 'source.json').read_text())
     if hashlib.sha256(source).hexdigest() != provenance['sha256']:
         raise RuntimeError('qingxi_upstream_source_changed')
     config = {'player': player, 'choices': choices or {}, 'readOnly': read_only,
-              'rewardBatch': reward_batch,
+              'rewardBatch': reward_batch, 'singleDaily': daily_id,
+              'singleDailyRunSeconds': SINGLE_DAILY_RUN_SEC if daily_id is not None else None,
               'reviewedCastPending': reviewed_cast_pending or [],
               'reviewedReleasePending': reviewed_release_pending or [],
               'reviewedPreparationPending': reviewed_preparation_pending or [],
@@ -228,6 +232,23 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         if script.count(before) != 1:
             raise RuntimeError('qingxi_upstream_policy_anchor_changed')
         script = script.replace(before, after)
+    if daily_id is not None:
+        native = Path(__file__).with_name('qingxi_single_daily_native.js').read_text().replace(
+            '__SINGLE_DAILY_ID__', json.dumps(daily_id))
+        changes = {
+            '  async function completeDaily() {': native + '\n  async function completeDaily() {',
+            "        step('每日副本重试：' + label);\n"
+            "        if (!act('start')) throw new Error('游戏未接受副本重新挑战');\n"
+            '        await storyWait(300, owner); continue;':
+                '        if (id === ' + json.dumps(daily_id) + ') return {singleDefeat:true};\n'
+                "        throw new Error('single_daily_unexpected_defeat_scope');",
+            '    start: startTrial, daily: completeDaily, drill: drillDaily,':
+                '    dailyOne: completeSingleDaily, start: startTrial, daily: completeDaily, drill: drillDaily,',
+        }
+        for before, after in changes.items():
+            if script.count(before) != 1:
+                raise RuntimeError('qingxi_single_daily_anchor_changed')
+            script = script.replace(before, after)
     source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + script
     if reward_batch:
         source += '\n' + Path(__file__).with_name('qingxi_reward_batch.js').read_text().replace('__PLAYER__', str(player))
@@ -247,7 +268,8 @@ SNAPSHOT = r"""(() => {
     catch{return null}})(),
   site:window.dwellingFishingSites?.town?.position,receipts:window.__qx?.receipts||[],
   reward_receipts:[...(window.__qx?.rewards.values()||[])],
-  reward_batch:window.__qingxiRewardBatch?.state,field_fight_timeout:window.__qx?.fieldFightTimeout||null,
+  reward_batch:window.__qingxiRewardBatch?.state,reward_one:window.__qingxiRewardBatch?.oneState,
+  field_fight_timeout:window.__qx?.fieldFightTimeout||null,
   report:r?{phase:r.phase,error:r.error,story:r.story,questSummary:r.questSummary,navigation:r.navigation,
     recent:r.recent?.slice(-12),fieldSettlements:r.fieldSettlements,retry:r.retry,batch:r.batch,dailyRewards:r.dailyRewards}:null,
   run:window.__qingxiRun?{done:window.__qingxiRun.done,value:window.__qingxiRun.value,error:window.__qingxiRun.error}:null};
@@ -451,7 +473,7 @@ def finished_phase(snapshot):
 
 def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=None, confirmed_cast_receipts=None,
                 reviewed_release_pending=None, reviewed_preparation_pending=None, reviewed_flight_pending=None,
-                reward_batch=False):
+                reward_batch=False, daily_id=None):
     target = cdp.call('Target.createTarget', {'url': 'about:blank', 'newWindow': True})['targetId']
     session = cdp.attach(target)
     for method in ('Page.enable', 'Runtime.enable', 'Network.enable', 'Page.bringToFront'):
@@ -461,7 +483,8 @@ def create_page(browser, cdp, player, choices, read_only, reviewed_cast_pending=
                                        confirmed_cast_receipts=confirmed_cast_receipts,
                                        reviewed_release_pending=reviewed_release_pending,
                                        reviewed_preparation_pending=reviewed_preparation_pending,
-                                       reviewed_flight_pending=reviewed_flight_pending, reward_batch=reward_batch)}, session)
+                                       reviewed_flight_pending=reviewed_flight_pending, reward_batch=reward_batch,
+                                       daily_id=daily_id)}, session)
     return browser.Page(cdp, session, target)
 
 
@@ -545,13 +568,18 @@ def main():
     parser.add_argument('--max-seconds', type=int, default=900)
     parser.add_argument('--read-only', action='store_true')
     parser.add_argument('--workflow', choices=('quests', 'rewards'), default='quests')
+    parser.add_argument('--daily-id')
     args = parser.parse_args()
+    if args.daily_id is not None and (args.workflow != 'rewards' or not valid_daily_id(args.daily_id)):
+        parser.error('single_daily_scope')
     sys.path.insert(0, str(args.tool_root / 'tools'))
     import longwind_trial_bot as browser
     from qingxi_local import profile_lock, read_url_file, stop_browser
     options = json.loads(args.options_file.read_text()) if args.options_file else {}
     result = {'phase': 'preparing', 'upstream_version': provenance_version(), 'navigation_policy': 4, 'transport_policy': 1}
     result['workflow'] = args.workflow
+    if args.daily_id is not None:
+        result['daily_id'] = args.daily_id
     cdp = process = page = None
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     previous_umask = os.umask(0o077)
@@ -564,7 +592,8 @@ def main():
                 page = create_page(browser, cdp, args.expected_player_id, options.get('choices', {}),
                                    args.read_only, options.get('reviewed_cast_pending'), options.get('confirmed_cast_receipts'),
                                    options.get('reviewed_release_pending'), options.get('reviewed_preparation_pending'),
-                                   options.get('reviewed_flight_pending'), reward_batch=args.workflow == 'rewards')
+                                   options.get('reviewed_flight_pending'), reward_batch=args.workflow == 'rewards',
+                                   daily_id=args.daily_id)
                 result['entry_started_at'] = time.time()
                 write_result(args.result, result)
                 try:
@@ -586,13 +615,17 @@ def main():
                             'maxTasks': 8, 'rewardChoices': options.get('choices', {})}
                     result['mainline_started_at'] = time.time()
                     write_result(args.result, result)
-                    workflow = ('window.__qingxiRewardBatch.run()' if args.workflow == 'rewards'
+                    reward_workflow = ('window.__qingxiRewardBatch.runOne(' + json.dumps(args.daily_id) + ')'
+                                       if args.daily_id is not None else 'window.__qingxiRewardBatch.run()')
+                    workflow = (reward_workflow if args.workflow == 'rewards'
                                 else 'window.__autobot.mainline(' + json.dumps(opts) + ')')
                     page.js('window.__qingxiRun={done:false};' + workflow
                             + '.then(value=>{window.__qingxiRun={done:true,value}},error=>{'
                             'window.__qingxiRun={done:true,error:String(error.message||error)}});void 0')
                     started = time.monotonic()
-                    budget = min(10800 if args.workflow == 'rewards' else QUEST_MAINLINE_SEC, max(30, args.max_seconds))
+                    limit = (SINGLE_DAILY_RUN_SEC if args.daily_id is not None else
+                             10800 if args.workflow == 'rewards' else QUEST_MAINLINE_SEC)
+                    budget = min(limit, max(30, args.max_seconds))
                     while time.monotonic() - started < budget + QUEST_MAINLINE_DRAIN_SEC:
                         snap = page.js(SNAPSHOT)
                         result.update(phase='running', **snap)
@@ -603,7 +636,7 @@ def main():
                             if (snap.get('run') or {}).get('error'):
                                 raise RuntimeError(snap['run']['error'])
                             if args.workflow == 'rewards':
-                                batch = snap.get('reward_batch') or {}
+                                batch = snap.get('reward_one' if args.daily_id is not None else 'reward_batch') or {}
                                 if batch.get('phase') not in {'complete', 'partial'} or not (batch.get('final') or {}).get('verified'):
                                     raise RuntimeError('qingxi_reward_batch_requires_review')
                             if snap.get('status_error') and (snap.get('report') or {}).get('error'):
@@ -637,7 +670,7 @@ def main():
     finally:
         os.umask(previous_umask)
         if args.workflow == 'rewards' and not args.read_only and (
-                (result.get('reward_batch') or {}).get('phase') not in {'complete', 'partial'}):
+                (result.get('reward_one' if args.daily_id is not None else 'reward_batch') or {}).get('phase') not in {'complete', 'partial'}):
             result['phase'] = 'held'
             result.setdefault('error', 'qingxi_reward_batch_requires_review')
         write_result(args.result, result)

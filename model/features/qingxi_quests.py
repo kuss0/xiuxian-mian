@@ -17,12 +17,14 @@ import uuid
 from ..activity_occupancy import get_activity_block_reason
 from ..persistence import mark_dirty, save_state
 from ..qingxi_quest_budget import QUEST_MAINLINE_SEC, QUEST_WORKER_SEC
+from ..qingxi_single_daily import (DAILY as SINGLE_DAILY, SINGLE_DAILY_RUN_SEC, SINGLE_DAILY_WORKER_SEC,
+                                  valid_daily_id, verify_single_daily)
 from ..runtime import send_audit_log, track_background_task
 from ..state import (get_expedition_config, get_expedition_run_state, get_global_enabled,
                      is_cave_public_identity_available)
 from ..webapp_core import (MiniAppRequestBudget, MiniAppRequestPolicy, build_miniapp_http_request,
                            execute_miniapp_http_request, require_miniapp_operation)
-from .changfeng_trial import _entry_url
+from .changfeng_trial import _day, _entry_url
 from .cave_treasure_miniapp import build_cave_treasure_miniapp_adapter
 from .miniapp_common import MiniAppIdentityOwner, build_pooled_miniapp_transport, run_miniapp_blocking_flow
 
@@ -104,6 +106,37 @@ async def notify_rewards(identity_id, record):
     except Exception:
         sent = False
     record['notice_state'] = 'sent' if sent else 'unconfirmed'
+    save()
+
+
+async def notify_single_daily(identity_id, record, daily_id, proof):
+    """Reserve one notice for this verified single run, never merge old rewards."""
+    if proof.get('outcome') not in {'claimed', 'defeat'} or not proof.get('run_id'):
+        return
+    day = proof['final']['day']
+    key = ':'.join((daily_id, day, proof['run_id']))
+    notices = record.setdefault('reward_one_notices', {})
+    if key in notices:
+        return
+    receipt = proof['receipts'][-1]
+    gains = [f'{row["name"]}×{row["quantity"]}' for row in receipt['grants']]
+    if receipt['cultivation']:
+        gains.append('修为×' + str(receipt['cultivation']))
+    message = '青溪副本｜' + SINGLE_DAILY[daily_id][1] + '｜' + (
+        '已确认通关领奖' if proof['outcome'] == 'claimed' else '战败，本场停止')
+    message += '｜' + ('、'.join(gains) if gains else '无确认奖励')
+    notice = {'daily_id': daily_id, 'day': day, 'run_id': proof['run_id'], 'state': 'sending',
+              'attempted_at': time.time()}
+    notices[key] = notice
+    attempted = record.get('notice_attempted', [])
+    record['notice_attempted'] = [*attempted, *[r.get('reward_id', r['operation_id'])
+                                               for r in proof['receipts'] if r.get('grants') or r.get('cultivation')]][-160:]
+    save()
+    try:
+        sent = await send_audit_log(message, scope='identity', send_as_id=identity_id, priority='normal', limit=700)
+    except Exception:
+        sent = False
+    notice['state'] = 'sent' if sent else 'unconfirmed'
     save()
 
 
@@ -1121,7 +1154,7 @@ async def inspect_reward_statuses(call, identity_id):
         final['day'] = final['day'] or status.get('day')
         final['daily'].append({'id': identity, 'day': status.get('day'), 'claimed': status['claimed'],
             'hasKey': status['hasKey'], 'activeRun': None,
-            'exhausted': identity == 'moonpalace' and status.get('failClaimed') is True and not status['claimed'] and status['hasKey']})
+            'exhausted': status.get('failClaimed') is True and not status['claimed'] and status['hasKey']})
     for arena in ('longwind', 'bamboo'):
         response = await call('status', _api_path='/api/miniapp/xianxia-dwelling/trial', arena=arena)
         if response.get('ok') is not True:
@@ -1133,7 +1166,13 @@ async def inspect_reward_statuses(call, identity_id):
     return final
 
 
-async def run_once(identity_id, *, status_only=False, reward_batch=False):
+async def run_once(identity_id, *, status_only=False, reward_batch=False, daily_id=None):
+    if daily_id is not None and (not reward_batch or not valid_daily_id(daily_id)):
+        return False, '需要明确指定七副本之一'
+    if daily_id is not None and not status_only:
+        now = time.time()
+        if _day(now) != _day(now + SINGLE_DAILY_WORKER_SEC):
+            return False, '单项副本预算将跨服务器零点，今日不再开局'
     from . import cave_treasure_runtime as cave
     owner = MiniAppIdentityOwner.capture(identity_id)
     if (owner is None or not get_global_enabled() or not is_cave_public_identity_available(identity_id)
@@ -1141,10 +1180,10 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
         return False, '身份不可用或正在参加其他活动'
     if reward_batch and owner.account_id != identity_id:
         return False, '每日副本和试炼仅支持本人账号'
-    if reward_batch and not status_only:
+    if reward_batch and not status_only and daily_id is None:
         from .qingxi_rewards import defeated_today
         if defeated_today(identity_id, time.time()):
-            return False, '最近试炼未通关，请先手动验证单场，暂不执行整批'
+            return False, '青溪每日副本或试炼当日未通关，整批停止；须复核相关单场'
     lock = cave._public_entry_lock(identity_id)
     if lock.locked():
         return False, '洞府公共入口操作执行中'
@@ -1152,9 +1191,27 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
     config = get_expedition_config().get('qingxi_quests', {})
     reward_config = copy.deepcopy(get_expedition_config().get('qingxi_rewards', {}))
     record = records().setdefault(str(identity_id), {})
+    held_single = (record.get('browser') or {}).get('daily_id')
+    if (reward_batch and status_only and held_single is not None
+            and (record.get('gameplay_uncertain') or record.get('phase') == 'held') and daily_id != held_single):
+        return False, '单项原局须使用相同副本范围只读核对'
+    single_history = record.get('reward_one_runs') or {}
+    if daily_id is not None and not isinstance(single_history, dict):
+        return False, '单项复核记录格式未知，保持停止'
+    previous_single = single_history.get(daily_id) or {} if daily_id is not None else {}
+    if daily_id is not None and not isinstance(previous_single, dict):
+        return False, '单项复核记录格式未知，保持停止'
+    if (daily_id is not None and previous_single.get('outcome') == 'defeat'
+            and (not isinstance(previous_single.get('final'), dict) or previous_single.get('daily_id') != daily_id)):
+        return False, '单项战败记录待复核，保持停止'
+    if (daily_id is not None and not status_only and previous_single.get('outcome') == 'defeat'
+            and (previous_single.get('final') or {}).get('day') == _day(time.time())):
+        return False, '该副本今日已确认战败，停止本场地当天尝试'
     if (reward_batch and status_only and any(record.get(key) for key in ('gameplay_uncertain', 'pending', 'gather'))
             and (record.get('browser') or {}).get('workflow') != 'rewards'):
         return False, '旧青溪任务仍待原任务证据核对，不能用奖励状态解除占用'
+    if daily_id is not None and status_only and (record.get('pending') or record.get('gather')):
+        return False, '旧任务未决操作须按原任务复核'
     if not status_only and (record.get('gather') or record.get('gameplay_uncertain')
             or (reward_batch and (record.get('pending') or record.get('phase') in {'held', 'running', 'loading'}))):
         return False, '青溪采集旧操作尚待核对'
@@ -1204,22 +1261,43 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
                 if status_only:
                     inspection = await inspect_reward_statuses(call, identity_id)
                     record['reward_inspection'] = inspection
+                    old = None
                     if any(record.get(key) for key in ('gameplay_uncertain', 'pending', 'gather')) or record.get('phase') == 'held':
                         old = _browser_evidence(record)
-                        if ((record.get('browser') or {}).get('cleanup_error') or not reward_batch_verified(old, identity_id)
+                        proof_ok = (verify_single_daily(old, identity_id, daily_id) if daily_id is not None
+                                    else reward_batch_verified(old, identity_id))
+                        if ((record.get('browser') or {}).get('cleanup_error') or not proof_ok
                                 or old.get('server_checked') is not True or old.get('pending') != 0
                                 or old.get('stored_pending') != [] or any(old.get(key) for key in ('error', 'status_error', 'cleanup_error'))):
                             raise RuntimeError('qingxi_reward_journal_requires_review')
                     flight = await call('status', _api_path='/api/miniapp/xianxia-dwelling/flight')
                     if not server_flight_closed(flight):
                         raise RuntimeError('qingxi_flight_requires_review')
-                    record.update(phase='idle', gameplay_uncertain=False, last_error='', rewards_block_reason='',
-                                  rewards_reviewed_at=time.time(), rewards_next_at=time.time() + 1800)
+                    record.update(phase='idle', gameplay_uncertain=False, last_error='',
+                                  rewards_reviewed_at=time.time())
+                    if daily_id is not None and old is not None:
+                        record['browser'].update(flight_checked=True, flight_checked_at=time.time())
+                        recovered = copy.deepcopy(old['reward_one'])
+                        recovered['flight_checked_at'] = record['browser']['flight_checked_at']
+                        record.setdefault('reward_one_runs', {})[daily_id] = recovered
+                        save()
+                        await notify_single_daily(identity_id, record, daily_id, recovered)
+                    if daily_id is None:
+                        record.update(rewards_block_reason='', rewards_next_at=time.time() + 1800)
                     save()
                     return True, '九项奖励、原任务证据与飞行状态已只读核对'
+                options = {'daily_id': daily_id} if daily_id is not None else {}
                 await run_gameplay(owner, token, url, record, allowed, reward_batch=True, inspection_only=status_only,
-                    verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'))
+                    verify_flight=lambda: call('status', _api_path='/api/miniapp/xianxia-dwelling/flight'), **options)
                 record.update(phase='idle', last_error='')
+                if daily_id is not None:
+                    proof = copy.deepcopy(record['browser']['reward_one'])
+                    proof['flight_checked_at'] = record['browser']['flight_checked_at']
+                    record.setdefault('reward_one_runs', {})[daily_id] = proof
+                    record['reward_inspection'] = copy.deepcopy(proof['final'])
+                    save()
+                    await notify_single_daily(identity_id, record, daily_id, proof)
+                    return True, '指定青溪副本本轮已核对：' + str(proof.get('outcome'))
                 record['reward_batch'] = copy.deepcopy(record['browser']['reward_batch'])
                 batch = record['reward_batch']
                 from .changfeng_trial import _next_day
@@ -1250,15 +1328,17 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False):
             return True, '青溪任务状态已核对' if status_only else '青溪任务本轮已结束'
         except (Exception, asyncio.CancelledError) as exc:
             code = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
-            if reward_batch:
+            if reward_batch and daily_id is None:
                 record['rewards_next_at'] = time.time() + 1800
             if status_only:
                 record['last_status_error'] = code
             else:
                 record.update(phase='held' if record.get('pending') or record.get('gather') or record.get('gameplay_uncertain') or code == 'qingxi_no_progress' else 'idle',
-                              last_error=code, next_at=time.time() + 1800)
+                              last_error=code)
+                if daily_id is None:
+                    record['next_at'] = time.time() + 1800
             save()
-            if not status_only:
+            if not status_only and daily_id is None:
                 await notify_rewards(identity_id, record)
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -1271,7 +1351,9 @@ async def _drain_browser_process(process, owner_token):
 
 
 async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, choices=None, reward_batch=False,
-                       inspection_only=False):
+                       inspection_only=False, daily_id=None):
+    if daily_id is not None and (not reward_batch or not valid_daily_id(daily_id)):
+        raise ValueError('single_daily_scope')
     from .fanren_client_browser import _PROCESS_OWNER_ENV, _await_uncancelled
     from .qingxi_trial_browser import TOOL_ROOT
     from .cave_treasure_miniapp import request_cave_treasure_miniapp_init_data
@@ -1303,6 +1385,10 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         launch_url = await request_cave_treasure_miniapp_init_data(owner.identity_id, token=token,
             webview_url=url, operation_check=allowed, return_webview_url=True)
         require_miniapp_operation(allowed)
+        if daily_id is not None:
+            now = time.time()
+            if _day(now) != _day(now + SINGLE_DAILY_WORKER_SEC):
+                raise RuntimeError('single_daily_midnight_budget')
         with os.fdopen(os.open(launch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
             stream.write(launch_url)
         with os.fdopen(os.open(options, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
@@ -1323,18 +1409,23 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                        'confirmed_cast_receipts': confirmed_cast_receipts(record, owner.identity_id)}, stream)
         if record.get('browser'):
             record['previous_browser'] = copy.deepcopy(record['browser'])
-        deadline_seconds = ((1500 if inspection_only else 11100) if reward_batch else QUEST_WORKER_SEC)
+        deadline_seconds = (SINGLE_DAILY_WORKER_SEC if daily_id is not None else
+                            (1500 if inspection_only else 11100) if reward_batch else QUEST_WORKER_SEC)
         record.update(phase='running', deadline=time.time() + deadline_seconds, gameplay_uncertain=True,
                       browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.78',
                                'workflow': 'rewards' if reward_batch else 'quests'})
+        if daily_id is not None:
+            record['browser']['daily_id'] = daily_id
         save()
         command = [str(python), str(script), '--tool-root', str(TOOL_ROOT), '--url-file', str(launch),
                    '--profile-dir', str(directory.parent / 'profile'), '--result', str(directory / 'result.json'),
                    '--expected-player-id', str(owner.identity_id), '--options-file', str(options),
                    '--max-seconds', str(QUEST_MAINLINE_SEC)]
         if reward_batch:
-            command[-1] = '900' if inspection_only else '10800'
+            command[-1] = (str(SINGLE_DAILY_RUN_SEC) if daily_id is not None else '900' if inspection_only else '10800')
             command.extend(['--workflow', 'rewards'])
+            if daily_id is not None:
+                command.extend(['--daily-id', daily_id])
             if inspection_only:
                 command.append('--read-only')
         with (directory / 'runner.log').open('w') as output:
@@ -1357,7 +1448,8 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                     try:
                         live = json.loads(live_path.read_text())
                         if live.get('player') == owner.identity_id:
-                            record['browser']['reward_batch'] = live.get('reward_batch')
+                            field = 'reward_one' if daily_id is not None else 'reward_batch'
+                            record['browser'][field] = live.get(field)
                             record['browser']['report'] = live.get('report')
                             mark_dirty()
                     except (OSError, ValueError):
@@ -1366,7 +1458,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
         record['browser'].update({k: result.get(k) for k in (
             'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
             'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report',
-            'health_recovery', 'reward_batch', 'reward_inspection')})
+            'health_recovery', 'reward_batch', 'reward_one', 'reward_inspection')})
+        if daily_id is not None:
+            record['browser'].pop('reward_batch', None)
         record['browser']['evidence'] = evidence_digest(result)
         existing = {row.get('reward_id', row['operation_id']) for row in record.get('receipts', [])}
         for row in result.get('reward_receipts', []):
@@ -1391,7 +1485,9 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
             inspection = result.get('reward_inspection') or {}
             verification = {'reward_batch': {'phase': 'partial', 'running': False,
                             'before': {'day': inspection.get('day')}, 'final': inspection}}
-        if reward_batch and not reward_batch_verified(verification, owner.identity_id):
+        verified = (verify_single_daily(verification, owner.identity_id, daily_id) if daily_id is not None
+                    else reward_batch_verified(verification, owner.identity_id))
+        if reward_batch and not verified:
             raise RuntimeError('qingxi_reward_batch_requires_review')
         try:
             flight = await verify_flight()
@@ -1415,10 +1511,17 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
 
 
 async def action(payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get('action', 'status'), str):
+        return False, '未知操作', {}
     kind = payload.get('action', 'status')
+    single = kind in {'reward_one', 'reward_one_refresh'}
+    if (single and (not valid_daily_id(payload.get('daily_id'))
+                    or set(payload) - {'action', 'send_as_id', 'daily_id'})
+            or not single and ('daily_id' in payload or 'slot' in payload)):
+        return False, '需要明确指定七副本之一，单项参数不可用于其他操作', {}
     if kind == 'status':
         return True, '青溪任务记录', {'qingxi_quests': copy.deepcopy(records())}
-    if kind not in {'run', 'refresh', 'rewards', 'rewards_refresh', 'operator_release'}:
+    if kind not in {'run', 'refresh', 'rewards', 'rewards_refresh', 'operator_release', 'reward_one', 'reward_one_refresh'}:
         return False, '未知操作', {}
     try:
         identity_id = int(payload.get('send_as_id'))
@@ -1440,8 +1543,10 @@ async def action(payload):
                                       'evidence_dir': browser.get('evidence_dir')}
         save()
         kind = 'refresh'
+    options = {'daily_id': payload['daily_id']} if single else {}
     task = track_background_task(asyncio.create_task(run_once(
-        identity_id, status_only=kind in {'refresh', 'rewards_refresh'}, reward_batch=kind in {'rewards', 'rewards_refresh'})))
+        identity_id, status_only=kind in {'refresh', 'rewards_refresh', 'reward_one_refresh'},
+        reward_batch=kind in {'rewards', 'rewards_refresh', 'reward_one', 'reward_one_refresh'}, **options)))
     _TASKS[identity_id] = task
     def done(completed):
         _TASKS.pop(identity_id, None)

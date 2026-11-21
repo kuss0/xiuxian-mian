@@ -523,10 +523,19 @@ function renderQingxiRewardConfig(config, identities, members) {
         + escapeHtml(progress.day || '未核对日期') + '｜每日已领 ' + escapeHtml(progress.claimed) + '/7｜试炼次数已用 '
         + escapeHtml(progress.trial_used) + '/6｜' + escapeHtml(progress.phase || 'idle') + '</summary>'
         + '<ul>' + (progress.slots || []).map(function(slot) {
-          return '<li>' + escapeHtml(slot.title) + '：' + escapeHtml(labels[slot.state] || '未核对') + '</li>';
+          const dailyIds = ['moonpalace', 'bloodland', 'southgate', 'escort', 'mulanshrine', 'bqpuppet', 'jianzhong'];
+          const single = dailyIds.includes(slot.id) ? ' <button type="button" class="btn"'
+            + ' data-qingxi-reward-action="reward_one" data-qingxi-reward-daily="' + escapeHtml(slot.id)
+            + '" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '"'
+            + (slot.state !== 'pending' || slot.defeated_today || ['loading','running','held'].includes(progress.phase) ? ' disabled' : '')
+            + '>单独执行</button>' : '';
+          return '<li>' + escapeHtml(slot.title) + '：' + escapeHtml(labels[slot.state] || '未核对') + single + '</li>';
         }).join('') + '</ul>'
         + (progress.blocked_reason ? '<p>' + escapeHtml(progress.blocked_reason) + '</p>' : '')
-        + '<button type="button" class="btn" data-qingxi-reward-action="rewards_refresh" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">只读核对</button>'
+        + '<button type="button" class="btn" data-qingxi-reward-action="'
+        + (progress.single_daily_id ? 'reward_one_refresh' : 'rewards_refresh') + '"'
+        + (progress.single_daily_id ? ' data-qingxi-reward-daily="' + escapeHtml(progress.single_daily_id) + '"' : '')
+        + ' data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '">只读核对</button>'
         + '<button type="button" class="btn" data-qingxi-reward-action="rewards" data-qingxi-reward-identity="' + escapeHtml(entry[0]) + '"' + (progress.auto_paused ? ' disabled' : '') + '>执行一批</button></details>';
     }).join('') + '</div>';
 }
@@ -697,8 +706,9 @@ document.addEventListener('click', async function(event) {
   if (!button || button.disabled) return;
   button.disabled = true;
   try {
-    const result = await postJson('/api/qingxi-quests', {action: button.dataset.qingxiRewardAction,
-      send_as_id: button.dataset.qingxiRewardIdentity});
+    const payload = {action: button.dataset.qingxiRewardAction, send_as_id: button.dataset.qingxiRewardIdentity};
+    if (button.dataset.qingxiRewardDaily) payload.daily_id = button.dataset.qingxiRewardDaily;
+    const result = await postJson('/api/qingxi-quests', payload);
     updateFlash(result.message || '已安排青溪操作', false);
     if (typeof refreshState === 'function') await refreshState({silent:true, keepFlash:true});
   } catch (error) { updateFlash(error.message || '青溪操作失败', true); }

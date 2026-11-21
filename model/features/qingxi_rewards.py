@@ -1,8 +1,10 @@
 """Daily scheduling and visible server-owned progress for Qingxi's 7+6 slots."""
 import copy
 import math
+import time
 
 from ..activity_occupancy import get_activity_block_reason
+from ..qingxi_single_daily import defeated_daily_today, valid_daily_id
 from ..runtime import send_audit_log
 from ..state import get_expedition_config, get_global_enabled, is_cave_public_identity_available
 from .changfeng_trial import _day, _entry_url, _next_day
@@ -21,7 +23,10 @@ def owns_identity(identity_id):
 
 def defeated_today(identity_id, now):
     from . import changfeng_trial as trial
+    from . import qingxi_quests as quests
     from .qingxi_trial_browser import confirmed_defeat
+    if defeated_daily_today(quests.records().get(str(identity_id), {}) or {}, _day(now)):
+        return True
     record = trial._records().get(str(identity_id), {}) or {}
     if (record.get('auto_pause') or {}).get('reason') == 'confirmed_defeat':
         return True
@@ -47,13 +52,19 @@ def progress(record):
     live = (browser.get('report') or {}).get('batch') or {}
     completed = {row.get('id') for row in live.get('completed', []) if isinstance(row, dict)} if live.get('mode') == 'daily' else set()
     slots = []
+    failures = record.get('reward_one_runs') or {}
     for identity, title in DAILY.items():
         row = rows.get(identity)
         status = ('claimed' if identity in completed or row and row.get('claimed') is True
                   else 'locked' if row and row.get('hasKey') is False
                   else 'exhausted' if row and row.get('exhausted') is True
                   else 'pending' if row else 'unknown')
-        slots.append({'id': identity, 'title': title, 'state': status})
+        failure = failures.get(identity) if isinstance(failures, dict) else None
+        lost_today = (isinstance(failure, dict) and failure.get('daily_id') == identity
+                      and failure.get('outcome') == 'defeat'
+                      and isinstance(failure.get('final'), dict)
+                      and failure['final'].get('day') == _day(time.time()))
+        slots.append({'id': identity, 'title': title, 'state': status, 'defeated_today': lost_today})
     for arena, title in ARENAS.items():
         status = (observation.get('trials') or {}).get(arena) or {}
         used = status.get('used')
@@ -68,6 +79,7 @@ def progress(record):
             'claimed': sum(row['state'] == 'claimed' for row in slots[:7]),
             'trial_used': sum(row['state'] == 'used' for row in slots[7:]),
             'next_at': record.get('rewards_next_at'), 'blocked_reason': record.get('rewards_block_reason', ''),
+            'single_daily_id': browser.get('daily_id') if valid_daily_id(browser.get('daily_id')) else None,
             'victories_this_batch': batch.get('trial_victories', 0)}
 
 
@@ -110,7 +122,7 @@ async def scheduler(now):
         defeat = defeated_today(identity_id, now)
         if defeat or stopped:
             record['rewards_next_at'] = _next_day(now, identity_id)
-            reason = ('试炼已确认战败' if defeat else '今日试炼结算需复核') + '，自动批次暂缓，保留剩余奖励次数待手动验证'
+            reason = ('每日副本或试炼已确认战败' if defeat else '今日试炼结算需复核') + '，自动批次暂缓，保留剩余奖励次数待手动验证'
             await _blocked(identity_id, record, reason, now)
             quests.save()
             continue
@@ -149,5 +161,7 @@ def snapshots():
         item = progress(record)
         if (trial._records().get(key) or {}).get('auto_pause'):
             item.update(auto_paused=True, blocked_reason='试炼已确认战败，自动试炼暂停，需手动单场验证通过')
+        elif defeated_daily_today(record, _day(time.time())):
+            item.update(auto_paused=True, blocked_reason='每日副本今日已确认战败，整批暂停；其余未败单项仍可分别验收')
         result[key] = item
     return result

@@ -143,5 +143,59 @@
       throw error;
     } finally { state.running = false; }
   }
+  const oneState = {mode:'single_daily', phase:'idle', running:false};
+  async function runOne(dailyId) {
+    requireValue(dailyIds.includes(dailyId) && typeof window.__autobot.dailyOne === 'function', 'single_daily_scope');
+    requireValue(!state.running && oneState.phase === 'idle', 'single_daily_already_attempted');
+    Object.assign(oneState, {daily_id:dailyId, phase:'checking', running:true, before:null, final:null,
+      error:'', run_id:null, outcome:null, receipts:[]});
+    try {
+      oneState.before = await inspect();
+      const before = oneState.before.daily.find(row => row.id === dailyId), day=oneState.before.day;
+      if (!before.hasKey || before.claimed || before.exhausted) {
+        oneState.reason = before.claimed ? 'claimed' : !before.hasKey ? 'locked' : 'exhausted';
+        oneState.outcome = 'skipped';
+      } else {
+        requireValue((window.__qx.singleDailyReceipts || []).length === 0, 'single_daily_prior_write');
+        oneState.phase = 'running';
+        await window.__autobot.dailyOne(dailyId);
+        const native = finishedNative('single_daily');
+        requireValue(['claimed','defeat'].includes(native.outcome), 'single_daily_outcome_unknown');
+        oneState.outcome = native.outcome;
+        oneState.receipts = clone(window.__qx.singleDailyReceipts || []);
+        const [start, end] = oneState.receipts;
+        requireValue(oneState.receipts.length === 2 && start?.ok === true && start.action === 'start'
+          && start.run_rewarded === true && typeof start.run_id === 'string' && start.run_id
+          && end?.ok === true && end.action === 'end' && end.run_id === start.run_id,
+          'single_daily_run_unverified');
+        oneState.run_id = start.run_id;
+        requireValue(Array.isArray(end.grants) && end.grants.every(g => typeof g?.name === 'string' && g.name.trim()
+          && Number.isSafeInteger(g.quantity) && g.quantity > 0)
+          && Number.isSafeInteger(end.cultivation) && end.cultivation >= 0, 'single_daily_reward_shape');
+        requireValue(native.outcome !== 'claimed' || (end.result_kind === 'clear' && end.result_rewarded === true),
+          'single_daily_claim_unverified');
+        requireValue(native.outcome !== 'claimed' || end.grants.length > 0 || end.cultivation > 0,
+          'single_daily_reward_missing');
+        requireValue(native.outcome !== 'defeat' || (end.request_result === 'defeat'
+          && ['failure','defeat'].includes(end.result_kind)), 'single_daily_defeat_unverified');
+      }
+      oneState.final = await inspect(day);
+      const after = oneState.final.daily.find(row => row.id === dailyId);
+      requireValue(oneState.outcome !== 'claimed' || after.claimed === true, 'single_daily_claim_missing');
+      requireValue(oneState.outcome !== 'defeat' || after.claimed === false, 'single_daily_defeat_changed');
+      for (const arena of arenas)
+        requireValue(['used','remaining','limit'].every(key => oneState.before.trials[arena][key] === oneState.final.trials[arena][key]),
+          'single_daily_trial_changed');
+      for (const initial of oneState.before.daily.filter(row => row.id !== dailyId)) {
+        const final = oneState.final.daily.find(row => row.id === initial.id);
+        requireValue(['claimed','hasKey','exhausted'].every(key => !!initial[key] === !!final[key]), 'single_daily_other_changed');
+      }
+      oneState.phase = oneState.outcome === 'claimed' ? 'complete' : 'partial';
+      return clone(oneState);
+    } catch (error) {
+      oneState.phase = 'held'; oneState.error = error.message; throw error;
+    } finally { oneState.running = false; }
+  }
   window.__qingxiRewardBatch = {state, inspect, run};
+  Object.assign(window.__qingxiRewardBatch, {oneState, runOne});
 })();
