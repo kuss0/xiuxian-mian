@@ -259,3 +259,10 @@ q52、q65、q68 是对应战斗任务，本身不是进入对应有奖副本的�
 - 途中被黑衣剑宗接战，末段两次各约3791伤害使气血跌至约22%，触发原有30%低血保护；23:11 原生安全返回洞府，最终HP2143.68/9744、位置 `[-1.05,0.8375,-0.8]`。q15 原契血印仍未取得、q16 locked，没有任务奖励。本轮不是战败，不消费试炼或每日副本配额，也不计验收通过。
 - 末端任务状态fresh、pending=0、stored_pending=[]、战斗关闭，宿主另取新鲜飞行关闭回执；worker/Chromium均已退出，宿主 `waiting_gameplay/gameplay_uncertain=false`，无 cleanup/shutdown error。70笔原生cast事件、1笔field-engage/1笔field-release均有成功回执，不把cast上传成功写成击杀或任务完成；末端未发送请求的deadline停止标签也不能覆盖真实低血原因。
 - 脱敏证据 `fight-timeout-diag-1855/baji-q15-low-health-stop-evidence.json`，原始目录如上，现场采样 `baji-q15-live-samples.jsonl`。没有五分钟目标超时快照，未记录到低血前完整敌招细节；先分析路线与反击，不原样重跑。主号 **0/26**，三日观察未开始；WA仍保持上一节render held，两自动开关仍false。
+
+## 11-22 00:23 人物预热保护发布与 WA 旧占用核对
+
+- `38352213` 已推送 `xiuxian-mian/main`。隔离全量 **19329 passed、1561 subtests passed**，Node 19 项、源锚点、静态检查和撤修对照通过。三个既有测试改用明确的本地日期与时间，生产计时和配额判定沿用原规则。
+- 00:22:07 仅重启 `xiuxian.service`。MainPID `2419586`，NRestarts=0，主服务、watchdog、健康观察均 active。UI 200、发送队列空、无 Chromium，原题库运行时文件未纳入提交。SQLite 一致性备份位于 `native-warmup-release-final/pre-release-state.db`。
+- 00:23:02 正常只读 `refresh` 核实 WA 身份和 task status，并确认服务端飞行已关闭。记录 `pre_mainline_read_only_render_failure`，宿主转 `waiting_gameplay/gameplay_uncertain=false`，保留原失败现场。当前服务器 field 聚合值仍未知。本次分类依据是当前 worker 未开始主线且只有 4 条 status、0 casts，上一局证实闭合以及本次 fresh flight；无关未知写入继续保持 held。
+- 图形保护仍待实机核验，在新的有效窗口观察精确方法匹配、保护安装、原生模型就绪和正常收尾。00:26 预检不再报 WA 占用。下一高优先级节点为 00:55:58 天星准备和 01:05:58 野外历练；该窗口之后根据真实回执和排程继续 WA q20。吧唧 q15 受击诊断候选处于隔离工作树，未部署。两号 **0/26**，三日观察未开始。
