@@ -62,6 +62,16 @@ STOP_ENTRY = """(() => {
   if (gate?.combat !== combat || gate.arena !== combat?.stats?.()?.arena) return false;
   return combat.command('stop');
 })()"""
+POTION_BRANCHES = (
+    ("if (s.hp < hpAt && s.potions.hp > 0 && !(s.cooldown.hpPotion > 0) && !s.action) { "
+     "C.command('hpPotion'); this.why = 'hp药'; return; }",
+     "if (s.hp < hpAt && s.potions.hp > 0 && !(s.cooldown.hpPotion > 0) && !s.action "
+     "&& this.tryPotion(C, 'hpPotion', now)) { this.why = 'hp药'; return; }"),
+    ("if (s.mana < manaAt && s.potions.mana + s.potions.carry > 0 && !(s.cooldown.manaPotion > 0) && !s.action) { "
+     "C.command('manaPotion'); this.why = '灵药'; return; }",
+     "if (s.mana < manaAt && s.potions.mana + s.potions.carry > 0 && !(s.cooldown.manaPotion > 0) && !s.action "
+     "&& this.tryPotion(C, 'manaPotion', now)) { this.why = '灵药'; return; }"),
+)
 
 
 def install_projectile_timing(runner):
@@ -70,6 +80,24 @@ def install_projectile_timing(runner):
 
     def browser_script(*args, **kwargs):
         return original(*args, **kwargs) + '\n' + timing
+
+    runner.browser_script = browser_script
+
+
+def install_potion_rejection(runner):
+    """Change only the two pinned potion branches; preserve the native strategy."""
+    original = runner.browser_script
+    helper = Path(__file__).with_name('changfeng_potion_rejection.js').read_text(encoding='utf-8')
+
+    def browser_script(*args, **kwargs):
+        source = original(*args, **kwargs)
+        # Validate all anchors before changing any text. Missing/duplicate source
+        # must stop generation rather than fall back to an incomplete strategy.
+        if any(source.count(before) != 1 for before, _after in POTION_BRANCHES):
+            raise RuntimeError('trial_potion_rejection_anchor_changed')
+        for before, after in POTION_BRANCHES:
+            source = source.replace(before, after)
+        return source + '\n' + helper
 
     runner.browser_script = browser_script
 
@@ -140,6 +168,7 @@ def main(argv=None):
     sys.path.insert(0, str(options.tool_root / 'tools'))
     runner = importlib.import_module('longwind_trial_bot')
     install_projectile_timing(runner)
+    install_potion_rejection(runner)
     install_entry_gate(runner)
     return runner.main(remaining)
 
