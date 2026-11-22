@@ -18,4 +18,9 @@ fixture 保留实际回包。定向 319 passed；直接、原生、被动三条�
 撤修核对：基线正则不匹配真实规范化文本，候选匹配。
 全量 19431 passed、1561 subtests passed in 566.57s；Ruff、编译和 diff
 检查通过。完整日志 `/root/xiuxian-maintenance-20261122/voyage-instruction-full.log`。
-当前 WA 原生主线仍在运行，尚未发布或做新版生产只读校准。
+WA 原生主线低血收尾后，11:48 发布并推送 cebeaeaf，仅重启主服务。
+一致性备份 voyage-instruction-pre-release.db 已通过 quick_check；发布前
+UI 队列、持久 pending 均空，没有活动浏览器。启动恢复 24 身份，UI HTTP
+200、watchdog 正常。11:49:59 同一身份的正常只读回包已同步 returned、
+人物南宫婉·月影、路线月殿寻痕，不把提示当成已结算或奖励。
+实机响应 `/root/xiuxian-maintenance-20261122/voyage-instruction-live-confirmed.json`。

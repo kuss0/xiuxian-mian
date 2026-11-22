@@ -94,3 +94,37 @@ wisemole 07:37:13 只读探针确认两个场地均 activeRun=null、used=0/rema
 竹叶清风（3888882303）的只读远航回包实际为“侍妾【南宫婉·月影】已自【月殿寻痕】
 航线归来，正在洞府外等你接引。”，本地解析器拒绝该变体；未接引或结算。
 用户要求先检查上游，独立远航修复工作树当前没有候选改动；先完成上游更新评估。
+
+## 上游 2.0.114 与主线后续
+
+2.0.110 已替换为完整原版 2.0.114（origin/main 860d9a1f、PR13）。
+11:17 再次 fetch 以及作者 xifeng 分支复核没有更新提交；官方任务地图、
+施法传输、野外战斗和月殿四份在线 JS 与现有 0.2.17 资源包逐字节一致。
+新版仍由 Chromium 承载官方运行时，经原生 HTTP/WS 执行动作。
+
+09:44 一轮实机已交付 q27、q28、q29；q30 击退枪手 3/3，但账册未取得。
+原结果 quest-d645fb7ca31e423aa47b33bfb382f8c3 的新鲜收尾显示 q31 locked，
+无 pending。巨剑门选项 juji an 的实际配置键为 `jujian`，已由用户指定；
+尚未进行不可更改的 q31 挂单。
+
+11:34 经正常入口继续 WA q30，job quest-65c74f88121b4950985ddc9378dd80ac。
+原生已确认正确身份、满血入坊。一次 lantern:090 击杀结算 ok=true，
+damage=250242、hits=409，但 q30 账册进度仍为 0。任务目录规定其掉率
+0.85，不能仅凭本地击杀日志断言拾取成功。
+
+第二次黑衣剑宗交战后，原生低血保护停止并返回洞府；最终气血 1056.02/15086，
+无死亡或重试记录。原始受伤环保留四笔 HP 损失及近处招式候选，分别包括
+bossDash、bossQi 和后续 stagger；候选不等于确认伤源或防守指令回执。
+官方 enterWorld() 明确清零临时血瓶，运行时 hpPotions=0 不证明背包缺药。
+
+最终正确身份、新鲜任务回执、server_checked=true、成功 field-release 已确认，
+浏览器内存及磁盘 pending 均空，宿主 waiting_gameplay/gameplay_uncertain=false。
+q30 账册仍 0/1，q31 locked。先分析本次证据，不重开同一战斗。
+证据为该 job 的 result.json，以及
+`/root/xiuxian-maintenance-20261122/wa-q30-upstream114-observed.jsonl`。
+这次是主线低血收尾，不计入 26 格通过；本日仍为 1/26，整批/NPC 自动开关仍 false。
+
+远航剩余回包问题由诊断 ba160348 和固定官方提示行 cebeaeaf 解决：
+竹叶清风的正常只读入口已正确同步 returned，尚未由该读请求结算。
+见 concubine-voyage-instruction-20261122.md。后续生产 HEAD 已推送；
+题库运行时修改保留。
