@@ -1,7 +1,7 @@
 # Upstream dwelling assistant
 
-`trial-bot.user.js` is the unmodified source from wxjerry/xiuxian PR #10
-(version 2.0.78). `source.json` pins its commit, version, original path and
+`trial-bot.user.js` is the unmodified source from wxjerry/xiuxian PR #13
+(version 2.0.114). `source.json` pins its commit, version, original path and
 SHA256. Runtime startup checks that hash; the local adapter applies exact
 in-memory policy patches and refuses changed anchors. The upstream Electron
 launcher is not part of this Linux worker.

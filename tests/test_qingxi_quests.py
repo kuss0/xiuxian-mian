@@ -639,8 +639,8 @@ def test_upstream_source_is_pinned_and_checked_before_browser_launch():
     from tools.qingxi_quest_browser import VENDOR, browser_script
     source = browser_script(42)
     provenance = json.loads((VENDOR / 'source.json').read_text())
-    assert provenance['commit'] == '8a6938d0eb0104f74dbf6edf6ff56cac92afb7ae'
-    assert provenance['version'] == '2.0.110'
+    assert provenance['commit'] == '860d9a1f9d33059bc9ca80251878c5af52fd31e5'
+    assert provenance['version'] == '2.0.114'
     assert "(state.story?.flightLastFailure || recovery.reason)" in source
     assert 'window.__qx.navigationFailure' in source
     assert "if (!config.rewardBatch) stop('quest_runner_trial_forbidden')" in source
@@ -648,7 +648,7 @@ def test_upstream_source_is_pinned_and_checked_before_browser_launch():
     assert source.index('const config =') < source.index('==UserScript==')
 
 
-@pytest.mark.parametrize('version', ['2.0.53', '2.0.78', '2.0.110', '2.0.79'])
+@pytest.mark.parametrize('version', ['2.0.53', '2.0.78', '2.0.110', '2.0.114', '2.0.79'])
 @pytest.mark.parametrize('taint', ['', 'identity', 'unknown_defeat', 'flight_locked'])
 def test_versioned_flight_review_requires_unchanged_write_and_closure_evidence(
         monkeypatch, tmp_path, version, taint):
@@ -672,7 +672,7 @@ def test_versioned_flight_review_requires_unchanged_write_and_closure_evidence(
     call = AsyncMock(return_value={'ok': True, 'mana': {'flightLocked': taint == 'flight_locked'}})
     monkeypatch.setattr(quests, 'save', Mock())
     asyncio.run(quests.review_browser_hold(call, record, 42))
-    closed = version in {'2.0.53', '2.0.78', '2.0.110'} and not taint
+    closed = version in {'2.0.53', '2.0.78', '2.0.110', '2.0.114'} and not taint
     assert record['gameplay_uncertain'] is not closed
     if closed:
         assert record['browser_review']['reason'] == 'native_flight_session_closed'
@@ -998,7 +998,7 @@ def native_low_health_return_result():
 
 
 @pytest.mark.parametrize('taint', ['', 'stale_status', 'flight_locked', 'pending', 'unknown_error'])
-@pytest.mark.parametrize('version', ['2.0.78', '2.0.110'])
+@pytest.mark.parametrize('version', ['2.0.78', '2.0.110', '2.0.114'])
 def test_native_low_health_exit_requires_fresh_status_and_closed_flight(
         monkeypatch, tmp_path, native_low_health_return_result, taint, version):
     import json

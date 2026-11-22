@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         洞府助手（主支线 + 每日副本 + 试炼）
 // @namespace    dwelling-autobot
-// @version      2.0.110
-// @description  野外集中锁定目标，护送围绕车队交战、烧车怪优先；每日试炼固定一重，入场确认有奖才战斗，无奖立即退出，每波清场后回到开局位置；穆上师全程远程输出并按真实落点躲黑峰冰晶；副本和试炼开局前自动布下大庚剑阵，释放剑阵前确认目标；月殿只收起紫罗极火/乾蓝冰焰/阴阳冰火大剑，背包法宝可补位，结束恢复原装；月殿只放瞬发，普通法宝间隔 8–12 秒，点杀按原生冷却，第三阶段留灵力破招；已取得御风车时起飞改乘御风车；题记高处可飞到正上方急降，地面无法起降处悬停题记；每日副本领奖检查与复查，结束返回洞府
+// @version      2.0.114
+// @description  野外集中锁定目标，护送围绕车队交战、烧车怪优先；每日试炼固定一重，入场确认有奖才战斗，无奖立即退出，每波清场后回到开局位置；穆上师全程远程输出并按真实落点躲黑峰冰晶；副本和试炼开局前自动布下大庚剑阵，释放剑阵前确认目标；月殿只收起紫罗极火/乾蓝冰焰/阴阳冰火大剑，背包法宝可补位，结束恢复原装；月殿禁用持续伤害，允许安全站定读条，普通法宝间隔 8–12 秒，全程按原生冷却点杀，普通技能保留200灵力底线，血契打断例外；已取得御风车时起飞改乘御风车；题记高处可飞到正上方急降，地面无法起降处悬停题记；每日副本领奖检查与复查，结束返回洞府
 // @match        https://asc.aiopenai.app/miniapp/xianxia-dwelling*
 // @run-at       document-start
 // @grant        unsafeWindow
@@ -14,7 +14,7 @@
   'use strict';
   const window = typeof unsafeWindow === 'undefined' ? globalThis.window : unsafeWindow;
 
-  if (window.__autobot?.version === '2.0.110') return;
+  if (window.__autobot?.version === '2.0.114') return;
   const inherited = window.__autobot?.handoff?.();
   const sameScene = !!inherited && inherited.runtime === window.__rt && inherited.combat === window.__fc;
   // 更新已运行的助手时先松键、停旧战斗循环；保留游戏本身的试炼进度。
@@ -406,7 +406,7 @@
     if(failureSeen.size>=128)failureSeen.delete(failureSeen.keys().next().value);
     failureSeen.set(key,now);
     const event={event_id:'error:'+failureSession+':'+(++failureSequence),kind:'异常',code,title:({defeat:'角色战败',low_health:'低血量保护',timeout:'操作超时',sync_error:'结算同步异常',navigation:'寻路异常',load_failed:'场景加载异常',request_failed:'请求失败',runtime:'助手运行异常'})[code],
-      message:text,phase:safeLogText(state.phase,120),version:'2.0.110'};
+      message:text,phase:safeLogText(state.phase,120),version:'2.0.114'};
     if(Number.isFinite(combat?.hp) && Number.isFinite(combat?.hpMax) && combat.hpMax>0 && combat.hpMax<=1e15)
       Object.assign(event,{hp:Math.max(0,Math.min(Math.ceil(combat.hp),Math.ceil(combat.hpMax))),hp_max:Math.ceil(combat.hpMax)});
     rewardQueue.push({event,at:now});persistRewardQueue();void flushRewardQueue();
@@ -1198,7 +1198,7 @@
       // 低血量且被多人贴住时才使用紧急脱身。
       roll = s.hp / Math.max(1, s.hpMax) < .3 && enemies.filter(e => dist(me, e.position) < 3.5).length >= 2 && now - state.lastRollAt > 1800;
     }
-    const retreat = !!near && near.d < CFG.retreatDistance;
+    const retreat = !!near && near.d < (s.arena==='moonpalace' && state.story?8.5:CFG.retreatDistance);
     if (retreat && !threat?.hazard) want = retreatHeading(s,me,want);
     return { want, roll, threat, retreat, mobile:retreat || (s.treasureFx || []).includes('trap') || list.some(t=>t.mobile), critical: retreat || !!threat?.critical, dodging: now < state.evadeUntil, center: c, radius };
   }
@@ -3934,7 +3934,11 @@
       mode:native?.mode||null,phase:moonNumber(native?.phase),channel:moonNumber(native?.channel),pools:moonNumber(native?.pools),counts:moonCounts(native?.counts),
       combatPlan:state.story?.moonCombat?{status:state.story.moonCombat.status,
         nextChannelAt:moonNumber(state.story.moonCombat.nextChannelAt),nextTreasureAt:moonNumber(state.story.moonCombat.nextTreasureAt),
-        manaReserve:moonNumber(state.story.moonCombat.manaReserve)}:null,
+        manaReserve:moonNumber(state.story.moonCombat.manaReserve),
+        hits:moonNumber(state.story.moonCombat.hits),manaAfterPierce:moonNumber(state.story.moonCombat.manaAfterPierce),
+        ordinaryManaFloor:state.story.moonCombat.ordinaryManaFloor??0,
+        managedCast:state.story.moonCombat.managedCast?.name||null,preparingCast:state.story.moonCombat.preparingCast?.name||null}:null,
+      hitAudit:hitAudit(s),
       giant:giant?{cost:moonNumber(giant.cost),cooldown:moonNumber(s?.cooldown?.giant)}:null,
       mirrorGate,finaleGate,
       runes:Array.isArray(native?.runes)?native.runes.slice(0,3).map(value=>String(value).slice(0,20)):null,
@@ -3972,7 +3976,7 @@
         context.run.last?.state!=='fighting' && sample.state==='fighting';
       if (newRun) {
         if (context) {context.run.endedAt=now;context.run.endReason='next_run';appendMoonDiagnostic(context.run,'run_replaced',context.run.last);}
-        const run={id:'moon-'+now.toString(36)+'-'+Math.random().toString(36).slice(2,7),version:'2.0.110',startedAt:now,events:[],dropped:0};
+        const run={id:'moon-'+now.toString(36)+'-'+Math.random().toString(36).slice(2,7),version:'2.0.114',startedAt:now,events:[],dropped:0};
         moonDiagnosticHistory.push(run);moonDiagnosticHistory=moonDiagnosticHistory.slice(-3);
         moonDiagnosticContext={run,runtime:window.__fc,nativeRunId,signature:null,lastSampleAt:0,finaleAt:null,finaleSeconds:null,lastWalkAt:0};
         appendMoonDiagnostic(run,'run_start',sample,{note:sample.seconds>1?'中途接管，不能还原接管前的轨迹':'开始记录'});
@@ -5868,7 +5872,7 @@
     state.story.moonWheelChecked=true;
     if (fieldEnvironment?.swordSkill?.('wheelOn')===false) act('shieldWheel');
   }
-  // 月殿只观察原生状态，用当前角色装备对应的正常战斗命令输出；命中数不参与停火决策。
+  // 月殿全程按原生冷却点杀；计数只记录，第三阶段按真实消耗保留灵力。
   function moonSword(s) {
     return (s.kit||[]).find(k=>!k.locked && (k.skill==='qingzhu' || !k.skill&&k.category==='sword') && Number.isFinite(k.cost));
   }
@@ -5894,19 +5898,40 @@
     }
     return 1;
   }
-  const MOON_TREASURE_INTERVAL_MIN=8, MOON_TREASURE_INTERVAL_MAX=12;
-  function moonInstant(rule) {
-    // 按原生基础读条筛选，蓄势也不恢复原本需要读条的技能。
-    return !!rule && Number(rule.cast ?? 0)===0;
+  const MOON_TREASURE_INTERVAL_MIN=8, MOON_TREASURE_INTERVAL_MAX=12, MOON_ORDINARY_MANA_FLOOR=200;
+  function moonNoDot(rule, {skill,category,name} = {}) {
+    if (!rule || rule.dot>0 || rule.dotSeconds>0 || rule.kind==='sustain') return false;
+    // 原生部分持续伤害未写入 Rules（火浪、傀儡、煞气）；不能只检查顶层 dot。
+    if (['chisi','qianlan','yinyang_swords','phantasm_wheel','seven_fan','taiyin_fire','zhuque_ring'].includes(skill) ||
+        ['flame','ring','puppet'].includes(category) || ['烈焰焚天','煞气侵体'].includes(name)) return false;
+    return !Object.entries(rule.traits||{}).some(([key,value])=>/dot|burn|curse|bleed|poison/i.test(key) && Number(value)>0);
+  }
+  function moonCastSafe(s, view, step, seconds, plan, clock) {
+    if (!(seconds>=0) || seconds>3 || s.paused || s.airborne || document.hidden ||
+        step.critical || step.mobile || step.roll || s.hp/Math.max(1,s.hpMax)<.5 || clock-plan.hurtAt<.7 ||
+        view.channel!=null || Object.values(view.swords||{}).some(blade=>blade?.attacking)) return false;
+    const me=myPos();
+    if (groundHazards().some(h=>dist(me,h.center)<h.radius+.5)) return false;
+    if (view.phase===3) {
+      if (plan.nextChannelAt-clock<=seconds+1.2) return false;
+      const watch=state.story?.moonAvoid;
+      if (!watch || watch.unknownUntil>watch.fightTime || watch.nextPoolAt==null ||
+          watch.nextPoolAt-watch.fightTime<=seconds+.65) return false;
+    }
+    return true;
+  }
+  function moonHitAudit(s, plan) {
+    plan.hits=Number.isFinite(s.metrics?.playerHits)?s.metrics.playerHits:null;
+    // 用户明确要求全程点杀；绝不按累计命中数回剑或停火。
   }
   function moonPreferredArt(s) {
     const rules=window.QingxiTreasureRules?.arts;
     return (s.arts||[]).filter(name=>rules?.[name]?.damage>0 && rules[name].cost>=0 &&
-      moonInstant(rules[name]) &&
+      moonNoDot(rules[name],{name}) && Number.isFinite(Number(rules[name].cast??0)) && Number(rules[name].cast??0)>=0 &&
       (name!=='血煞斩' || s.hp/Math.max(1,s.hpMax)>.5))
       .sort((a,b)=>rules[b].damage/Math.max(1,rules[b].cost)-rules[a].damage/Math.max(1,rules[a].cost))[0] || null;
   }
-  function moonSkills(s, target) {
+  function moonSkills(s, target, includeOutOfRange = false) {
     const distance=dist(myPos(),target.position), rules=window.QingxiTreasureRules;
     const choices=(s.kit||[]).flatMap(slot=>{
       const rule=rules?.skills?.[slot.skill] || rules?.templates?.[slot.category];
@@ -5914,19 +5939,20 @@
       if (slot.skill==='qingzhu' || !slot.skill && slot.category==='sword') return [];
       const range=slot.skill==='xuantian'?10:slot.skill==='chisi'?19:rule?.range;
       if (!rule || slot.locked || !Number.isInteger(slot.slot) || slot.slot<1 || slot.slot>6 ||
-        !Number.isFinite(slot.cost) || slot.cost<0 || !(rule.damage>0 || rule.dot>0) || !(range>distance+.5) ||
-        !moonInstant(rule) ||
+        !Number.isFinite(slot.cost) || slot.cost<0 || !(rule.damage>0) || !(range>0) || !includeOutOfRange && !(range>distance+.5) ||
+        !moonNoDot(rule,slot) || !Number.isFinite(Number(rule.cast??0)) || Number(rule.cast??0)<0 ||
         rule.hpPct>0 && s.hp/Math.max(1,s.hpMax)<=.5) return [];
-      return [{kind:'slot',command:'slot'+slot.slot,counter:'treasures',name:slot.name||slot.skill,slot,cost:slot.cost,
+      return [{kind:'slot',command:'slot'+slot.slot,counter:'treasures',name:slot.name||slot.skill,slot,cost:slot.cost,cast:Number(rule.cast??0),range,inRange:range>distance+.5,
+        binds:['xutian_ding','xutian_replica'].includes(slot.skill),
         cooldown:slot.cooldown??s.cooldown?.['slot'+slot.slot]??0}];
     }).sort((a,b)=>a.slot.slot-b.slot.slot);
     const name=s.art, rule=rules?.arts?.[name], index=(s.arts||[]).indexOf(name);
     const artRange=name==='烈焰焚天'?8.5:name==='灵兽突袭'?13:23;
-    if (rule?.damage>0 && rule.cost>=0 && index>=0 && distance<artRange &&
-      moonInstant(rule) &&
+    if (rule?.damage>0 && rule.cost>=0 && index>=0 && (includeOutOfRange || distance<artRange) &&
+      moonNoDot(rule,{name}) && Number.isFinite(Number(rule.cast??0)) && Number(rule.cast??0)>=0 &&
       (name!=='血煞斩' || s.hp/Math.max(1,s.hpMax)>.5)) {
       const left=name==='火弹' ? s.cooldown?.spell : s.cooldown?.['art'+index];
-      choices.push({kind:'art',command:'art',counter:'arts',name,cost:moonManaScale(s)*rule.cost,
+      choices.push({kind:'art',command:'art',counter:'arts',name,cost:moonManaScale(s)*rule.cost,cast:Number(rule.cast??0),range:artRange,inRange:distance<artRange,
         cooldown:left??0});
     }
     return choices;
@@ -5952,15 +5978,17 @@
     plan.interrupts=view.counts?.interrupts||0;plan.channels=view.counts?.channels||0;
     if (view.channel==null && plan.channel) {plan.channel=null;plan.nextChannelAt=clock+17.5;}
     const d=dist(me,target.position), giant=moonGiant(s), sword=moonSword(s);
-    const choices=moonSkills(s,target), previous=choices.findIndex(c=>c.command===plan.lastSkill);
+    const choices=moonSkills(s,target,true), previous=choices.findIndex(c=>c.command===plan.lastSkill);
     const rotation=previous<0?choices:[...choices.slice(previous+1),...choices.slice(0,previous+1)];
     const ready=rotation.filter(c=>c.cooldown===0 && now>=(state.skillRetryAt[c.command]||0));
-    plan.hits=Number.isFinite(s.metrics?.playerHits)?s.metrics.playerHits:null;
+    ready.sort((a,b)=>Number(b.inRange)-Number(a.inRange) ||
+      (!target.bound && target.state!=='bound'?Number(b.binds)-Number(a.binds):0));
     const nav=reason=>{plan.status=reason;state.navigation={mode:'combat',distance:d,reason,updatedAt:Date.now()};};
     if (s.paused || s.airborne || document.hidden || window.__rt?.mobileHudState?.()?.blocked) {releaseKeys();return true;}
     // 先补药，但绝不落入通用点杀优先 / 分化 / 术法兜底。
     attack(s,null,now,true,true);
     const move=(toward=null)=>{
+      plan.standSince=null;plan.preparingCast=null;
       let heading=toward??(step.mobile||step.critical?step.want:bearingTo(me,target.position)+state.orbitDir*(Math.PI/2+Math.max(-.9,Math.min(.9,(12.8-d)*.12))));
       if (toward==null && d>25 && !step.mobile && !step.critical) heading=bearingTo(me,target.position);
       const hazards=[step.threat?.hazard,...groundHazards()].filter(Boolean);
@@ -5976,6 +6004,7 @@
       if (now-state.lastLockAt>450) {state.lastLockAt=now;act('lock');}
       return true;
     }
+    moonHitAudit(s,plan);
     if (view.channel!=null) {
       const channel=plan.channel ||= {at:clock,attempts:0,lastAt:-Infinity,gapClosed:false};
       const threatHazard=step.threat?.hazard;
@@ -6032,10 +6061,29 @@
     plan.manaReserve=view.phase===3 && giant && (s.cooldown?.giant??0)<=Math.max(0,plan.nextChannelAt-clock)+1
       ? Math.max(0,giant.cost-(Number.isFinite(regen)&&regen>0?regen:0)*untilChannel):0;
     const canSpend=cost=>s.mana>=cost+plan.manaReserve;
+    // 全程低蓝仅保留点杀和血契打断。普通法宝 / 术法按消耗后的真实余量检查，不能压到 200。
+    const canSpendOrdinary=cost=>canSpend(cost) && s.mana-cost>MOON_ORDINARY_MANA_FLOOR;
+    plan.manaAfterPierce=sword?Math.max(0,s.mana-sword.cost):s.mana;
+    plan.ordinaryManaFloor=MOON_ORDINARY_MANA_FLOOR;
+    if (s.casting) {
+      const cast=plan.managedCast;
+      const remaining=cast?Math.max(0,cast.cast*(1-(Number(s.castProgress)||0))):Infinity;
+      if (cast && s.target===target.id && d<cast.range-.3 && canSpendOrdinary(cast.cost) &&
+          moonCastSafe(s,view,step,remaining,plan,clock)) {
+        releaseKeys();nav('安全站定读条 '+cast.name);return true;
+      }
+      plan.managedCast=null;move();nav('危险 / 血契临近，移动取消读条并优先躲避');return true;
+    }
+    plan.managedCast=null;
     const treasureReady=clock>=plan.nextTreasureAt;
     const delayTreasure=()=>{
       plan.nextTreasureAt=clock+MOON_TREASURE_INTERVAL_MIN+Math.random()*(MOON_TREASURE_INTERVAL_MAX-MOON_TREASURE_INTERVAL_MIN);
     };
+    const preparing=plan.preparingCast;
+    if (preparing && canSpendOrdinary(preparing.cost) && clock<preparing.until && now<(state.skillRetryAt[preparing.command]||0) &&
+        moonCastSafe(s,view,step,preparing.cast,plan,clock)) {
+      releaseKeys();nav('站定等待原生施法重试 '+preparing.name);return true;
+    }
     // 满气势的大招不耗灵力，安全时优先使用。
     if (!danger && !incoming && view.mode==='fight' && castUltimate(s,{e:target,d},now)) {move();nav('气势已满，施放剑阵');return true;}
     let moved=false, rolled=false;
@@ -6044,14 +6092,28 @@
       for (const chosen of ready) {
         // 切换后旧快照中的术法不再有效，下一帧重新读取，防止途中误放读条术法。
         if (chosen.kind==='art' ? switchedArt : !treasureReady) continue;
-        if (!canSpend(chosen.cost) || step.critical) continue;
-        if (moveOnce()) {nav('翻滚避险，随后继续输出');return true;}
-        if (!combatAction(chosen.command,chosen.counter,now)) continue;
+        if (!canSpendOrdinary(chosen.cost) || step.critical) continue;
+        if (chosen.cast>0 && !moonCastSafe(s,view,step,chosen.cast,plan,clock)) continue;
+        if (!chosen.inRange) {
+          if (danger || incoming) continue;
+          move(bearingTo(me,target.position));nav('接近无持续伤害法宝射程 '+chosen.name);return true;
+        }
+        if (chosen.cast>0) {
+          releaseKeys();plan.standSince ??= clock;
+          plan.preparingCast={command:chosen.command,name:chosen.name,cast:chosen.cast,range:chosen.range,cost:chosen.cost,until:clock+.7};
+          if (clock-plan.standSince<.18) {nav('先站定再读条 '+chosen.name);return true;}
+        } else if (moveOnce()) {nav('翻滚避险，随后继续输出');return true;}
+        if (!combatAction(chosen.command,chosen.counter,now)) {
+          if (chosen.cast>0) {nav('原生暂拒，站定后重试 '+chosen.name);return true;}
+          continue;
+        }
+        plan.preparingCast=null;plan.standSince=null;
+        if (chosen.cast>0) plan.managedCast={command:chosen.command,name:chosen.name,cast:chosen.cast,range:chosen.range,cost:chosen.cost};
         if (chosen.kind==='slot') delayTreasure();
         plan.lastSkill=chosen.command;state.lastAct='月殿 · '+chosen.name;
         nav('按技能栏轮换输出 '+chosen.name);return true;
       }
-      // 飞剑点杀独立补伤，按原生冷却与破招预留判断。
+      // 点杀不受 200 点普通技能门槛或累计命中数限制，但必须付得起且留足临近血契的打断消耗。
       if (s.cooldown?.pierce===0 && sword && canSpend(sword.cost) && d<32) {
         if (moveOnce()) {nav('翻滚避险，随后继续飞剑输出');return true;}
         if (combatAction('pierce','pierces',now)) {
@@ -6060,9 +6122,10 @@
       }
     }
     moveOnce();
-    // 保留即将到来的血契打断消耗；累计命中数不参与输出决策。
+    // 全程正常点杀；普通技能施放后余量必须高于 200。
     nav(plan.manaReserve>0?'绕行回灵，保留下一次血契巨剑消耗':
-      treasureReady?'绕行并使用当前灵力可施放的瞬发技能':'绕行回灵，等待下一次法宝输出');
+      s.mana<=MOON_ORDINARY_MANA_FLOOR?'灵力不高于 200，仅点杀和血契打断':
+      treasureReady?'绕行并使用当前灵力可施放的无持续伤害技能':'绕行回灵，等待下一次法宝输出');
     return true;
   }
 
@@ -6183,7 +6246,7 @@
 
   // ============ 10. 对外控制台接口 ============
   window.__autobot = {
-    version: '2.0.110', state,
+    version: '2.0.114', state,
     returnCave, returnTown:returnCave, enter: () => workflow(async owner => { await prepareTown(owner); return '已进入青溪坊'; }),
     start: startTrial, daily: completeDaily, drill: drillDaily, checkDailyRewards, trials: completeTrials, mainline: runStory, story: runStory, inspectMainline: mainline,
     sidequests: options => runStory({...options,kind:'全部支线'}), inspectSidequests: () => mainline('全部支线'),
@@ -6232,7 +6295,9 @@
       return { phase: state.phase, error: state.error, running: state.running, busy: state.busy,
         story: state.story ? { current: state.story.current, completed: state.story.completed, deadline: state.story.deadline,
           moonCombat:state.story.moonCombat ? {status:state.story.moonCombat.status,attempts:state.story.moonCombat.attempts,channels:state.story.moonCombat.channels,
-            interrupts:state.story.moonCombat.interrupts,hits:state.story.moonCombat.hits ?? null,lastSkill:state.story.moonCombat.lastSkill ?? null} : null,
+            interrupts:state.story.moonCombat.interrupts,hits:state.story.moonCombat.hits ?? null,lastSkill:state.story.moonCombat.lastSkill ?? null,
+            manaAfterPierce:state.story.moonCombat.manaAfterPierce ?? null,manaReserve:state.story.moonCombat.manaReserve ?? 0,
+            ordinaryManaFloor:state.story.moonCombat.ordinaryManaFloor ?? MOON_ORDINARY_MANA_FLOOR} : null,
           muMechanic:state.story.muMechanic ? {...state.story.muMechanic} : null } : null,
         questSummary: state.questSummary ? JSON.parse(JSON.stringify(state.questSummary)) : null,
         batch: state.batch ? JSON.parse(JSON.stringify(state.batch)) : null,
@@ -6389,7 +6454,7 @@
     const style = element('style', '', document.head);
     style.textContent = '#dwellingAutobot{position:fixed;left:12px;bottom:12px;z-index:10000;width:310px;max-width:calc(100vw - 24px);color:#f1e7d2;background:#18261ff2;border:1px solid #9d885d;border-radius:8px;font:13px/1.6 system-ui;box-shadow:0 3px 18px #0005}#dwellingAutobot summary{cursor:pointer;padding:8px 12px}#dwellingAutobot .body{padding:0 12px 10px;max-height:65vh;overflow:auto}#dwellingAutobot button{margin:4px 5px 4px 0;padding:5px 9px;color:inherit;background:#304538;border:1px solid #887856;border-radius:4px;cursor:pointer}#dwellingAutobot article{border-top:1px solid #52604f;margin-top:10px;padding-top:8px}#dwellingAutobot p{margin:5px 0}#dwellingAutobot small{display:block;color:#d8c89e}';
     assistantPanel = element('details', '', document.body); assistantPanel.id = 'dwellingAutobot';
-    element('summary', '洞府助手 2.0.110 · 主支线 / 每日 / 题记', assistantPanel);
+    element('summary', '洞府助手 2.0.114 · 主支线 / 每日 / 题记', assistantPanel);
     const body = element('div', '', assistantPanel); body.className = 'body';
     const controls = element('div', '', body);
     button(controls, '返回洞府', () => window.__autobot.returnCave());
@@ -6422,7 +6487,7 @@
     const rewardLogDisplay = element('small', '', body);
     const combatStatus = element('small', '', body), moonStatus = element('small', '', body), heartbeatStatus = element('small', '', body);
     const help=element('details','',body);element('summary','使用说明',help);
-    element('small', '控制台洞府入口自动进入青溪坊。题记按越国→九国盟→天道盟目录顺序收集，跳过已记入项，未确认或入口未开放即暂停；地面无法起降的点（青黛回环）飞到上空悬停题记，空中不被接受时改沿谷底步行，到不了的点跳过并在结果里列出。所有支线分类自动收录，支持接交、采集、钓鱼、战斗及御风车追逐试驾；每日跳过已领奖/未解锁副本，副本及试炼开局前发现大庚半阵自动发送 .布下剑阵并确认成功，全阵不重复消耗修为；大庚剑阵释放前确认目标仍存活且已选中，未锁定时先锁定再释放；月殿当天有奖机会已用时不重复挑战；月殿入场前只收起紫罗极火、乾蓝冰焰、阴阳冰火大剑，其余法宝保留；背包有可用法宝时临时补位，结束后恢复原装备和技能位顺序；月殿各阶段只放瞬发技能，普通法宝共用 8–12 秒随机回灵间隔，飞剑点杀和瞬发术法按原生冷却施放；第三阶段预留血契破招灵力，血契出现优先巨剑打断，破镜与破招按各自机制窗口执行；「月殿换装自检」只在手动点击时收宝再祭回、不进副本；一键每日遇到开局即为演练的副本立即退出，结束后复查领奖；「月殿演练（单场）」手动运行一场，机会已用仍可无奖演练；若本局有奖则正常结算；检查领奖按钮只查询不挑战；有奖试炼每局固定一重，入场确认有奖才战斗，无奖立即退出；次数无法校验时只尝试入场查看本局提示，不盲打练习局。副本/试炼结算异常跳过并继续下一场，本次不重试异常场地；全部完成或其他任务出错后返回洞府，异常推送日志群；停止按钮立即取消流程并松键。', help);
+    element('small', '控制台洞府入口自动进入青溪坊。题记按越国→九国盟→天道盟目录顺序收集，跳过已记入项，未确认或入口未开放即暂停；地面无法起降的点（青黛回环）飞到上空悬停题记，空中不被接受时改沿谷底步行，到不了的点跳过并在结果里列出。所有支线分类自动收录，支持接交、采集、钓鱼、战斗及御风车追逐试驾；每日跳过已领奖/未解锁副本，副本及试炼开局前发现大庚半阵自动发送 .布下剑阵并确认成功，全阵不重复消耗修为；大庚剑阵释放前确认目标仍存活且已选中，未锁定时先锁定再释放；月殿当天有奖机会已用时不重复挑战；月殿入场前只收起紫罗极火、乾蓝冰焰、阴阳冰火大剑，其余法宝保留；背包有可用法宝时临时补位，结束后恢复原装备和技能位顺序；月殿允许无持续伤害的读条法宝和术法，安全窗口先站定，危险时取消读条，普通法宝共用 8–12 秒随机回灵间隔，飞剑点杀和瞬发术法按原生冷却施放；不按累计命中数停用点杀；各阶段普通法宝和术法施放后的灵力必须高于200，点杀和血契打断不受这条普通技能门槛限制，仍预留血契破招灵力，血契出现优先巨剑打断，破镜与破招按各自机制窗口执行；「月殿换装自检」只在手动点击时收宝再祭回、不进副本；一键每日遇到开局即为演练的副本立即退出，结束后复查领奖；「月殿演练（单场）」手动运行一场，机会已用仍可无奖演练；若本局有奖则正常结算；检查领奖按钮只查询不挑战；有奖试炼每局固定一重，入场确认有奖才战斗，无奖立即退出；次数无法校验时只尝试入场查看本局提示，不盲打练习局。副本/试炼结算异常跳过并继续下一场，本次不重试异常场地；全部完成或其他任务出错后返回洞府，异常推送日志群；停止按钮立即取消流程并松键。', help);
     questList = element('div', '', body); renderQuestList();
     // 点面板时不把键盘事件传给游戏；原生按钮的键盘激活仍然可用。
     assistantPanel.addEventListener('keydown', event => event.stopPropagation());

@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/wxjerry/xiuxian",
-  "pull_request": 12,
-  "commit": "8a6938d0eb0104f74dbf6edf6ff56cac92afb7ae",
+  "pull_request": 13,
+  "commit": "860d9a1f9d33059bc9ca80251878c5af52fd31e5",
+  "version": "2.0.114",
   "path": "dwelling-autobot/trial-bot.user.js",
-  "version": "2.0.110",
-  "sha256": "5940bf4c4bac8997e65caaa545f23383f7ab439cb62474f69b8693832d6a3991"
+  "sha256": "b4f9f241166e70802e6338cf1c77615e6ceb5e1e6df2ef52ecea93c23d393de8"
 }

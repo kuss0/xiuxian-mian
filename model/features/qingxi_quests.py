@@ -29,7 +29,7 @@ from .cave_treasure_miniapp import build_cave_treasure_miniapp_adapter
 from .miniapp_common import MiniAppIdentityOwner, build_pooled_miniapp_transport, run_miniapp_blocking_flow
 
 API_PATH = '/api/miniapp/xianxia-dwelling/quests'
-SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78', '2.0.110'})
+SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78', '2.0.110', '2.0.114'})
 CATALOG_PATH = Path(__file__).with_name('qingxi_quest_catalog.json')
 _TASKS = {}
 
@@ -659,7 +659,7 @@ def safe_low_health_return(result, identity_id):
         return False
     error = result['report']['error']
     return (error == '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'
-            or (result['upstream_version'] in {'2.0.78', '2.0.110'} and re.fullmatch(
+            or (result['upstream_version'] in {'2.0.78', '2.0.110', '2.0.114'} and re.fullmatch(
                 r'野外气血低于 30% 且无法立即回血(?:（[^（）\r\n]+剩余 (?:[1-9][0-9]?|100)% 气血）)?'
                 r'，已中止任务并尝试返回洞府', error) is not None))
 
