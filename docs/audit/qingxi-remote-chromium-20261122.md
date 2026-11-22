@@ -45,9 +45,26 @@ worker。首轮名单仅吧唧 301299112；NPC 与整批的玩法自动开关仍
 remote-full.log、remote-browser-offline-smoke.json、remote-single-ssh-smoke.json、
 remote-disconnect-smoke.json、remote-parent-loss-smoke.json。
 
-尚未发布本机接入，尚未用真号在远端交付任务或验证奖励。
-下一步：全量通过、一致性备份、队列/浏览器空闲核对，发布并只重启
-xiuxian.service；随后通过正常入口对吧唧做一轮远端验证。
+## 发布和首轮真号观察
+
+5d746e3d 已合入生产并推送 xiuxian-mian/main。发布前实际 UI 发送队列、
+持久 pending 和浏览器 worker 均空；remote-chromium-pre-release.db
+一致性备份 quick_check=ok。部署设施为 /etc/xiuxian/remote-chromium.json
+与 xiuxian.service 的独立 Environment drop-in，仅选择吧唧。
+
+15:50:23 只重启 xiuxian.service，MainPID 2982191、NRestarts=0；
+15:50:42 恢复 24 个身份成功，三项服务 active，watchdog ok。
+15:51:53 正常 run 入口开始吧唧 q23 原局
+quest-17b518932c864fcfacb8e354d9521244。
+本机 Python worker 2982948、远端 Chrome 227638，页面确认本人
+301299112、2.0.114、气血 9744/9744。首次冷加载后 15:59 开始主线。
+
+本机未启动 Chromium；本机控制 worker 的累计 CPU 样本约 2%，
+远端编译阶段一秒 CPU 样本约 272%（约 2.7 核），证明渲染负载已迁走。
+两者取样口径不同，不作为整机 CPU 或加速倍数结论。
+此时仍在原局观察，尚未以 q23 交付/奖励称为远端实机验收通过。
+首轮实时证据 baji-remote-q23-request.json、baji-remote-q23-observed.jsonl
+及该 job 的 result.json；原局任务/飞行/未决和远端回收仍须在结束后核对。
 
 ## 本轮主线状态
 
