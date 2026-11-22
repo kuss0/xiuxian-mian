@@ -10,7 +10,8 @@ from model import avatar_soul, config as model_config
 from model.features import changfeng_trial, paired_activities, qingxi_quests
 
 IDENTITY = 99
-REVIEW = [{"gameplay_uncertain": True}, {"pending": {"operationId": "old"}}, {"gather": {"gatherId": "old"}}]
+REVIEW = [{"gameplay_uncertain": True}, {"pending": {"operationId": "old"}},
+          {"gather": {"gatherId": "old"}}, {"pending_instance": {"run_id": "old"}}]
 BLOCKED = "青溪坊任务执行中或结果待核对"
 
 

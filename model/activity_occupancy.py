@@ -17,7 +17,8 @@ def get_activity_block_reason(identity_id, *, include_hunt=True, include_xuangu=
         # A live run owns the account everywhere. A stopped run awaiting review
         # owns only the dwelling scene; group text activities opt out of it.
         if quest.get('phase') in {'loading', 'running'} or (include_qingxi_review and (
-                quest.get('gameplay_uncertain') or quest.get('pending') or quest.get('gather'))):
+                quest.get('gameplay_uncertain') or quest.get('pending') or quest.get('gather')
+                or quest.get('pending_instance'))):
             return '青溪坊任务执行中或结果待核对'
     if include_paired:
         for key in ("warm_pairs", "global_duel"):

@@ -32,6 +32,70 @@ API_PATH = '/api/miniapp/xianxia-dwelling/quests'
 SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78', '2.0.110', '2.0.114'})
 CATALOG_PATH = Path(__file__).with_name('qingxi_quest_catalog.json')
 _TASKS = {}
+REWARD_RESOURCE_SPECS = (
+    ('moonpalace', 'moon-palace', 'moonPalace', 'moon'), ('bloodland', 'blood-land', 'bloodLand', 'blood'),
+    ('southgate', 'south-gate', 'southGate', 'siege'), ('escort', 'refugee-escort', 'refugeeEscort', 'escort'),
+    ('mulanshrine', 'mulan-shrine', 'mulanShrine', 'shrine'), ('bqpuppet', 'baiqiao-puppet', 'baiqiaoPuppet', 'puppet'),
+    ('jianzhong', 'jianzhong-trial', 'jianzhongTrial', 'jianzhong'),
+)
+
+
+class RewardStatusNeedsReview(RuntimeError):
+    def __init__(self, evidence):
+        super().__init__('qingxi_reward_daily_status_unverified')
+        self.evidence = evidence
+
+
+def instance_status_evidence(response, spec, identity_id):
+    daily_id, _resource, envelope, key = spec
+    payload = response.get(envelope) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    status = payload.get(key) or {}
+    if not isinstance(status, dict):
+        status = {}
+    run = status.get('run')
+    run_id = run.get('id') if isinstance(run, dict) else None
+    if not isinstance(run_id, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,160}', run_id) is None:
+        run_id = None
+    day = status.get('day')
+    if not isinstance(day, str) or re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) is None:
+        day = None
+    status_ok = response.get('ok') is True and payload.get('ok') is not False and not payload.get('error')
+    verified = (status_ok and day is not None and type(status.get('claimed')) is bool
+                and type(status.get('hasKey')) is bool)
+    evidence = {'source': 'native_daily_status', 'player': identity_id, 'daily_id': daily_id,
+        'checked_at': time.time(), 'day': day, 'run_id': run_id,
+        'claimed': status.get('claimed') if type(status.get('claimed')) is bool else None,
+        'hasKey': status.get('hasKey') if type(status.get('hasKey')) is bool else None,
+        'no_active_run': verified and 'run' in status and run is None,
+        'active_run_observed': bool(status_ok and 'run' in status and run is not None),
+        'verified': bool(verified and run_id),
+        'run_fields': [name[:80] for name in run][:24] if isinstance(run, dict) else []}
+    if isinstance(run, dict):
+        for name in ('rewarded', 'created_at', 'started_at', 'expires_at', 'createdAt', 'startedAt', 'expiresAt'):
+            value = run.get(name)
+            if (name == 'rewarded' and type(value) is bool
+                    or name != 'rewarded' and type(value) in (int, float) and math.isfinite(value)):
+                evidence[name] = value
+            elif (name != 'rewarded' and isinstance(value, str)
+                  and re.fullmatch(r'[0-9T:.+Z -]{1,40}', value)):
+                evidence[name] = value
+        operation = run.get('operationId') or run.get('operation_id')
+        if isinstance(operation, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', operation):
+            evidence['operation_id'] = operation
+    return evidence
+
+
+def same_instance_read_review(record, identity_id, daily_id):
+    evidence = record.get('pending_instance')
+    return (isinstance(evidence, dict) and evidence.get('source') == 'native_daily_status'
+            and evidence.get('verified') is True and evidence.get('player') == identity_id
+            and valid_daily_id(daily_id) and evidence.get('daily_id') == daily_id
+            and isinstance(evidence.get('run_id'), str)
+            and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', evidence['run_id']) is not None
+            and record.get('phase') not in {'loading', 'running'}
+            and not record.get('pending') and not record.get('gather'))
 
 
 @lru_cache(maxsize=1)
@@ -1464,12 +1528,7 @@ def reward_batch_verified(result, identity_id):
 
 async def inspect_reward_statuses(call, identity_id):
     """Bounded native status envelopes, with no scene entry or gameplay writes."""
-    resources = (
-        ('moonpalace', 'moon-palace', 'moonPalace', 'moon'), ('bloodland', 'blood-land', 'bloodLand', 'blood'),
-        ('southgate', 'south-gate', 'southGate', 'siege'), ('escort', 'refugee-escort', 'refugeeEscort', 'escort'),
-        ('mulanshrine', 'mulan-shrine', 'mulanShrine', 'shrine'), ('bqpuppet', 'baiqiao-puppet', 'baiqiaoPuppet', 'puppet'),
-        ('jianzhong', 'jianzhong-trial', 'jianzhongTrial', 'jianzhong'),
-    )
+    resources = REWARD_RESOURCE_SPECS
     final = {'verified': True, 'player': identity_id, 'day': None, 'daily': [], 'trials': {}, 'checked_at': time.time()}
     for identity, resource, envelope, key in resources:
         response = await call('status', _api_path='/api/miniapp/xianxia-dwelling/' + resource)
@@ -1478,7 +1537,8 @@ async def inspect_reward_statuses(call, identity_id):
         if (response.get('ok') is not True or payload.get('ok') is False or payload.get('error')
                 or 'run' not in status or status['run'] is not None
                 or type(status.get('claimed')) is not bool or type(status.get('hasKey')) is not bool):
-            raise RuntimeError('qingxi_reward_daily_status_unverified')
+            raise RewardStatusNeedsReview(instance_status_evidence(
+                response, (identity, resource, envelope, key), identity_id))
         final['day'] = final['day'] or status.get('day')
         final['daily'].append({'id': identity, 'day': status.get('day'), 'claimed': status['claimed'],
             'hasKey': status['hasKey'], 'activeRun': None,
@@ -1535,8 +1595,11 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False, daily_
     if (daily_id is not None and not status_only and previous_single.get('outcome') == 'defeat'
             and (previous_single.get('final') or {}).get('day') == _day(time.time())):
         return False, '该副本今日已确认战败，停止本场地当天尝试'
+    instance_review_only = status_only and same_instance_read_review(record, identity_id, daily_id)
+    if record.get('pending_instance') and not instance_review_only:
+        return False, '副本原局仍待核对，须使用原副本范围只读复查'
     if (reward_batch and status_only and any(record.get(key) for key in ('gameplay_uncertain', 'pending', 'gather'))
-            and (record.get('browser') or {}).get('workflow') != 'rewards'):
+            and (record.get('browser') or {}).get('workflow') != 'rewards' and not instance_review_only):
         return False, '旧青溪任务仍待原任务证据核对，不能用奖励状态解除占用'
     if daily_id is not None and status_only and (record.get('pending') or record.get('gather')):
         return False, '旧任务未决操作须按原任务复核'
@@ -1587,6 +1650,16 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False, daily_
                 return result.data
             if reward_batch:
                 if status_only:
+                    if instance_review_only:
+                        spec = next(row for row in REWARD_RESOURCE_SPECS if row[0] == daily_id)
+                        response = await call('status', _api_path='/api/miniapp/xianxia-dwelling/' + spec[1])
+                        record['instance_review'] = instance_status_evidence(response, spec, identity_id)
+                        # A read never supplies the missing end receipt or changes
+                        # ownership. Even a now-empty server slot remains held.
+                        record['phase'] = 'held'
+                        record['gameplay_uncertain'] = True
+                        save()
+                        return False, '青溪原局状态已读取，仍需核对原局关闭和结算'
                     inspection = await inspect_reward_statuses(call, identity_id)
                     record['reward_inspection'] = inspection
                     old = None
@@ -1660,6 +1733,12 @@ async def run_once(identity_id, *, status_only=False, reward_batch=False, daily_
                 record['rewards_next_at'] = time.time() + 1800
             if status_only:
                 record['last_status_error'] = code
+                if isinstance(exc, RewardStatusNeedsReview):
+                    record['instance_review'] = copy.deepcopy(exc.evidence)
+                    if exc.evidence.get('active_run_observed') is True:
+                        record['pending_instance'] = copy.deepcopy(exc.evidence)
+                        record.update(phase='held', gameplay_uncertain=True,
+                                      last_error='qingxi_instance_run_requires_review')
             else:
                 record.update(phase='held' if record.get('pending') or record.get('gather') or record.get('gameplay_uncertain') or code == 'qingxi_no_progress' else 'idle',
                               last_error=code)
