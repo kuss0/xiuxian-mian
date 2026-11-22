@@ -98,6 +98,35 @@ QUEST_COMBAT_ENTRY = """step('准备郊外战斗 · ' + objective.text);
             !runtime.canStartQuestCombat(objective.arena)) throw new Error('尚未进入郊外战斗区域');
         return runtime.startQuestCombat?.(objective.arena) === true;
       }, 90000, '郊外敌人模型与战斗入口', owner);"""
+QUEST_GATHER_STILL = """  async function waitForStoryStill(owner) {
+    const deadline = Date.now() + 15000, runtime = window.__rt;
+    let anchor = null, stableAt = Date.now(), lastDraw = null, stableDraws = 0;
+    while (true) {
+      await storyReady(owner);
+      if (window.__rt !== runtime) throw new Error('停稳时人物场景已变更');
+      releaseKeys(); runtime.setFlightVerticalInput?.(0);
+      const world = readWorld(), p = world?.actorPosition, draw = world?.draws;
+      if (!position3(p)) throw new Error('停稳时无法读取人物坐标');
+      if (!Number.isSafeInteger(draw) || draw < 0 || (lastDraw !== null && draw < lastDraw))
+        throw new Error('停稳时无法核对游戏帧');
+      const fresh = lastDraw !== null && draw > lastDraw;
+      if (!anchor || dist(anchor, p) > .025 || Math.abs(anchor[1] - p[1]) > .025) {
+        anchor = p.slice(); stableAt = Date.now(); stableDraws = 0;
+      } else if (fresh) {
+        stableDraws++;
+      }
+      lastDraw = draw;
+      // Repeated reads of a frozen frame cannot confirm that native inertia ended.
+      const stable = fresh && stableDraws >= 3 && Date.now() - stableAt >= 400;
+      if (state.navigation) state.navigation = { ...state.navigation, mode: stable ? 'idle' : 'settling',
+        position: p.slice(), distance: dist(p, state.navigation.goal), keys: '', flight: null, updatedAt: Date.now() };
+      if (stable) return p.slice();
+      if (Date.now() > deadline) throw new Error('人物持续移动或游戏帧未更新，无法停稳开始采集');
+      await storyWait(80, owner);
+    }
+  }
+
+"""
 QUEST_COMBAT_LOOT = """async function fightEnemy(enemyId, owner) {
     await fightEnemyCore(enemyId, owner);
     storyCheck(owner);
@@ -232,6 +261,9 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
     }
     warmup = ''
     if not read_only and not reward_batch:
+        still_start = script.index('  async function waitForStoryStill(owner) {')
+        still_end = script.index('  function questNodeApproach(', still_start)
+        script = script[:still_start] + QUEST_GATHER_STILL + script[still_end:]
         # Install on the factory result before its caller can create a resident
         # and await prepareEffects. Scope the renderer change to quest workers.
         warmup = Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
