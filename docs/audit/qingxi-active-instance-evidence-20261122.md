@@ -43,5 +43,31 @@ Ruff、Python 编译和 git diff --check 通过。
 `/root/xiuxian-maintenance-20261122/instance-review-full.log`。
 tests/conftest.py 使用独立临时数据目录；未设置 live test DB 例外。
 
-尚未发布。发布后仅通过正常入口查询 WA 奖励状态以登记原局，再做同副本
-只读复查；是否仍有原局以届时新鲜服务端响应为准，不以旧消息推断。
+## 发布与真实复查
+
+补丁 371a649c 已快进合入生产并推送 xiuxian-mian/main。
+14:18:28 仅重启 xiuxian.service，MainPID 2919556、NRestarts=0；
+14:18:49 恢复 24 个身份成功。发布前实际 UI 队列与持久 pending 为空，
+没有青溪 worker；一致性备份 instance-review-pre-release.db quick_check=ok。
+
+14:19 正常 rewards_refresh 确认 WA 血色禁地原局
+`9ce59966fb81bab7649b116d`，服务端日期 2026-11-22，claimed=false，
+hasKey=true，startedAt=1795322833.8428152。run.rewarded=true 是有奖局
+资格，不代表已经领奖或通关。pending_instance 已持久化，宿主 held、
+gameplay_uncertain=true。
+
+14:20 正常 reward_one_refresh 仅查询 bloodland，仍返回同一 run ID。
+原 pending_instance 完全保留；原 browser、receipts、observed、
+reward_batch、reward_one_runs 和 notice_attempted 与备份相同。
+两次复查共三笔成功 status：月殿一次、血色禁地两次；无 start/end、
+无新浏览器、无结算或奖励通知。
+
+UI HTTP 200、发送队列与持久 pending 均为 0，watchdog ok；
+service、safety watchdog、health observer 均 active，启动后未见新运行时异常。
+health observer 仍报告业务待核对和历史通知未确认，不将这些记录称为全绿。
+NPC 与整批自动开关仍 false，题库运行时修改保留。
+
+真实复查和请求审计位于 `/root/xiuxian-maintenance-20261122/` 的
+instance-rewards_refresh.json、instance-reward_one_refresh.json 和
+instance-review-request-audit.json。q32 仍未完成；须取得该原局关闭/结算
+回执后才继续，不能用空槽查询、旧计时或本地“已停止”替代结束证据。
