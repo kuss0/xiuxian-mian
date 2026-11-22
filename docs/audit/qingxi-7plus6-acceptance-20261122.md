@@ -104,7 +104,7 @@ wisemole 07:37:13 只读探针确认两个场地均 activeRun=null、used=0/rema
 
 09:44 一轮实机已交付 q27、q28、q29；q30 击退枪手 3/3，但账册未取得。
 原结果 quest-d645fb7ca31e423aa47b33bfb382f8c3 的新鲜收尾显示 q31 locked，
-无 pending。巨剑门选项 juji an 的实际配置键为 `jujian`，已由用户指定；
+无 pending。巨剑门选项的实际配置键为 `jujian`，已由用户指定；
 尚未进行不可更改的 q31 挂单。
 
 11:34 经正常入口继续 WA q30，job quest-65c74f88121b4950985ddc9378dd80ac。

@@ -266,9 +266,17 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         script = script[:still_start] + QUEST_GATHER_STILL + script[still_end:]
         # Install on the factory result before its caller can create a resident
         # and await prepareEffects. Scope the renderer change to quest workers.
-        warmup = Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
+        warmup = Path(__file__).with_name('qingxi_combat_clock.js').read_text() + '\n'
+        warmup += Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
         capture = '          const obj = Reflect.apply(target, receiver, args);\n'
-        patches[capture] = capture + "          if (slot === '__rt') qingxiWarmup.capture(obj);\n"
+        patches[capture] = (capture + "          if (slot === '__rt') qingxiWarmup.capture(obj);\n"
+                            "          if (slot === '__fc') qingxiCombatClock.capture(obj);\n")
+        clock = 'const clock = Number.isFinite(s.wave?.time) ? s.wave.time : now / 1000;'
+        if script.count(clock) != 3:
+            raise RuntimeError('qingxi_upstream_clock_anchor_changed')
+        script = script.replace(clock,
+            'const clock = Number.isFinite(s.wave?.time) ? s.wave.time : s.overworld ? '
+            'qingxiCombatClock.requireClock(window.__fc) : now / 1000;')
         gather = '  async function gatherNode(node, owner, movementRetries = 0) {'
         q23_gather = Path(__file__).with_name('qingxi_q23_gather.js').read_text().replace(
             '__Q23_DEFER_REASON__', json.dumps(Q23_DEFER_REASON))
@@ -369,6 +377,7 @@ SNAPSHOT = r"""(() => {
   cast_error:window.__qx?.castError,
   navigation_failure:window.__qx?.navigationFailure,
   native_warmup:window.qingxiWarmup?.snapshot?.(),
+  native_clock:window.qingxiCombatClock?.snapshot?.(),
   world:q?.world,position:window.__rt?.stats?.().actorPosition,
   state:s?.state,combat_active:s?.active,overworld:s?.overworld,pending:(s?.fieldPending||0)+(s?.castOutbox||0)+(window.__qx?.pending.size||0),hp:s?.hp,
   pending_operations:[...(window.__qx?.pending.values()||[])],
