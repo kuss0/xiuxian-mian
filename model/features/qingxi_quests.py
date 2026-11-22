@@ -1867,7 +1867,7 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
                         pass
         result = json.loads((directory / 'result.json').read_text())
         record['browser'].update({k: result.get(k) for k in (
-            'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error',
+            'phase', 'server_checked', 'error', 'entry_error', 'cleanup_error', 'status_error', 'browser_execution',
             'pending', 'final_status', 'requests', 'casts', 'site', 'stop_reason', 'report',
             'health_recovery', 'reward_batch', 'reward_one', 'reward_inspection')})
         if daily_id is not None:

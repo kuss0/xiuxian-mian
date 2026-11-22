@@ -20,6 +20,7 @@ from model.qingxi_quest_budget import (QUEST_ENTRY_SEC, QUEST_HEALTH_SEC, QUEST_
                                       QUEST_IDENTITY_SEC, QUEST_INSPECT_SEC, QUEST_MAINLINE_DRAIN_SEC,
                                       QUEST_MAINLINE_SEC)
 from model.qingxi_single_daily import SINGLE_DAILY_RUN_SEC, valid_daily_id
+from tools.fanren_browser_support.remote_chromium import launch_chrome, remote_evidence, verify_remote_cleanup
 
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
@@ -743,7 +744,11 @@ def main():
     try:
         with profile_lock(args.profile_dir):
             try:
-                process = browser.launch_chrome(browser.find_chrome(None), args.profile_dir, browser.free_port(), headless=True, backend='mesa')
+                process = launch_chrome(browser, browser.find_chrome(None), args.profile_dir,
+                    browser.free_port(), identity=args.expected_player_id, headless=True, backend='mesa')
+                execution = remote_evidence(process)
+                if execution is not None:
+                    result['browser_execution'] = execution
                 port = next(int(arg.split('=')[1]) for arg in process.args if arg.startswith('--remote-debugging-port='))
                 cdp = browser.CDP(browser.cdp_version(port)['webSocketDebuggerUrl'])
                 page = create_page(browser, cdp, args.expected_player_id, options.get('choices', {}),
@@ -822,6 +827,13 @@ def main():
                     except Exception as exc:
                         result['browser_close_error'] = type(exc).__name__
                 stop_browser(process)
+                try:
+                    execution = verify_remote_cleanup(process)
+                    if execution is not None:
+                        result['browser_execution'] = execution
+                except RuntimeError as error:
+                    result['cleanup_error'] = str(error)
+                    raise
     except BaseException as exc:
         result.update(phase='held', error=str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__)
     finally:
