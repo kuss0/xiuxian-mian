@@ -9924,6 +9924,24 @@ def _write_json_result(writer, ok, message, *, session_token=None, extra_headers
     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
 
 
+def _write_cave_public_entry_result(writer, ok, message, *, action, session_token=None,
+                                    extra_headers=None, extra=None):
+    # An unparsed owned read has useful game text, but the general error envelope
+    # drops every extra field. Expose only this bounded read's diagnostic fields.
+    if (not ok and action == 'concubine_voyage_status' and isinstance(extra, dict)
+            and extra.get('command') == '.远航状态'
+            and extra.get('reason') == 'unparsed_voyage_status'
+            and isinstance(extra.get('raw_message'), str) and len(extra['raw_message']) <= 4096):
+        text = re.sub(r'(?:https?://|tg://)[^\s<>]+', '[link]', extra['raw_message'])
+        body = _make_json_payload(False, error=message, extra={'diagnostic': {
+            'command': '.远航状态', 'reason': 'unparsed_voyage_status', 'raw_message': text}})
+        _write_response(writer, 'HTTP/1.1 400 Bad Request', body,
+                        content_type='application/json; charset=utf-8', extra_headers=extra_headers)
+        return
+    _write_json_result(writer, ok, message, session_token=session_token,
+                       extra_headers=extra_headers, extra=extra, include_snapshot=False)
+
+
 def _is_loopback_peer(peer):
     if not peer:
         return False
@@ -11083,14 +11101,14 @@ async def _handle_ui_http_request(reader, writer, *, private_origin=None):
                         _write_json_bad_request(writer, "缺少 send_as_id 或 action 参数", auth_headers)
                     else:
                         ok, message, extra = await ui_run_cave_public_entry(send_as_id, action, public_entry_url)
-                        _write_json_result(
+                        _write_cave_public_entry_result(
                             writer,
                             ok,
                             message,
+                            action=action,
                             session_token=(session or {}).get("session_token"),
                             extra_headers=auth_headers,
                             extra=extra,
-                            include_snapshot=False,
                         )
             elif path == "/api/cave-public-config":
                 if session is None:
