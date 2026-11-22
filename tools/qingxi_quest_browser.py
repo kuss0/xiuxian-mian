@@ -24,6 +24,9 @@ from tools.fanren_browser_support.remote_chromium import launch_chrome, remote_e
 
 VENDOR = ROOT / 'vendor/dwelling-autobot'
 GUARD = Path(__file__).with_name('qingxi_quest_policy.js').read_text()
+# A new remote profile has no saved view preference. Set the official minimum
+# before createDwelling3D reads it, as the standalone trial launcher does.
+VIEW_PREFERENCE = "try { localStorage.setItem('dwelling-view-distance-v1', '200'); } catch {}\n"
 HEALTH_MINIMUM_RATIO = .8
 Q23_DEFER_REASON = 'q23_timed_gather_deferred'
 
@@ -343,7 +346,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
             if script.count(before) != 1:
                 raise RuntimeError('qingxi_single_daily_anchor_changed')
             script = script.replace(before, after)
-    source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + warmup + script
+    source = GUARD.replace('__CONFIG__', json.dumps(config, ensure_ascii=False)) + '\n' + warmup + VIEW_PREFERENCE + script
     if reward_batch:
         source += '\n' + Path(__file__).with_name('qingxi_reward_batch.js').read_text().replace('__PLAYER__', str(player))
     return source

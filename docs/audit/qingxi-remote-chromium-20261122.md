@@ -66,6 +66,24 @@ quest-17b518932c864fcfacb8e354d9521244。
 首轮实时证据 baji-remote-q23-request.json、baji-remote-q23-observed.jsonl
 及该 job 的 result.json；原局任务/飞行/未决和远端回收仍须在结束后核对。
 
+## 首轮收尾与新档案视距修复
+
+首轮新远端档案为 low 画质，但视距为官方默认 1400。本机独立试炼
+launcher 的视距初始化没有被任务入口调用；上游助手只强制 low 画质。
+16:11 通过官方 runtime.setViewDistance(200) 设置为最小值并保存。
+任务入口现于 document-start、上游工厂注册前写入官方视距键，覆盖新档案
+及已有高视距。只改渲染偏好，不改战斗 dt、坐标、碰撞或 vendor。
+325 项相关检查通过；原版 dwelling-quality.js 离线实际读取验证空档案、
+1400 和 700 三种初值均得到 selected/effective=200，网络请求为零。
+证据 remote-native-view-distance.json 与 remote-view-init-smoke.json。
+独立 worker 每次启动读取此文件，生效无需重启主服务。
+
+约 16:14，首轮到达装瓶步骤时剩余时间不足，正常 q23_timed_gather_deferred，
+未发送装瓶请求。原生返回洞府 verified=true，末次新鲜状态 server_checked=true，
+身份 301299112、气血 9744/9744、内存/磁盘 pending 均空。
+远端回收 cleanup_verified=true；宿主 waiting_gameplay、gameplay_uncertain=false。
+途中三次 field-defeat 均有真实确认；q23 仍 active，不称为 q23 通关。
+
 ## 本轮主线状态
 
 吧唧原生 q15 已击杀 lantern:090、拾取原契血印并交付，随后 HTTP 段
