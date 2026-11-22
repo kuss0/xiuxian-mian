@@ -1,6 +1,7 @@
-# 青溪上游 2.0.114 候选
+# 青溪上游 2.0.114 接入
 
-2026-11-22，基线生产 52b15bf9，候选分支 lab/qingxi-upstream2114-20261122。
+2026-11-22，基线生产 52b15bf9，隔离分支 lab/qingxi-upstream2114-20261122。
+已发布并推送为 8f1906e5。
 
 刷新 origin/main 到 860d9a1f9d33059bc9ca80251878c5af52fd31e5（PR13）。
 与 2.0.110/8a6938d0 相比，只有 dwelling-autobot/trial-bot.user.js 改动。
@@ -24,5 +25,15 @@ Python 编译和 diff 检查通过。新增回放执行实际完整 moonCombatFr
 覆盖 200 灵力边界、低灵力点杀、第三阶段巨剑预留、血契例外、持续伤害禁用、
 安全读条启动和危险取消。上述均为隔离验证，不称为真实月殿验收。
 
-生产 2.0.110 的 q23 停稳修复实机已成功装瓶，仍在计时交付和收尾观察。
-本候选等待当前原局退出及服务端回执核对之后发布；发布前不能改动该原局。
+发布前，2.0.110 原局已正常 bounded_stop，返回洞府、满血、正确身份，
+新鲜任务回执和飞行关闭均已核对，浏览器内存/磁盘 pending 为空。
+随后官方 HTTP 收尾已完成，宿主 waiting_gameplay、无 pending/gather/uncertain。
+该局 q23、q24、q25、q26 已交付；q27 保留巨剑门拜访进度，q31 尚未解锁。
+q31 的全局选项 `jujian` 由用户指定为巨剑门，
+参与名单仍为 WA 和吧唧，没有提前做不可更改的选择。
+
+09:37:15 只重启 xiuxian.service，MainPID 2744878、NRestarts=0。
+09:37:32 恢复 24 个身份；09:38 UI HTTP 200、实际发送队列 0，持久 pending 0，
+watchdog/health observer active，NPC 和整批自动开关仍 false。
+一致性备份 upstream114-pre-release.db 的 quick_check=ok。
+实际 vendor 再次核对为 2.0.114/860d9a1f；新版月殿尚无实机通关证据。
