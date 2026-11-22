@@ -32,3 +32,22 @@ Ruff、Python 编译、diff 检查通过。尚未计为真实 q23 通关。
 相比只修改 dwelling-autobot/trial-bot.user.js，主要是月殿无持续伤害读条、
 安全站定、持续点杀和普通技能消耗后灵力高于 200。这段采集判断未变，
 不能据此声称新版会解决 q23 位移。2.0.114 尚未发布到生产。
+
+## 生产实机验收
+
+修复已发布并推送为 52b15bf9。仅新浏览器任务读取新脚本，主服务未重启。
+现有正常 refresh 已用新鲜任务和飞行状态解除旧 gather-cancel 占用，
+复核原因 confirmed_gather_cancel_after_movement；没有手动清空账本。
+
+新原局 quest-145046b7f8aa4697a3a258f85602374d，身份 8659059191，
+助手 2.0.110。采集前观察到 settling，人物惯性停止后的 idle 坐标保持稳定。
+gather-start 8ce2ab1a-9caa-47e6-b7b2-b7cdc15e1700（09:19:16）成功；
+gather-finish a9e13ca6-c0a2-47d2-95fb-1355dbaa293f（09:19:22）成功；
+turn-in 509be02d-4286-4347-a686-b9140ba1a6b9（09:20:28）成功。
+服务端 q23 rewarded、bottle=1，获得灵石×287、回灵丹×1。
+装瓶到交付约 66 秒，小于服务端 300 秒期限。没有重试采集、没有死亡，
+该段保持满血。只读回执保存于
+/root/xiuxian-maintenance-20261122/wa-q23-still-turn-in.json；
+现场观察为 wa-q23-still-live.jsonl。
+
+整轮随后继续 q24，最终返回、飞行和宿主 pending 仍须在原局退出时核对。
