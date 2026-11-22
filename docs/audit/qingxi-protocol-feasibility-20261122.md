@@ -46,3 +46,21 @@ dwelling HTML 的 raid/session + WS/raid 属于五人副本。
 然后逐段与真实客户端动作和报告做一致性回放。只有传输模块能运行，
 不能声称整个战斗已移植。先迁现有协议可做的步骤；当前减压采用远端
 Chromium，让原生战斗继续得到真实证据，而不另写战报或机制计算器。
+
+## 原生控制器在 Node 的进一步验证
+
+本轮用原版 Three r160、treasure-rules、cast-transport 和 field-combat，
+在 Node 创建真实 Three Scene/Group/Camera，不创建 WebGLRenderer。
+DOM 仅提供原 HUD 需要的空壳；地面为明确的合成平地，控制器禁用。
+原版控制器成功初始化、40 次空闲 step 调用、stats 和 dispose 均正常。
+原生 start 在加载人物动作时明确要求 createLongWindCombatDirector，
+未把缺少的动画或骨架改成自写判定。零网络请求、没有战斗或奖励上报。
+证据 protocol-native-engine-probe.cjs/.json，含原文件 SHA256。
+
+从当前浏览器已经下载的同源缓存只读提取原版 longwind-combat-v1.js，
+没有额外向游戏接口发请求。该文件版本 32，SHA256
+05b7b4d20a3946c311cb0dbbc7ed89df2e8d01e1851049ea93f1e7b02b286324。
+它打包了原生 Animator、Actor、bakedAnim、modelSkin、sweepBladeVsCapsules，
+确有保留原判定而去掉显示渲染的继续研究方向。
+下一关是原版 GLTFLoader、人物模型/动作包、场景地形与碰撞、施法记录
+一致性；空闲控制器初始化不能称为已用协议完成战斗。
