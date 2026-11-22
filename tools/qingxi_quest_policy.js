@@ -84,6 +84,8 @@
   if (unresolved === null || unresolved.length) q.error = 'quest_browser_pending_requires_review';
   else if (stored.length) localStorage.setItem(journalKey, '[]');
   function check(resource, body) {
+    if (resource === 'command-center' && (body.command !== '.布下剑阵' || body.action != null))
+      stop('quest_command_scope');
     // The official profile route also saves skillSlots without an action.
     // Only its known read envelope is safe during a read-only inspection.
     const profileRead = resource === 'battle/doufa-profile' && body.action == null &&
@@ -131,9 +133,12 @@
     const payload = resource === 'trial' ? data?.trial : instances[resource] ? data?.[instances[resource]] : data;
     const castAck = resource !== 'field-cast' || data?.off === true ||
       (Array.isArray(data?.acked) && body.events.every(event => data.acked.includes(event.k + ':' + event.s)));
-    const row = {resource, action: body.action || 'events', operation_id: key,
-      quest_id: body.questId, enemy_id: body.enemyId, ok: response.ok && data?.ok === true && castAck,
-      http_status: response.status, error: code || (data ? (castAck ? '' : 'field_cast_unacknowledged') : 'non_json'),
+    const commandAck = resource !== 'command-center' ||
+      (data?.actionResult?.ok === true && data.actionResult.completed === true && data.actionResult.command === body.command);
+    const row = {resource, action: body.action || body.command || 'events', operation_id: key,
+      quest_id: body.questId, enemy_id: body.enemyId, ok: response.ok && data?.ok === true && castAck && commandAck,
+      http_status: response.status, error: code || (data ? (!castAck ? 'field_cast_unacknowledged' :
+        !commandAck ? 'quest_command_unacknowledged' : '') : 'non_json'),
       parse_error: parseError, content_type: (response.headers.get('content-type') || '').slice(0, 100),
       attempt: q.pending.get(key)?.attempts,
       grants: Array.isArray(payload?.grants) ? payload.grants.map(g => ({name: g.name, quantity: g.quantity})) : [],
@@ -297,7 +302,8 @@
     }
     check(resource, body);
     if (resource === 'field-cast') return castRequest(input, options, body);
-    const control = resource === 'quests' || (config.rewardBatch && (resource === 'trial' || instances[resource]));
+    const control = resource === 'quests' || resource === 'command-center' ||
+      (config.rewardBatch && (resource === 'trial' || instances[resource]));
     const tracked = control || (body.action && resource !== 'start');
     const mutating = tracked && body.action !== 'status';
     const key = mutating && (body.operationId || resource + ':' + (++q.serial));
@@ -381,7 +387,7 @@
       if (config.rewardBatch && resource === 'trial' && body.action === 'start') trialStarts[body.arena]++;
       if (key) {
         q.statusCache.clear();
-        q.pending.set(key, {resource, action: body.action || 'events', operation_id: key,
+        q.pending.set(key, {resource, action: body.action || body.command || 'events', operation_id: key,
           quest_id: body.questId, enemy_id: body.enemyId, at: Date.now() / 1000});
         persist();
       }
@@ -395,7 +401,7 @@
       } catch (error) {
         if (key) q.error = 'quest_transport_unconfirmed';
         else q.statusError = 'quest_status_unavailable';
-        q.receipts.push({resource, action: body.action || 'events', operation_id: key, ok: false,
+        q.receipts.push({resource, action: body.action || body.command || 'events', operation_id: key, ok: false,
           error: error?.name === 'AbortError' ? 'request_aborted' : 'transport_error', at: Date.now() / 1000});
         throw error;
       }

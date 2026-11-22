@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         洞府助手（主支线 + 每日副本 + 试炼）
 // @namespace    dwelling-autobot
-// @version      2.0.78
-// @description  每日试炼固定一重，入场确认有奖才战斗，无奖立即退出，每波清场后回到开局位置；穆上师全程远程输出并按真实落点躲黑峰冰晶；月殿按当前装备、灵力与冷却轮换输出，巨剑打断血契；已取得御风车时起飞改乘御风车；题记高处可飞到正上方急降，地面无法起降处悬停题记；每日副本领奖检查与复查，结束返回洞府
+// @version      2.0.110
+// @description  野外集中锁定目标，护送围绕车队交战、烧车怪优先；每日试炼固定一重，入场确认有奖才战斗，无奖立即退出，每波清场后回到开局位置；穆上师全程远程输出并按真实落点躲黑峰冰晶；副本和试炼开局前自动布下大庚剑阵，释放剑阵前确认目标；月殿只收起紫罗极火/乾蓝冰焰/阴阳冰火大剑，背包法宝可补位，结束恢复原装；月殿只放瞬发，普通法宝间隔 8–12 秒，点杀按原生冷却，第三阶段留灵力破招；已取得御风车时起飞改乘御风车；题记高处可飞到正上方急降，地面无法起降处悬停题记；每日副本领奖检查与复查，结束返回洞府
 // @match        https://asc.aiopenai.app/miniapp/xianxia-dwelling*
 // @run-at       document-start
 // @grant        unsafeWindow
@@ -14,7 +14,7 @@
   'use strict';
   const window = typeof unsafeWindow === 'undefined' ? globalThis.window : unsafeWindow;
 
-  if (window.__autobot?.version === '2.0.78') return;
+  if (window.__autobot?.version === '2.0.110') return;
   const inherited = window.__autobot?.handoff?.();
   const sameScene = !!inherited && inherited.runtime === window.__rt && inherited.combat === window.__fc;
   // 更新已运行的助手时先松键、停旧战斗循环；保留游戏本身的试炼进度。
@@ -86,7 +86,10 @@
               catch(error) {moonDiagnosticResponse(run,null,true);throw error;}
             }},...args.slice(2)];
           }
+          const trialBinding = slot==='__fc' && typeof args[1]?.trialRequest==='function' ? {runtime:null} : null;
+          if (trialBinding) args=[args[0],{...args[1],trialRequest:resilientTrialRequest(args[1].trialRequest,trialBinding)},...args.slice(2)];
           const obj = Reflect.apply(target, receiver, args);
+          if (trialBinding) trialBinding.runtime=obj;
           if (slot==='environment')fieldEnvironment=obj;
           else window[slot] = obj;
           if (tracked) { tracked.runtime = obj; flightRuntime = tracked; }
@@ -251,29 +254,60 @@
     return {event_id:event.event_id,kind:event.kind,title:event.title.slice(0,80),
       rewards:event.rewards.map(r=>({name:r.name.slice(0,80),quantity:r.quantity}))};
   }
+  function restoreRewardQueue() {
+    rewardQueue=[];
+    try {
+      const saved=JSON.parse(localStorage.getItem(rewardBridge.key)||'[]'),seen=new Set();
+      if(Array.isArray(saved))rewardQueue=saved.flatMap(row=>{
+        const event=storedRewardEvent(row?.event);
+        if(!event || !Number.isFinite(row.at) || row.at>Date.now() || Date.now()-row.at>=48*3600000 || seen.has(event.event_id))return [];
+        seen.add(event.event_id);return [{event,at:row.at}];
+      });
+    } catch {}
+  }
+  function localRewardPlayer() {
+    try {
+      let value;
+      if(typeof window.ownWorldIdentity==='function')value=window.ownWorldIdentity();
+      else {
+        const app=pageClientState();
+        value=app?.selectedPlayerId || app?.data?.account?.playerId;
+      }
+      if(value==null || !/^[A-Za-z0-9_.:-]{1,120}$/.test(String(value)))return null;
+      return String(value);
+    } catch {return null;}
+  }
+  function ensureLocalRewardBridge() {
+    const transport=window.__dwellingLocalNotify;
+    if(!transport?.enabled || typeof transport.send!=='function')return;
+    const player=localRewardPlayer();
+    if(!player) {
+      if(!rewardBridge)rewardLogStatus.message='本地 Telegram 已连接，等待角色身份';
+      return;
+    }
+    if(rewardBridge?.local && rewardBridge.player_id===player && rewardBridge.transport===transport)return;
+    rewardBridge={local:true,transport,player_id:player,key:'dwellingRewardQueue:telegram:v1:'+player};
+    rewardSending=false;rewardRetryAt=0;rewardFailures=0;
+    Object.assign(rewardLogStatus,{sent:0,rewards:0,errors:0,message:'本地 Telegram 已连接，推送领奖与异常'});
+    restoreRewardQueue();persistRewardQueue();
+  }
   try {
     const params=new URLSearchParams(window.location.hash.slice(1)), token=new URLSearchParams(window.location.search).get('autobotToken');
     const endpoint=new URL(params.get('autobotLogUrl'));
     const player=params.get('playerId');
     if (token && /^[A-Za-z0-9_-]{32,64}$/.test(token) && player && ['https:','http:'].includes(endpoint.protocol) && endpoint.pathname==='/api/dwelling-reward' && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash) {
       rewardBridge={token,player_id:player,url:endpoint.href,key:'dwellingRewardQueue:v1:'+player};
-      try {
-        const saved=JSON.parse(localStorage.getItem(rewardBridge.key)||'[]');
-        const seen=new Set();
-        if (Array.isArray(saved)) rewardQueue=saved.flatMap(row=>{
-          const event=storedRewardEvent(row?.event);
-          if (!event || !Number.isFinite(row.at) || row.at>Date.now() || Date.now()-row.at>=48*3600000 || seen.has(event.event_id)) return [];
-          seen.add(event.event_id);return [{event,at:row.at}];
-        });
-      } catch { rewardQueue=[]; }
+      restoreRewardQueue();
       rewardLogStatus.message=typeof GM_xmlhttpRequest==='function'?'已连接，推送领奖与异常':'新版本需保存油猴并刷新后启用推送';
     }
   } catch {rewardBridge=null;rewardQueue=[];}
+  ensureLocalRewardBridge();
   function persistRewardQueue() {
     rewardLogStatus.pending=rewardQueue.length;
     try {if(rewardBridge)localStorage.setItem(rewardBridge.key,JSON.stringify(rewardQueue));}catch{}
   }
   function sendRewardLog(event) {
+    if(rewardBridge.local)return rewardBridge.transport.send({player_id:rewardBridge.player_id,event:storedRewardEvent(event)});
     return new Promise((resolve,reject)=>{
       if(typeof GM_xmlhttpRequest!=='function') {reject(new Error('save_userscript'));return;}
       GM_xmlhttpRequest({method:'POST',url:rewardBridge.url,headers:{'Content-Type':'application/json'},anonymous:true,timeout:15000,
@@ -283,18 +317,37 @@
     });
   }
   async function flushRewardQueue() {
-    if(window.__dwellingRewardObserver!==observeReward || !rewardBridge || !rewardQueue.length || rewardSending || Date.now()<rewardRetryAt || typeof GM_xmlhttpRequest!=='function') return;
-    rewardSending=true;
+    if(window.__dwellingRewardObserver!==observeReward)return;
+    ensureLocalRewardBridge();
+    if(!rewardBridge || !rewardQueue.length || rewardSending || Date.now()<rewardRetryAt)return;
+    if(rewardBridge.local) {
+      if(!rewardBridge.transport.enabled || localRewardPlayer()!==rewardBridge.player_id)return;
+    } else if(typeof GM_xmlhttpRequest!=='function' || typeof window.ownWorldIdentity==='function' && String(window.ownWorldIdentity())!==rewardBridge.player_id)return;
+    const bridge=rewardBridge;
+    rewardSending=bridge;
     try {
       const first=rewardQueue[0], result=await sendRewardLog(first.event);
-      if(window.__dwellingRewardObserver!==observeReward) return;
+      if(window.__dwellingRewardObserver!==observeReward || rewardBridge!==bridge)return;
       if(result.ok) {rewardQueue.shift();rewardFailures=0;rewardRetryAt=0;rewardLogStatus.sent++;
         rewardLogStatus[first.event.kind==='异常'?'errors':'rewards']++;
-        rewardLogStatus.message='已推送 '+rewardLogStatus.sent+' 条（领奖 '+rewardLogStatus.rewards+' · 异常 '+rewardLogStatus.errors+'）';persistRewardQueue();}
+        rewardLogStatus.message=(bridge.local?'Telegram ':'')+'已推送 '+rewardLogStatus.sent+' 条（领奖 '+rewardLogStatus.rewards+' · 异常 '+rewardLogStatus.errors+'）';persistRewardQueue();}
+      else if(bridge.local && [400,401,403].includes(result.status)) {
+        rewardRetryAt=Infinity;
+        rewardLogStatus.message=({400:'Telegram 通知格式或目标配置有误',401:'Telegram Bot Token 无效',403:'Telegram 机器人无权发送，请先 /start 或检查群权限'})[result.status]+'；请检查本地配置后重启客户端';
+      }
+      else if(bridge.local && result.status===429) {
+        const seconds=Number.isFinite(result.retryAfter)?Math.max(1,Math.min(86400,result.retryAfter)):30;
+        rewardRetryAt=Date.now()+seconds*1000;rewardLogStatus.message='Telegram 发送限流，稍后自动补发';
+      }
       else if(result.status===401) {rewardRetryAt=Infinity;rewardLogStatus.message='领奖入口已过期，请从控制台重新打开洞府';}
       else throw new Error('log_retry');
-    } catch {rewardFailures++;rewardRetryAt=Date.now()+Math.min(300000,1000*2**Math.min(rewardFailures,9));rewardLogStatus.message='日志连接失败，将自动补发';}
-    finally {rewardSending=false;}
+    } catch {
+      if(window.__dwellingRewardObserver===observeReward && rewardBridge===bridge) {
+        rewardFailures++;rewardRetryAt=Date.now()+Math.min(300000,1000*2**Math.min(rewardFailures,9));
+        rewardLogStatus.message=(bridge.local?'Telegram ':'')+'日志连接失败，将自动补发';
+      }
+    }
+    finally {if(rewardSending===bridge)rewardSending=false;}
   }
   function observeFieldSettlement(resource, body, data) {
     if (resource!=='quests' || body?.action!=='field-defeat' || typeof body.enemyId!=='string' ||
@@ -314,9 +367,13 @@
     fieldSettlements.push(row);if(fieldSettlements.length>40)fieldSettlements.shift();
     if(!row.ok && row.error==='quest_enemy_combat_invalid')log('击杀结算拒绝：'+row.enemyId+' · '+row.error);
   }
-  function observeReward(resource, body, data) {
+  function observeReward(resource, body, data, requestPlayer) {
     observeFieldSettlement(resource,body,data);
-    if(!rewardBridge)return;
+    observeTrialResponse(resource,body,data);
+    // A late response must not be attributed to a newly selected character.
+    if(requestPlayer!==undefined && (requestPlayer===null || requestPlayer!==observeReward.player()))return;
+    ensureLocalRewardBridge();
+    if(!rewardBridge || rewardBridge.local && localRewardPlayer()!==rewardBridge.player_id)return;
     if (typeof window.ownWorldIdentity==='function' && String(window.ownWorldIdentity())!==rewardBridge.player_id) {rewardLogStatus.message='角色身份已改变，请从控制台重新打开洞府';return;}
     const spec=REWARD_RESOURCES[resource],receipt=spec?.key?data?.[spec.key]:data;
     const error=data?.error || receipt?.error || receipt?.anomaly;
@@ -333,7 +390,8 @@
   const failureObjects=new WeakSet();
   let failureSequence=0, failureCombat=null, failureState='';
   function reportFailure(message,combat=readCombat()) {
-    if(!rewardBridge || typeof window.ownWorldIdentity==='function' && String(window.ownWorldIdentity())!==rewardBridge.player_id)return;
+    ensureLocalRewardBridge();
+    if(!rewardBridge || rewardBridge.local && localRewardPlayer()!==rewardBridge.player_id || typeof window.ownWorldIdentity==='function' && String(window.ownWorldIdentity())!==rewardBridge.player_id)return;
     if(message && typeof message==='object') {
       if(message instanceof Cancelled || message.code==='fishing_daily_limit_reached' || failureObjects.has(message))return;
       failureObjects.add(message);message=message.message;
@@ -348,7 +406,7 @@
     if(failureSeen.size>=128)failureSeen.delete(failureSeen.keys().next().value);
     failureSeen.set(key,now);
     const event={event_id:'error:'+failureSession+':'+(++failureSequence),kind:'异常',code,title:({defeat:'角色战败',low_health:'低血量保护',timeout:'操作超时',sync_error:'结算同步异常',navigation:'寻路异常',load_failed:'场景加载异常',request_failed:'请求失败',runtime:'助手运行异常'})[code],
-      message:text,phase:safeLogText(state.phase,120),version:'2.0.78'};
+      message:text,phase:safeLogText(state.phase,120),version:'2.0.110'};
     if(Number.isFinite(combat?.hp) && Number.isFinite(combat?.hpMax) && combat.hpMax>0 && combat.hpMax<=1e15)
       Object.assign(event,{hp:Math.max(0,Math.min(Math.ceil(combat.hp),Math.ceil(combat.hpMax))),hp_max:Math.ceil(combat.hpMax)});
     rewardQueue.push({event,at:now});persistRewardQueue();void flushRewardQueue();
@@ -358,6 +416,7 @@
     if(combat?.state==='defeat' && (runtime!==failureCombat || failureState!=='defeat'))reportFailure('角色战败，请在游戏内恢复后继续',combat);
     failureCombat=runtime;failureState=combat?.state || '';
   }
+  observeReward.player=()=>localRewardPlayer() || (rewardBridge?.local?null:rewardBridge?.player_id) || null;
   window.__dwellingRewardObserver=observeReward;
   if(!window.__dwellingRewardFetchHook && typeof window.fetch==='function') {
     window.__dwellingRewardFetchHook=true;
@@ -371,16 +430,17 @@
           body=JSON.parse(init.body);resource=candidate;
         }
       } catch {}
+      const requestPlayer=resource?window.__dwellingRewardObserver?.player?.():undefined;
       let response;
       try {response=await original.call(this,input,init);}
       catch(error) {
-        if(resource && error?.name!=='AbortError')window.__dwellingRewardObserver?.(resource,body,{ok:false,error:'网络请求失败'});
+        if(resource && error?.name!=='AbortError')window.__dwellingRewardObserver?.(resource,body,{ok:false,error:'网络请求失败'},requestPlayer);
         throw error;
       }
       if(resource) {
         try {
-          void response.clone().json().then(data=>window.__dwellingRewardObserver?.(resource,body,data)).catch(()=>{
-            window.__dwellingRewardObserver?.(resource,body,{ok:false,error:'响应无法读取（HTTP '+response.status+'）'});
+          void response.clone().json().then(data=>window.__dwellingRewardObserver?.(resource,body,data,requestPlayer)).catch(()=>{
+            window.__dwellingRewardObserver?.(resource,body,{ok:false,error:'响应无法读取（HTTP '+response.status+'）'},requestPlayer);
           });
         } catch {} // 观察失败绝不影响原游戏请求。
       }
@@ -433,14 +493,16 @@
     fightTimeoutMs: 30 * 60 * 1000,
     settlementTimeoutMs: 180000,
     trialEntryTimeoutMs: 30000, // 等待本局原生开局回执/提示，不打完练习局才检查
+    trialSyncTimeoutMs: 120000, // 同一个波次/operationId 的网络恢复预算，不另开一局
+    trialSyncMaxAttempts: 8,
     trialEntryMaxAttempts: 8, // 次数状态不可靠时，每次点击仍限制入场数量
     flightMinDistance: 40, // 与面板一致，按人物到目标的距离判断室外长途御空
     flightAltitude: 16,
     airHoverHeight: 10,    // 无法降落处在目标上空悬停的离地高度（御风车原生最低 4.5 米）
     airManaStart: .35,     // 进入无法降落的区域前，御空法力至少为上限的比例
     airManaAbort: .12,     // 低于此比例即中止航线，留出飞离的余量
-    moonSwapHitPassive: true, // 月殿默认收起紫罗极火等放大命中数的被动，结束后自动祭回
-    moonSkipHitPassive: true, // 收起失败或装备档案未知时跳过月殿，避免带被动进入并被服务端拒绝
+    moonSwapHitPassive: true, // 月殿前只收起指定三种法宝，可临时补位，结束后恢复
+    moonSkipHitPassive: true, // 兼容旧配置；月殿入场始终核对指定三种法宝已收起
   };
 
   const state = {
@@ -574,6 +636,11 @@
       const d = dist(me,shot.origin);
       if (d > 22) continue;
       const age = clock - shot.started;
+      if (s.overworld && fieldEnvironment) {
+        const probe = heading => [me[0]+Math.sin(heading)*3,me[1],me[2]+Math.cos(heading)*3];
+        // 锁定侧闪被墙或台阶挡住时改走另一侧，不能在原地等剑气追到。
+        if (!walkSegment(me,probe(shot.want)) && walkSegment(me,probe(shot.want+Math.PI))) shot.want=norm(shot.want+Math.PI);
+      }
       const arrival = .92 + d / (shot.e.role === 'swordcult' ? 17 : 15);
       out.push({e:shot.e,move:'bossQi',how:'dodge',dist:d,want:shot.want,
         mobile:age >= arrival - .55 && age <= arrival + .3,
@@ -1196,9 +1263,24 @@
     return true;
   }
   function castUltimate(s, near, now) {
+    const geng=/^大庚剑阵/.test(s.ultimate || '');
+    if (geng) {
+      // 近处有怪不等于已经选中目标。临出手重新读原生目标，避免死亡/脱锁后的旧快照空放。
+      s=readCombat();
+      if (!s || !s.active || s.state!=='fighting' || !/^大庚剑阵/.test(s.ultimate || '')) return false;
+      near=attackTarget(s,myPos());
+    }
     if (s.gcdLeft > 0 || s.casting) return false;
     if (!near || near.d >= 22 || !(s.momentum >= 100) || s.empowered ||
       s.airborne || s.paused || (s.action && s.action.kind !== 'cast')) return false;
+    if (geng && (s.target==null || !(s.enemies || []).some(e=>e.id!=null && e.id===s.target && e.hp>0 && !e.hidden && !e.returning))) {
+      if (now-(state.lastLockAt ?? -Infinity)>=500) {
+        state.lastLockAt=now;
+        act('lock');
+      }
+      // 即使命令接受也不直接接 T；下一帧读到实际有效的选中目标后才释放。
+      return false;
+    }
     if (!combatAction('ult', 'ultimates', now)) return false;
     if (/^大庚剑阵/.test(s.ultimate || '')) state.stats.geng++;
     state.lastAct = 'T · ' + (s.ultimate || '大招'); log('输出 ' + state.lastAct);
@@ -1318,6 +1400,13 @@
       finishDriving('已离开当前试炼'); return;
     }
     recordDamage(s, now);
+    const recovering=trialSyncRecords.find(row=>row.status==='recovering' && row.runtime===window.__fc && row.runId===s.trial?.run?.id);
+    if (recovering) {
+      releaseKeys();
+      if (s.state==='fighting' && !s.paused && act('pause')) recovering.pausedByUs=true;
+      state.phase='等待本波战绩同步恢复 · 第 '+recovering.attempts+' 次请求';
+      return;
+    }
     if (s.trial?.syncError || s.trial?.anomaly) {
       finishDriving('战绩同步异常：' + (s.trial.syncError || s.trial.anomaly), s, true, true); return;
     }
@@ -1371,7 +1460,17 @@
     // 1) 先选择攻击目标，再围绕它横移；固定场心只用于边界限制。
     const focused = focusRanged(s,me,now);
     const step = steeringTarget(focused, me, now);
-    const move = steerCombat(focused, me, step.want, now, step.retreat);
+    const near = attackTarget(focused, me);
+    let move;
+    if (near && !step.retreat && !step.threat?.hazard && near.d > CFG.swordRange) {
+      const chaseBoundary={center:arenaInfo.center,radius:Math.max(1,arenaInfo.radius-2)};
+      const chase=battleApproach(near.e.position,chaseBoundary,focused,true);
+      const heading=bearingTo(me,chase.point), hazards=[step.threat?.hazard,...groundHazards()].filter(Boolean);
+      if (fieldEnvironment?.canWalk && fieldEnvironment?.groundHeight)
+        steerWalkable(heading,chase.bounds,hazards.length?hazards:null);
+      else steer(heading);
+      move={heading,want:heading,chasingOutside:chase.chasingOutside};
+    } else move = steerCombat(focused, me, step.want, now, step.retreat);
     const rolled = dodgeThreat(focused, step, now);
     if (!state.trace.length || now - state.trace[state.trace.length - 1].time >= 250) {
       state.trace.push({ time: now, position: me, center: step.center, radius: step.radius,
@@ -1381,7 +1480,6 @@
     }
 
     // 2) 侧移不再停火，T 满气势优先；重招避险期间保留原生允许的飞剑输出。
-    const near = attackTarget(focused, me);
     const ultimate = !rolled && !step.critical && !step.mobile && castUltimate(focused, near, now);
     const a = attack(ultimate || rolled ? readCombat() : focused, near, now, step.critical, step.mobile);
     if (a !== 'none') { state.lastAct = a; log('输出 ' + a); }
@@ -1432,9 +1530,24 @@
     // 新版坊市有多个场景资源，loaded 不再固定为 1。
     return env.tier === 4 && env.loading ? env.loading.ready === true : env.pending === 0;
   }
-  function caveEntrance() {
-    return (readWorld()?.targets||[]).find(t=>t.kind==='battle-exit' && position3(t.point) && t.point.length===3 &&
-      Number.isFinite(t.radius) && t.radius>.5);
+  function caveEntrances(world = readWorld()) {
+    return (world?.targets || []).filter(t=>t.kind==='battle-exit' && typeof t.id==='string' &&
+      position3(t.point) && t.point.length===3 && Number.isFinite(t.radius) && t.radius>.5);
+  }
+  function caveEntrance(world = readWorld()) {
+    const entrances=caveEntrances(world),position=world?.actorPosition;
+    if(entrances.length<2 || !position3(position)) return entrances[0] || null;
+    if(!fieldEnvironment?.canWalk || !fieldEnvironment?.groundHeight)
+      return entrances.slice().sort((a,b)=>dist(position,a.point)-dist(position,b.point))[0] || null;
+    const routes=entrances.map(gate=>{
+      const path=findPath(position,gate.point,gate.radius-.35,fieldEnvironment);
+      if(!path)return null;
+      let length=0,from=position;
+      for(const point of path){length+=dist(from,point);from=point;}
+      return {gate,length,direct:dist(position,gate.point)};
+    }).filter(Boolean);
+    routes.sort((a,b)=>a.length-b.length || a.direct-b.direct);
+    return routes[0]?.gate || entrances.slice().sort((a,b)=>dist(position,a.point)-dist(position,b.point))[0];
   }
   async function enterTownFromCave(owner) {
     let gate;
@@ -1460,7 +1573,27 @@
     try {
       step('走向洞府出府山门');rt.setControl('companion');rt.setCameraFollowEnabled?.(false);
       clickOnce('worldSheetClose');canvas()?.focus?.({preventScroll:true});
-      await walkTo(gate.point,gate.radius-.35,owner,{flight:false,defend:false});
+      try {
+        await walkTo(gate.point,gate.radius-.35,owner,{flight:false,defend:false});
+      } catch (error) {
+        const routeBlocked=/找不到可步行路线|连续卡路|寻路超时/.test(error?.message || '');
+        // 入坊操作均可使用游戏自带入口兜底；返回洞府的流程不调用本函数。
+        // 只恢复道路不可达，停止、换场景、加载/登录失败仍立即中止。
+        if (!routeBlocked) throw error;
+        storyCheck(owner);
+        if (readWorld()?.environment?.tier===4) return;
+        releaseKeys(); state.navigation=null;
+        step('洞府山门不可达，改用青溪坊入口菜单');
+        try {
+          if (!openWorldControls()) throw new Error(error.message+'；青溪坊入口菜单不可用');
+          storyCheck(owner);
+          if (readWorld()?.environment?.tier===4) return;
+          if (!clickOnce('worldTownEntry')) throw new Error(error.message+'；青溪坊入口菜单不可用');
+        } finally { closeWorldControls(); }
+        await until(()=>{loadingFailure();return readWorld()?.environment?.tier===4 && sceneReady();},420000,'洞府入口菜单进入青溪坊',owner);
+        storyCheck(owner);
+        return;
+      }
       storyCheck(owner);releaseKeys();
       // 指定山门，不能让最近的侍妾/陈设抢走 E 交互。
       const selected=rt.selectTarget?.(gate.id)===true || readWorld()?.interaction?.id===gate.id && readWorld()?.interaction?.ready;
@@ -1511,7 +1644,7 @@
       // 收尾只校验取消代次，不使用已过期的任务时限或已切换的主线场景。
       state.error = error.message;
       let homeMessage = '';
-      if (returnOnError && window.__rt && readWorld() && (state.home?.owner !== owner || state.home.verified)) {
+      if (returnOnError && !error.preserveCombat && window.__rt && readWorld() && (state.home?.owner !== owner || state.home.verified)) {
         try { await finishInCave(owner); homeMessage = '；已返回洞府'; }
         catch (homeError) {
           if (homeError instanceof Cancelled || owner !== state.generation) return '已停止';
@@ -1526,7 +1659,7 @@
     } finally { if (owner === state.generation) state.busy = false; }
   }
   async function autoEnterFromEntry() {
-    if (!rewardBridge || inherited || window.__dwellingAutoTownStarted || state.busy || state.running || shown('dwellingWorld')) return;
+    if (!rewardBridge || rewardBridge.local || inherited || window.__dwellingAutoTownStarted || state.busy || state.running || shown('dwellingWorld')) return;
     window.__dwellingAutoTownStarted = true;
     return workflow(async owner => {
       step('等待角色资料，随后自动进入青溪坊');
@@ -1555,7 +1688,7 @@
   }
   function finishDriving(message, combat, error = false, settlement = false) {
     if(error)reportFailure(message,combat || readCombat());
-    if (settlement) markSkippedSettlement(combat || readCombat());
+    if (settlement && !['connection','opening'].includes((combat || readCombat())?.trial?.syncError)) markSkippedSettlement(combat || readCombat());
     state.retry.enabled = false;
     stopDriving();
     // 同步异常和超时可能发生在活跃战斗中，松键后也要暂停游戏，避免站着挨打。
@@ -1699,6 +1832,84 @@
       throw new SettlementError(arena,'未确认本局是否有奖励，停止自动战斗：'+error.message,readCombat());
     }
   }
+  // 只重发游戏真实产生的 checkpoint；runId、operationId、wave 与报告保持一致。
+  // 不生成补报、不重开局、不改结算结果；原生队列收到真实回执后仍自行完成奖励和进度更新。
+  const trialSyncRecords=[];
+  const trialResponses=new Map();
+  function observeTrialResponse(resource,body,data) {
+    if (resource!=='trial' || body?.action!=='checkpoint' || !body.operationId) return;
+    const error=data?.error || data?.trial?.error || data?.trial?.anomaly;
+    const code=typeof error==='string' && /^[a-zA-Z0-9_:-]{1,120}$/.test(error)?error:null;
+    trialResponses.set(body.operationId,{error:code,at:Date.now()});
+    if (trialResponses.size>32) trialResponses.delete(trialResponses.keys().next().value);
+  }
+  function resilientTrialRequest(original,binding) {
+    const marker=Symbol.for('dwelling-autobot.trial-request-recovery');
+    if (original[marker]) return original;
+    const records=new Map();
+    const request=async function(action,body,...rest) {
+      const managed=state.busy && state.batch?.mode==='trials' && state.batch.status==='running' || state.running && Object.hasOwn(TRIALS,state.expectedArena);
+      if (action!=='checkpoint' || !body?.operationId || !body.runId || !Number.isInteger(body.wave) || body.wave<0)
+        return original.call(this,action,body,...rest);
+      let row=records.get(body.operationId);
+      if (!row && !managed) return original.call(this,action,body,...rest);
+      if (!row) {
+        row={operationId:body.operationId,runId:body.runId,wave:body.wave,body:JSON.parse(JSON.stringify(body)),
+          runtime:binding.runtime,world:window.__rt,owner:state.generation,day:readCombat()?.trial?.status?.day || null,
+          at:Date.now(),attempts:0,status:'sending',pausedByUs:false};
+        records.set(row.operationId,row);trialSyncRecords.push(row);
+        if (trialSyncRecords.length>32) trialSyncRecords.shift();
+        if (records.size>32) records.delete(records.keys().next().value);
+      }
+      if (row.status==='pending') {row.at=Date.now();row.attempts=0;}
+      const current=()=>{
+        const live=readCombat();
+        return row.owner===state.generation && row.runtime===window.__fc && row.world===window.__rt &&
+          live?.active && live.trial?.run?.id===row.runId && (!row.day || !live.trial?.status?.day || row.day===live.trial.status.day);
+      };
+      // 原生还有一层重试；已耗尽或已取消的同一 operationId 不得再次获得恢复预算。
+      if (['exhausted','cancelled','rejected'].includes(row.status)) return null;
+      while (row.attempts<CFG.trialSyncMaxAttempts && Date.now()-row.at<CFG.trialSyncTimeoutMs) {
+        if (!current()) {row.status='cancelled';return null;}
+        row.attempts++;row.requests=(row.requests || 0)+1;
+        let data,thrown;
+        try {data=await original.call(this,action,JSON.parse(JSON.stringify(row.body)),...rest);}
+        catch(error) {thrown=error?.code || error?.message;}
+        const observed=trialResponses.get(row.operationId);
+        row.error=observed?.at>=row.at?observed.error:null;
+        if (!row.error && typeof thrown==='string' && /^[a-zA-Z0-9_:-]{1,120}$/.test(thrown)) row.error=thrown;
+        if (data) {
+          row.status=data.anomaly || data.error?'rejected':data.pending?'pending':'confirmed';row.finishedAt=Date.now();
+          if (!data.anomaly && !data.error && row.pausedByUs && current() && state.running && readCombat()?.paused && !readCombat()?.trial?.syncError) act('pause');
+          row.pausedByUs=false;
+          return data;
+        }
+        // 明确的业务拒绝不能用网络重试冲掉；未知/null 才按同一操作限时恢复。
+        if (row.error && !['offline','api_unreachable','request_timeout','server_busy','server_error','dwelling_rate_limited','bad_response','connection','AbortError','TypeError'].includes(row.error)) {
+          row.status='rejected';return null;
+        }
+        if (!current()) {row.status='cancelled';return null;}
+        row.status='recovering';
+        const live=readCombat();releaseKeys();
+        if (live.state==='fighting' && !live.paused && act('pause')) row.pausedByUs=true;
+        if (row.attempts>=CFG.trialSyncMaxAttempts) break;
+        const delay=Math.min(15000,1500*2**(row.attempts-1),CFG.trialSyncTimeoutMs-(Date.now()-row.at));
+        if (!(delay>0)) break;
+        log('本波战绩请求未确认，保留原局等待重试 · 波次 '+(row.wave+1)+' · 请求 '+row.attempts);
+        const until=Date.now()+delay;
+        while (Date.now()<until && current()) await sleep(Math.min(300,until-Date.now()));
+      }
+      row.status=current()?'exhausted':'cancelled';row.finishedAt=Date.now();
+      return null;
+    };
+    Object.defineProperty(request,marker,{value:true});
+    return request;
+  }
+  function preserveFailedTrialSync(error) {
+    if (!['connection','opening'].includes(error.syncError)) return;
+    error.message='试炼战绩同步未恢复，本轮未全部通关；已暂停保留现场，未继续消耗次数';
+    error.preserveCombat=true;throw error;
+  }
   function hookDailyTrialStart(combat) {
     if (!combat || typeof combat.start !== 'function') return;
     const key = Symbol.for('dwelling-autobot.daily-trial-start');
@@ -1745,6 +1956,7 @@
       if (!retried?.active || retried.overworld || retried.arena!==arena || retried.state!=='fighting') throw new Error('未确认本波重试开战');
       startDriving(arena); return '已重试当前波';
     }
+    await requireGengFormation(owner,TRIALS[arena]+'准备');
     const rt = window.__rt;
     if (typeof rt.startTownCombat !== 'function') throw new Error('当前页面不支持试炼入口');
     const profile = rt.mobileHudState?.()?.profile;
@@ -1939,9 +2151,32 @@
   async function storyReady(owner) {
     storyCheck(owner);
     const start = Date.now();
-    while (document.hidden || readCombat()?.paused || window.__rt.mobileHudState?.()?.blocked || shown('worldLoading')) {
+    const blockedAt = {};
+    while (true) {
+      const combat=readCombat(), world=readWorld();
+      let hud=null, hudError=false;
+      try { hud=window.__rt.mobileHudState?.() || null; } catch (e) { hudError=true; }
+      // 原生退出/结算可能保留 paused；只等待仍在战斗中的暂停，不能挡住队列收尾。
+      const blockers={hidden:document.hidden===true,paused:combat?.active===true && combat.state==='fighting' && combat.paused===true,
+        worldLoading:shown('worldLoading'),hudBlocked:hud?.blocked===true,hudError};
+      const now=Date.now();
+      for (const [name,blocked] of Object.entries(blockers)) {
+        if (blocked) blockedAt[name] ??= now;
+        else delete blockedAt[name];
+      }
+      if (!Object.values(blockers).some(Boolean)) return;
+      if (now-start>420000) {
+        const active=Object.entries(blockers).filter(([,blocked])=>blocked)
+          .map(([name])=>name+'='+Math.floor((now-blockedAt[name])/1000)+'s').join(',');
+        const batch=state.batch?.status==='running'
+          ? '；batch='+state.batch.mode+'/'+(state.batch.current || state.batch.status) : '';
+        const message='游戏就绪等待超时：持续阻塞['+active+']；combat='+(combat?.state || 'unknown')+
+          (combat?.arena?'@'+combat.arena:'')+'；sceneTier='+(world?.environment?.tier ?? 'unknown')+
+          batch;
+        step(message);
+        throw new Error(message);
+      }
       releaseKeys(); window.__rt.setFlightVerticalInput?.(0); loadingFailure();
-      if (Date.now() - start > 420000) throw new Error('游戏长期暂停或加载未完成');
       await storyWait(200, owner);
     }
   }
@@ -2574,7 +2809,7 @@
   }
   async function walkTo(goal, radius, owner, options = {}) {
     let path = null, last = readWorld()?.actorPosition, movedAt = Date.now(), repairs = 0, lastInput = null, repairOrigin = null;
-    let flightAttempt = null, walkRecovery = false;
+    let flightAttempt = null, walkRecovery = false, blinkRetryAt = 0;
     const obstacles = [], deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);
     try {
       while (true) {
@@ -2585,6 +2820,10 @@
         if (options.interrupt?.()) {
           if (options.moonEvasion) observeMoonDiagnostics(readCombat(),'rune_walk_exit',{reason:'原生目标消失或战斗已结束',goal:moonPoint(goal)});
           return;
+        }
+        // 遁光有出发 / 到达动画；等原生结束后再判定距离，避免途中经过符文时提前交互。
+        if (options.moonBlink && world.blink?.active) {
+          releaseKeys();await storyWait(CFG.tickMs,owner);continue;
         }
         if (walkGoalReached(p, goal, radius)) {
           if (options.moonEvasion) observeMoonDiagnostics(readCombat(),'rune_walk_exit',{reason:'到达寻路半径',goal:moonPoint(goal),radius});
@@ -2665,6 +2904,25 @@
         }
         if (input) { setKeys(input.keys); lastInput = input; } else releaseKeys();
         if (evasion) dodgeThreat(combat,evasion,performance.now());
+        // 原生遁光沿 actorYaw 固定前进 blink.distance，不能直接指定目的地。
+        // 先按寻路方向走到朝向一致；落点必须可步行且明显缩短距符文的距离。
+        const blink=world.blink, distance=dist(p,goal), now=Date.now();
+        if (options.moonBlink && combat?.arena==='moonpalace' && combat.state==='fighting' &&
+          input && !evasion?.mobile && !evasion?.critical && !combat.paused &&
+          !combat.casting && !combat.action && now>=blinkRetryAt && blink?.remaining===0 &&
+          Number.isFinite(world.actorYaw) && Number.isFinite(blink.distance) && blink.distance>0 && blink.distance<=40 &&
+          Math.cos(world.actorYaw-input.heading)>.985) {
+          const landing=[p[0]+Math.sin(world.actorYaw)*blink.distance,p[1],p[2]+Math.cos(world.actorYaw)*blink.distance];
+          if (distance-dist(landing,goal)>=4 && walkSegment(p,landing,fieldEnvironment,obstacles)) {
+            blinkRetryAt=now+500;
+            const accepted=act('blink');
+            observeMoonDiagnostics(combat,'rune_blink',{accepted,goal:moonPoint(goal),landing:moonPoint(landing),distance:moonNumber(distance)});
+            if (accepted) {
+              path=null;last=p.slice();movedAt=now;
+              await storyWait(CFG.tickMs,owner);continue;
+            }
+          }
+        }
         state.navigation = { mode: 'walk', position: p.slice(), goal: goal.slice(), waypoint: path[0].slice(),
           distance: dist(p, goal), flight:flightStatus, keys: input?.keys.join('') || '', heading: input?.heading ?? null, repairs,
           obstacles: obstacles.map(o => o.slice()), updatedAt: Date.now() };
@@ -2705,6 +2963,8 @@
     return { rt, portal };
   }
   async function travelMenu(label, owner) {
+    if (Object.values(INSTANCE_LABELS).includes(label) || ['麦田试炼','竹林试炼',...Object.values(TRIALS)].includes(label))
+      await requireGengFormation(owner,label+'准备');
     const { rt, portal } = await approachTravelPortal(owner);
     if (!rt.selectTarget(portal.id)) throw new Error('未能选中传送法阵');
     rt.interact();
@@ -2733,8 +2993,19 @@
     const point = position3(npc.positionXZ);
     const live = () => window.__rt.questSceneStats?.()?.npcs?.find(n => n.key === npc.modelKey);
     await approach(live()?.point || point, 2.2, owner);
-    const target = live();
-    if (!target || !window.__rt.selectTarget(target.id)) throw new Error('无法靠近任务人物：' + npc.name);
+    await storyReady(owner);
+    const select = () => {
+      storyCheck(owner);
+      const target = live();
+      return !!target && window.__rt.selectTarget(target.id);
+    };
+    if (select()) return npc;
+    // 到达半径不代表原生交互可用：门槛、墙角和模型延迟可能仍挡住 NPC。
+    // 只在原生选择失败时继续真实步行，途中一旦可交互便停止，不隔墙提交任务。
+    step('任务人物尚不可交互，继续步行靠近：' + npc.name);
+    await walkTo(live()?.point || point, .8, owner, { flight: false, interrupt: select });
+    await storyReady(owner);
+    await until(select, 5000, '任务人物可交互：' + npc.name, owner);
     return npc;
   }
 
@@ -3028,7 +3299,7 @@
     const radius = Number.isFinite(target?.radius) && target.radius > .2 ? target.radius - .2 : fallbackRadius;
     return { point: target?.point || position3(node.position), radius };
   }
-  async function gatherNode(node, owner) {
+  async function gatherNode(node, owner, movementRetries = 0) {
     const live = () => (readWorld()?.targets || []).find(t => t.id === node.id);
     const destination = questNodeApproach(node, Math.max(1, Math.min(2, (node.reach || 2.8) - .7)));
     await approach(destination.point, (node.rest || 0) > 3 ? 12 : destination.radius, owner);
@@ -3049,6 +3320,11 @@
       window.__rt.setFlightVerticalInput(0); releaseKeys();
     }
     const startPosition = await waitForStoryStill(owner);
+    if (!readWorld()?.flight?.active && fieldThreat(readCombat())) {
+      if (movementRetries>=2) throw new Error('采集点仍有追兵，已中止采集');
+      await defendNearby(owner);
+      return await gatherNode(node,owner,movementRetries+1);
+    }
     try {
       if (node.id.startsWith('loot:')) { await storyRequest('pickup', { nodeId: node.id }, owner); return; }
       const result = await storyRequest('gather-start', { nodeId: node.id }, owner);
@@ -3057,8 +3333,23 @@
       while (true) {
         storyCheck(owner);
         const p = readWorld()?.actorPosition;
+        if (!readWorld()?.flight?.active && fieldThreat(readCombat())) {
+          await storyRequest('gather-cancel',{},owner);
+          if (movementRetries>=2) throw new Error('采集点仍有追兵，已中止采集');
+          step('采集被追兵打断，先反击再重新采集');
+          await defendNearby(owner);
+          return await gatherNode(node,owner,movementRetries+1);
+        }
         if (!position3(p) || dist(startPosition, p) > .16 || Math.abs(startPosition[1] - p[1]) > .2) {
-          await storyRequest('gather-cancel', {}, owner); throw new Error('采集中发生位移，已中断');
+          const smallGroundNudge = node.id.startsWith('whisper:') && position3(p) && dist(startPosition,p)<=.8 && Math.abs(startPosition[1]-p[1])<=.2 &&
+            !readWorld()?.flight?.active && !state.heldKeys.size && !fieldThreat(readCombat());
+          await storyRequest('gather-cancel', {}, owner);
+          if (smallGroundNudge && movementRetries<2) {
+            step('采集被小幅位移打断，重新停稳后重试 '+(movementRetries+1)+'/2');
+            await storyWait(300,owner);
+            return await gatherNode(node,owner,movementRetries+1);
+          }
+          throw new Error('采集中发生位移，已中断');
         }
         if (Date.now() >= finishAt) break;
         await storyWait(Math.min(80, finishAt - Date.now()), owner);
@@ -3135,9 +3426,41 @@
   }
 
   function livingEnemies(s) { return (s?.enemies || []).filter(e => e.hp > 0 && !e.hidden && !e.returning); }
+  // 同一场景集中击杀一个有效目标；任务指定目标与护送烧车者可显式覆盖。
+  let combatFocus = null;
+  function focusedEnemy(s, candidates = livingEnemies(s), preferred = null, override = false) {
+    if (!s) { combatFocus = null; return null; }
+    const scope = s.overworld ? 'field' : s.arena + ':' + (s.wave?.index ?? 0);
+    if (!combatFocus || combatFocus.runtime !== window.__fc || combatFocus.owner !== state.generation || combatFocus.scope !== scope)
+      combatFocus = {runtime:window.__fc, owner:state.generation, scope, id:null};
+    const wanted = candidates.find(e => e.id === preferred?.id);
+    const held = candidates.find(e => e.id === combatFocus.id);
+    const current = candidates.find(e => e.id === s.target);
+    const target = override && wanted || held || wanted || current || candidates.slice().sort((a,b) => dist(myPos(),a.position)-dist(myPos(),b.position))[0] || null;
+    combatFocus.id = target?.id ?? null;
+    return target;
+  }
+  // Tab 的首下选最近目标，1.5 秒内再次按才循环；同一拍有限循环并读取原生结果。
+  // 自动目标也须转为 manual，否则下一次输出会按移动方向重新选怪。
+  function lockEnemy(s, target, now) {
+    const confirmed = view => view?.target === target.id && (!Object.hasOwn(view,'targetSource') || view.targetSource === 'manual');
+    if (confirmed(s) || now - state.lastLockAt < 450) return s;
+    state.lastLockAt = now;
+    let current = s;
+    for (let n=0; n<(s.enemies || []).length+1; n++) {
+      if (!act('lock')) break;
+      const next = readCombat();
+      if (!next || next.arena !== s.arena || next.overworld !== s.overworld) break;
+      if (confirmed(next)) return next;
+      if (next.target === current.target && next.targetSource === current.targetSource && n>0) break;
+      current = {...next};
+    }
+    return current;
+  }
   function fieldThreat(s) {
     if (!s?.overworld) return null;
-    return livingEnemies(s).filter(e => e.engaged).sort((a,b) => dist(myPos(),a.position)-dist(myPos(),b.position))[0] || null;
+    const engaged = livingEnemies(s).filter(e => e.engaged);
+    return focusedEnemy(s,engaged);
   }
   function protectFieldHealth(s) {
     const ratio = s?.hp / Math.max(1,s?.hpMax);
@@ -3159,13 +3482,24 @@
     const input = chooseWalkInput(world, target, fieldEnvironment, [], boundary, hazard);
     if (input) setKeys(input.keys); else releaseKeys();
   }
-  function battleApproach(target, boundary, s) {
+  function battleApproach(target, boundary, s, allowOutsidePursuit = true) {
     const bounds = (Array.isArray(boundary) ? boundary : [boundary]).filter(Boolean).map(b => ({ ...b }));
-    // 冲刺/击退可能把首领留在原生场外；只用场内余量接近，绝不越界退出副本。
-    const arena = arenaInfo;
-    if (!s.overworld && s.wave && arena && bounds.length === 1 &&
-      dist(bounds[0].center, arena.center) < .1 && dist(target, arena.center) > arena.radius - 2) {
-      bounds[0].radius = Math.max(bounds[0].radius, arena.radius - 1.5);
+    // 副本怪跑出场地后，把追击边界动态延伸到飞剑可命中的位置；野外和多重约束边界不放宽。
+    // 用本局的有效 arena id 而非 wave 字段判断，主线、每日副本、试炼和无 wave 的副本帧都共用此逻辑。
+    const arena = arenaInfo, bound = bounds[0], originalRadius = bound?.radius;
+    let chasingOutside = false;
+    if (allowOutsidePursuit && s?.active && !s.overworld && typeof s.arena === 'string' && s.arena && bounds.length === 1) {
+      const targetRadius = dist(target, bound.center);
+      if (targetRadius > bound.radius) {
+        // 月殿的巨剑/血契打断需要贴近；其它副本保持在飞剑点杀范围内。
+        const desiredRange = s.arena === 'moonpalace' ? 12 : CFG.swordRange;
+        const reachRadius = targetRadius - desiredRange + .75; // battleApproach 会再留 .75 米离散移动余量。
+        bound.radius = Math.max(bound.radius, reachRadius);
+        // 保留原场地边缘余量，避免目标刚越过软边界时反而缩小原有接近距离。
+        if (arena && dist(bound.center, arena.center) < .1 && targetRadius > arena.radius - 2)
+          bound.radius = Math.max(bound.radius, arena.radius - 1.5);
+        chasingOutside = bound.radius > originalRadius + .01;
+      }
     }
     let point = target.slice();
     // 留出离散按键与一帧移动的余量，多重边界仍全部生效。
@@ -3181,7 +3515,7 @@
       }
       if (!changed) break;
     }
-    return { point, bounds };
+    return { point, bounds, chasingOutside };
   }
   // 场边滑行。旧逻辑进入边界缓冲带就掉头直奔场心：会穿进追过来的怪堆，而且一回到缓冲带以内又被走位
   // 逻辑推出去，人物在边线上原地折返、被近战怪追上。现在改为沿边界绕场：保持在边界内约 2.5 米的圆上，
@@ -3226,30 +3560,41 @@
   function storyBattleFrame(s, target, boundary, outputEnabled = true) {
     const me = readWorld()?.actorPosition, now = performance.now();
     if (!me || s.paused || !target) { releaseKeys(); return; }
+    if (s.overworld) target = focusedEnemy(s,livingEnemies(s).filter(e => e.engaged || e.id === target.id),target);
+    const stableFocus = s.overworld || s.arena === 'escort';
+    if (stableFocus) s = lockEnemy(s,target,now);
+    const locked = !stableFocus || s.target === target.id && (!Object.hasOwn(s,'targetSource') || s.targetSource === 'manual');
     recordDamage(s, now);
     catchVisibleSword();
     const enemies = livingEnemies(s).filter(e => !s.overworld || e.engaged || e.id === target.id || dist(me,e.position)<CFG.retreatDistance);
     const relevant = { ...s, enemies, target:target.id };
     let heading;
     const d = dist(me, target.position), step = steeringTarget(relevant, me, now);
-    if (outputEnabled && moonCombatFrame(s,target,step,boundary,now)) return;
+    const allowOutsidePursuit = !step.threat?.hazard && !step.retreat;
+    const pursuing = allowOutsidePursuit && d > 25;
+    const approach = battleApproach(target.position, boundary, s, allowOutsidePursuit), bounds = approach.bounds;
+    if (s.arena==='moonpalace') {
+      if (outputEnabled && moonCombatFrame(s,target,step,bounds,now)) return;
+      // 月殿原生状态暂缺时只走位和补药，不能走允许读条的通用输出。
+      outputEnabled=false;
+    }
     yufengObserve(target);
-    if (outputEnabled && yufengBurst(s,target,step,now)) {
+    if (outputEnabled && locked && yufengBurst(s,target,step,now)) {
       attack(s,null,now,true,true);
       state.navigation={mode:'casting',distance:d,reason:'安全空档站定施法，预警出现即恢复躲避',updatedAt:Date.now()};
       return;
     }
-    const approach = battleApproach(target.position, boundary, s), bounds = approach.bounds;
-    const pursuing = !step.threat?.hazard && !step.retreat && d > 25;
     if (pursuing) {
       // 旧逻辑在场边反复向敌人/场心折返，场外目标永远进不了点杀射程。
       const remaining = dist(me, approach.point);
       heading = remaining > .7 ? bearingTo(me, approach.point) : null;
       state.navigation = { mode:'combat-approach', target:target.id, distance:d,
         goal:approach.point.slice(), remaining, inRange:d < 32,
-        reason:remaining > .7 ? '接近场内攻击位置' : d < 32 ? '场内边缘持续远程输出' : '目标在原生场外且超出射程', updatedAt:Date.now() };
+        reason:remaining > .7 ? (approach.chasingOutside ? '追击副本范围外目标' : '接近场内攻击位置') : d < 32 ? '持续远程输出' : '目标超出射程', updatedAt:Date.now() };
     } else {
-      const slide = step.threat?.hazard ? null : edgeSlide(me, bounds, step.want, enemies, now);
+      const lockedFieldQi = s.overworld && step.threat?.move==='bossQi' && step.threat.mobile;
+      // 剑气飞行期保留已锁定的侧闪方向，场边绕行不能把人物折回弹道。
+      const slide = step.threat?.hazard || lockedFieldQi ? null : edgeSlide(me, bounds, step.want, enemies, now);
       heading = slide ?? step.want;
       if (state.navigation?.mode === 'combat-approach') state.navigation = null;
     }
@@ -3258,9 +3603,9 @@
     if (Number.isFinite(heading)) steerWalkable(heading, bounds, hazards.length ? hazards : null);
     else releaseKeys();
     const rolled = dodgeThreat(s, step, now);
-    if (!outputEnabled) { attack(s, null, now, true, true); return; }
+    if (!outputEnabled || !locked) { attack(s, null, now, true, true); return; }
     const ultimate = !rolled && !step.critical && !step.mobile && castUltimate(s, { e: target, d }, now);
-    if (s.target !== target.id && now - state.lastLockAt > 450) { state.lastLockAt = now; act('lock'); return; }
+    if (!stableFocus && s.target !== target.id && now - state.lastLockAt > 450) { state.lastLockAt = now; act('lock'); return; }
     const output = attack(ultimate || rolled ? readCombat() : s, { e: target, d }, now, step.critical, step.mobile);
     if (output !== 'none') { state.lastAct = output; log('输出 ' + output); }
     // 没有飞剑时仅用远程法术；撤离时不为兜底输出停步。
@@ -3283,6 +3628,8 @@
       if(s?.active && s.state==='fighting' && !s.paused)act('pause');
       throw new Error('击杀结算被服务端拒绝：'+rejected.enemyId+' · '+rejected.error+fieldRejectionHint(rejected)+'；已停止自动重打并尝试返回洞府');
     };
+    const initial = readCombat(), requested = livingEnemies(initial).find(e => e.id === enemyId);
+    if (requested) focusedEnemy(initial,livingEnemies(initial),requested,true);
     let refresh = null, waitingAt = null, previousPhase = state.phase;
     try {
       while (true) {
@@ -3291,7 +3638,7 @@
         const s = readCombat();
         protectFieldHealth(s);
         // 击杀回执和资料刷新都可能延迟；原目标倒下后仍处理其他追击怪。
-        const target = livingEnemies(s).find(e => e.id === enemyId) || fieldThreat(s);
+        const target = focusedEnemy(s,livingEnemies(s).filter(e => e.id === enemyId || e.engaged));
         if (!target) {
           releaseKeys();
           waitingAt ??= Date.now();
@@ -3373,6 +3720,7 @@
         distance:next ? dist(myPos(),position3(next.position)) : 0, keys:'', flight:null, reason:message, updatedAt:Date.now() };
       await storyWait(3000, owner); await window.__quests.refresh(false); storyCheck(owner); return;
     }
+    const beforeProgress = storyProgress(q.id), generation = spawn.generation;
     step(q.title + ' · ' + objective.text);
     if (!readCombat()?.overworld) {
       const region = storyData()?.field?.regions?.[objective.arena];
@@ -3383,8 +3731,23 @@
     }
     // 在点杀射程内交战，避免为攻击目标强行走到近处。
     await approach(position3(spawn.position), Math.min(26, CFG.swordRange - 3), owner);
-    await until(() => livingEnemies(readCombat()).some(e => e.spawnId === spawn.id), 60000, '郊外敌人模型', owner);
-    const enemy = livingEnemies(readCombat()).find(e => e.spawnId === spawn.id);
+    const liveTarget = () => {
+      const enemies = livingEnemies(readCombat());
+      return enemies.find(e => e.spawnId === spawn.id) || enemies.find(e => candidates.some(d => d.id === e.spawnId));
+    };
+    const changed = () => {
+      if (storyProgress(q.id) !== beforeProgress) return true;
+      const current = storyData()?.field?.enemies?.find(e => e.id === spawn.id);
+      return !current || current.generation !== generation ||
+        (current.respawnAt || 0) > Date.now() / 1000 && !livingEnemies(readCombat()).some(e => e.spawnId === spawn.id);
+    };
+    // 途中反击会击杀出发前选中的怪；按真实进度/刷新代次重新选敌，不空等旧模型。
+    await until(() => changed() || liveTarget() || fieldThreat(readCombat()), 60000, '郊外敌人模型：' + spawn.id, owner);
+    if (changed()) {
+      await window.__quests.refresh(false); storyCheck(owner);
+      return;
+    }
+    const enemy = liveTarget() || fieldThreat(readCombat());
     if (enemy) await fightEnemy(enemy.id, owner);
     if (objective.itemId) await pickupNeededCorpses(objective.itemId, owner);
   }
@@ -3401,13 +3764,28 @@
     }
     return position3(ESCORT_ROUTE.at(-1));
   }
+  function escortEnemy(s, me) {
+    const enemies = livingEnemies(s), cart = escortPoint(s.escort?.dist || 0);
+    // 劫车贼和破门力士会主动烧车；进入车旁时优先打退，这是集中输出的业务例外。
+    const raider = enemies.filter(e => ['ghostraider','flameheavy'].includes(e.role) && dist(e.position,cart)<8)
+      .sort((a,b)=>dist(a.position,cart)-dist(b.position,cart))[0];
+    return focusedEnemy(s,enemies,raider || enemies.slice().sort((a,b)=>dist(a.position,me)-dist(b.position,me))[0],!!raider);
+  }
+  function escortBoundary(s) {
+    // 驿道总场地半径 215 米，只能用来判定副本；战斗围绕车队，保留原生 30 米跟随余量。
+    const a = captureArena(s,myPos());
+    // 追魂使留在车队前方交战；绕车中心会把首领引回后方两辆车，持续烧车。
+    const boss = livingEnemies(s).some(e => e.role === 'ghostelder');
+    const distance = (s.escort?.dist || 0) + (boss ? 26 : 0);
+    return [{center:a.center,radius:Math.max(5,a.radius-4)}, {center:escortPoint(distance),radius:boss ? 20 : 26}];
+  }
   function instanceResult(s, id) { return id === 'moonpalace' ? s?.moonPalace : id === 'bloodland' ? s?.bloodLand : id === 'southgate' ? s?.southGate : id === 'escort' ? s?.escort : s?.contentRun; }
   // 月殿血誓上报的 hits 是玩家命中次数（metrics.playerHits），野外首领击杀上报该怪被命中次数；
   // 月殿已多次被服务端以 count_cap:hits 判为 review。紫罗极火（qianlan）的被动冰焰按原生注释给 38% 的直接命中
   // 追加 2.5 秒、每 0.5 秒一跳的持续伤害，每一跳都计一次命中，推算约 1+0.38×5=2.9 倍；实测一局为 1751 / 飞剑 577。
   // 服务端上限未知，仍有飞剑命中占比很高的拒绝记录；被动不是唯一原因。这里只读原生快照做提示，不改上报。
   function hitAudit(combat = readCombat()) {
-    const metrics=combat?.metrics, slot=(combat?.kit || []).find(k=>k.skill==='qianlan' && !k.locked);
+    const metrics=combat?.metrics, slot=(combat?.kit || []).find(k=>isMoonHitPassive(k));
     const player=Number.isFinite(metrics?.playerHits)?metrics.playerHits:null, sword=Number.isFinite(metrics?.swordHits)?metrics.swordHits:null;
     return {playerHits:player,swordHits:sword,ratio:player!=null && sword>0?Math.round(player/sword*100)/100:null,passive:slot?.name || null};
   }
@@ -3438,16 +3816,129 @@
     return Object.fromEntries(['runeRounds','runeTimeouts','channels','interrupts','mirrorsBroken','mirrorReflects','bladeHits','hazardHits']
       .map(key=>[key,moonNumber(counts[key])]));
   }
+  function moonBossInfo(s) {
+    const boss=s?.enemies?.find(e=>e.role==='nangongque')||s?.enemies?.find(e=>e.alive!==false);
+    const hp=Number(boss?.hp),max=Number(boss?.maxHp??boss?.hpMax);
+    return {boss,hp:Number.isFinite(hp)?hp:null,max:Number.isFinite(max)&&max>0?max:null,
+      ratio:Number.isFinite(hp)&&Number.isFinite(max)&&max>0?hp/max:null};
+  }
+  function moonMirrorTone(mirror) {
+    const normalize=value=>String(value??'').trim().toLowerCase().replace(/[\s_-]+/g,'');
+    const state=normalize(mirror?.state),color=normalize(mirror?.color);
+    if (state==='broken'||color==='broken'||state==='碎'||color==='碎') return 'broken';
+    const values=[state,color].filter(value=>value&&value!=='idle'&&value!=='default');
+    if (values.some(value=>/red|红|反弹|reflect|danger/.test(value))) return 'red';
+    if (values.some(value=>/gold|yellow|white|金|黄|白|safe|attack/.test(value))) return 'safe';
+    return null;
+  }
+  const MOON_NATIVE_FLOOR_COMPAT=Symbol.for('dwelling-autobot.moon-native-floor-compat.v2');
+  const MOON_NATIVE_HP_GATES=[.65,.3,.1], MOON_NATIVE_GATE_TOLERANCE=1e-6;
+  function ensureMoonNativeFloorCompatibility() {
+    const native=window.qingxiNgqBoss,original=native?.adjust;
+    if (typeof original!=='function') return false;
+    const repair=(e,damage,adjusted,info={})=>{
+      if (!state.story || e?.role!=='nangongque' || !Number.isFinite(adjusted) || adjusted<0 ||
+          !Number.isFinite(damage) || damage<=adjusted || ['debug','seal','execute'].includes(info?.source)) return adjusted;
+      let view;
+      try { view=native.stats?.(); } catch { return adjusted; }
+      if (view?.mode!=='fight') return adjusted;
+      const phase=view.phase,ratio=MOON_NATIVE_HP_GATES[phase-1];
+      if (!ratio || (phase>1 && !(view.counts?.mirrorsBroken>=4)) || view.runes?.length) return adjusted;
+      const {hp,maxHp}=e;
+      if (!Number.isFinite(hp) || !Number.isFinite(maxHp) || maxHp<=0) return adjusted;
+      const floorHp=Math.ceil(maxHp*ratio),transitionHp=maxHp*(ratio+MOON_NATIVE_GATE_TOLERANCE);
+      // 原生先把伤害截到向上取整的锁血下限，after() 则用比例判断。只补偿两者之间的差值。
+      const hpAfter=hp-adjusted;
+      if (floorHp<=transitionHp || hpAfter<=transitionHp ||
+          Math.abs(adjusted-Math.max(0,hp-floorHp))>1e-6) return adjusted;
+      const s=readCombat();
+      if (s?.arena!=='moonpalace' || !s.active || s.state!=='fighting' || s.paused || document.hidden) return adjusted;
+      // 用阈值以下的整数作落点，给原生后续减伤及浮点误差留出余量。
+      const targetHp=Math.floor(transitionHp),amount=Math.min(damage-adjusted,hpAfter-targetHp);
+      if (amount>0) observeMoonDiagnostics(s,'native_floor_nudge',{phase,floorHp,transitionHp,targetHp,allowedDamage:amount,incomingDamage:damage});
+      return adjusted+amount;
+    };
+    const registry=original[MOON_NATIVE_FLOOR_COMPAT];
+    if (registry && typeof registry.setRepair==='function') {
+      registry.setRepair(repair);
+      return true;
+    }
+    const handlers={repair,setRepair(next){this.repair=next;}};
+    const patched=function(e,damage,info={}) {
+      const adjusted=original.call(this,e,damage,info);
+      return handlers.repair(e,damage,adjusted,info);
+    };
+    Object.defineProperty(patched,MOON_NATIVE_FLOOR_COMPAT,{value:handlers});
+    try { native.adjust=patched;return native.adjust===patched; } catch { return false; }
+  }
+  function moonFinaleGate(s,native) {
+    const info=moonBossInfo(s),mode=native?.mode||null,counts=native?.counts||{};
+    const mirrorsBroken=Number.isFinite(counts.mirrorsBroken)?counts.mirrorsBroken:null;
+    const modeFinale=mode==='finale';
+    // Native adjust() can hold the boss at ceil(10%) while after() still
+    // waits for a strictly lower value. Treat that exact floor as a native
+    // lock, but only after all four mirrors and phase 3 are confirmed. The
+    // script must stop ordinary output without stopping evasion.
+    const hpFloor=info.max!=null?Math.ceil(info.max*.1):null;
+    const hpDelta=hpFloor!=null&&info.hp!=null?info.hp-hpFloor:null;
+    const noRunes=!Array.isArray(native?.runes)||native.runes.length===0;
+    const nativeLockWaiting=!modeFinale&&['fight','dying'].includes(mode)&&
+      mirrorsBroken!=null&&mirrorsBroken>=4&&noRunes&&hpFloor!=null&&info.hp!=null&&
+      // hpFloor is ceil(10%); its ratio can exceed 10% by rounding, so
+      // the delta to the exact integer floor is the authoritative lock test.
+      hpDelta>=-1&&hpDelta<=1;
+    return {active:modeFinale||nativeLockWaiting,
+      reason:modeFinale?'native_finale':nativeLockWaiting?'native_lock_floor_waiting':null,
+      mode,phase:native?.phase??null,mirrorsBroken,bossHp:info.hp,bossMax:info.max,bossRatio:info.ratio,
+      hpFloor,hpDelta,noRunes};
+  }
+  function moonMirrorGate(s,native) {
+    const mode=native?.mode||null,counts=native?.counts||{};
+    const mirrorsBroken=Number.isFinite(counts.mirrorsBroken)?counts.mirrorsBroken:null;
+    return {active:mode==='mirrors'&&(mirrorsBroken==null||mirrorsBroken<4),mode,mirrorsBroken,
+      targets:Array.isArray(s?.mechanicTargets)?s.mechanicTargets.length:0};
+  }
+  function moonFinaleEvade(s,reason) {
+    const me=myPos(),boss=livingEnemies(s).find(e=>e.role==='nangongque')||livingEnemies(s)[0];
+    if (!me||!boss) { releaseKeys(); return; }
+    const now=performance.now(),step=steeringTarget({...s,enemies:[boss],target:boss.id},me,now);
+    const arena=captureArena(s,me),boundary={center:arena.center,radius:Math.max(5,arena.radius-4)};
+    const hazards=[step.threat?.hazard,...groundHazards()].filter(Boolean);
+    let heading=step.mobile||step.critical?step.want:
+      bearingTo(me,boss.position)+state.orbitDir*(Math.PI/2+Math.max(-.9,Math.min(.9,(12.8-dist(me,boss.position))*.12)));
+    if (dist(me,boss.position)>25&&!step.mobile&&!step.critical) heading=bearingTo(me,boss.position);
+    if (Number.isFinite(heading)) steerWalkable(heading,boundary,hazards.length?hazards:null);
+    else releaseKeys();
+    const rolled=dodgeThreat(s,step,now);
+    state.navigation={mode:'combat-evasion',distance:dist(me,boss.position),reason,
+      rolled,updatedAt:Date.now()};
+  }
   function moonDiagnosticSnapshot(s) {
     let native=null,targets=[];
     try { native=window.qingxiNgqBoss?.stats?.(); } catch {}
     try { targets=(window.__fc?.mechanicInteractions?.()||[]).filter(t=>t.data?.kind==='boss-rune').slice(0,3); } catch {}
-    const position=moonPoint(readWorld()?.actorPosition),boss=s?.enemies?.find(e=>e.role==='nangongque')||s?.enemies?.find(e=>e.alive!==false);
+    const position=moonPoint(readWorld()?.actorPosition),bossInfo=moonBossInfo(s),boss=bossInfo.boss;
+    const finaleGate=moonFinaleGate(s,native),mirrorGate=moonMirrorGate(s,native),giant=s?moonGiant(s):null;
+    const mirrors=(s?.mechanicTargets||[]).slice(0,8).map(mirror=>{
+      const point=moonPoint(mirror.position||mirror.point);
+      return {id:String(mirror.id??mirror.data?.id??'').slice(0,64),state:typeof mirror.state==='string'?mirror.state.slice(0,24):null,
+        color:typeof mirror.color==='string'?mirror.color.slice(0,24):null,tone:moonMirrorTone(mirror),point,
+        distance:position&&point?moonNumber(Math.hypot(position[0]-point[0],position[2]-point[2])):null,
+        distance3d:position&&point?moonNumber(dist(position,point)):null};
+    });
     return {observedAt:Date.now(),seconds:moonNumber(s?.wave?.time),state:s?.state||null,paused:!!s?.paused,hidden:!!document.hidden,
       blocked:!!window.__rt?.mobileHudState?.()?.blocked,position,hp:moonNumber(s?.hp),mana:moonNumber(s?.mana),
-      boss:boss?{state:boss.state||null,phase:boss.phase||null,hp:moonNumber(boss.hp),position:moonPoint(boss.position)}:null,
+      boss:boss?{state:boss.state||null,phase:boss.phase||null,hp:moonNumber(boss.hp),maxHp:moonNumber(boss.maxHp??boss.hpMax),
+        ratio:Number.isFinite(boss.hp)&&Number.isFinite(boss.maxHp??boss.hpMax)?moonNumber(boss.hp/Math.max(1,boss.maxHp??boss.hpMax)):null,
+        position:moonPoint(boss.position)}:null,
       mode:native?.mode||null,phase:moonNumber(native?.phase),channel:moonNumber(native?.channel),pools:moonNumber(native?.pools),counts:moonCounts(native?.counts),
+      combatPlan:state.story?.moonCombat?{status:state.story.moonCombat.status,
+        nextChannelAt:moonNumber(state.story.moonCombat.nextChannelAt),nextTreasureAt:moonNumber(state.story.moonCombat.nextTreasureAt),
+        manaReserve:moonNumber(state.story.moonCombat.manaReserve)}:null,
+      giant:giant?{cost:moonNumber(giant.cost),cooldown:moonNumber(s?.cooldown?.giant)}:null,
+      mirrorGate,finaleGate,
       runes:Array.isArray(native?.runes)?native.runes.slice(0,3).map(value=>String(value).slice(0,20)):null,
+      mirrors,
       targets:targets.map(t=>{const point=moonPoint(t.point);return {id:String(t.data.id).slice(0,64),point,radius:moonNumber(t.radius),
         distance:position&&point?moonNumber(Math.hypot(position[0]-point[0],position[2]-point[2])):null,
         distance3d:position&&point?moonNumber(dist(position,point)):null};}),
@@ -3481,7 +3972,7 @@
         context.run.last?.state!=='fighting' && sample.state==='fighting';
       if (newRun) {
         if (context) {context.run.endedAt=now;context.run.endReason='next_run';appendMoonDiagnostic(context.run,'run_replaced',context.run.last);}
-        const run={id:'moon-'+now.toString(36)+'-'+Math.random().toString(36).slice(2,7),version:'2.0.78',startedAt:now,events:[],dropped:0};
+        const run={id:'moon-'+now.toString(36)+'-'+Math.random().toString(36).slice(2,7),version:'2.0.110',startedAt:now,events:[],dropped:0};
         moonDiagnosticHistory.push(run);moonDiagnosticHistory=moonDiagnosticHistory.slice(-3);
         moonDiagnosticContext={run,runtime:window.__fc,nativeRunId,signature:null,lastSampleAt:0,finaleAt:null,finaleSeconds:null,lastWalkAt:0};
         appendMoonDiagnostic(run,'run_start',sample,{note:sample.seconds>1?'中途接管，不能还原接管前的轨迹':'开始记录'});
@@ -3504,11 +3995,14 @@
         run.timeouts=sample.counts.runeTimeouts;
       }
       if (previous && JSON.stringify(sample.runes)!==JSON.stringify(previous.runes)) appendMoonDiagnostic(run,'rune_state',sample,{beforeRunes:previous.runes});
+      if (previous && JSON.stringify(sample.mirrors)!==JSON.stringify(previous.mirrors))
+        appendMoonDiagnostic(run,'mirror_state',sample,{beforeMirrors:previous.mirrors});
       if (sample.runes?.length===3 && sample.runes.every(value=>value==='sealed') && !previous?.runes?.every(value=>value==='sealed'))
         appendMoonDiagnostic(run,'runes_complete',sample,{note:'仅依据原生三枚 sealed 确认'});
       if (previous?.hp!=null && sample.hp!=null && sample.hp<previous.hp) appendMoonDiagnostic(run,'damage',sample,{lost:moonNumber(previous.hp-sample.hp)});
       if (previous?.boss?.hp!=null && sample.boss?.hp>previous.boss.hp) appendMoonDiagnostic(run,'boss_heal',sample,{healed:moonNumber(sample.boss.hp-previous.boss.hp)});
-      const signature=JSON.stringify([sample.state,sample.mode,sample.paused,sample.hidden,sample.blocked,sample.counts,sample.targets.map(t=>t.id)]);
+      const signature=JSON.stringify([sample.state,sample.mode,sample.paused,sample.hidden,sample.blocked,sample.counts,
+        sample.mirrors.map(t=>[t.id,t.state,t.color,t.tone]),sample.targets.map(t=>t.id)]);
       if (signature!==current.signature || now-current.lastSampleAt>=(sample.mode==='finale'?500:4000)) {
         appendMoonDiagnostic(run,'sample',sample);current.signature=signature;current.lastSampleAt=now;
       }
@@ -3516,7 +4010,7 @@
       if (sample.counts && Object.values(sample.counts).some(Number.isFinite)) run.lastNative=sample;
       if (type) appendMoonDiagnostic(run,type,sample,detail);
       const changed=previous && (sample.mode!==previous.mode || JSON.stringify(sample.runes)!==JSON.stringify(previous.runes) ||
-        JSON.stringify(sample.counts)!==JSON.stringify(previous.counts));
+        JSON.stringify(sample.mirrors)!==JSON.stringify(previous.mirrors) || JSON.stringify(sample.counts)!==JSON.stringify(previous.counts));
       if (type==='settlement' || type==='rune_walk_error' || newRun || changed || now-(current.persistedAt||0)>=1000) {persistMoonDiagnostics();current.persistedAt=now;}
       return run;
     } catch { return null; } // 诊断失败不能阻断原来的移动、交互或结算。
@@ -3604,11 +4098,10 @@
     const key=label+'|'+text; if (state.hitWarning===key) return;
     state.hitWarning=key; log(label+'：'+text);
   }
-  // ---- 可选月殿换装（默认关闭）：手动自检或显式开启时收起冰焰，结束后祭回 ----
-  // 原生 damageEnemy 每调用一次 metrics.playerHits 加一，冰焰的每一跳（dot）也算；qianlanProc 给 38% 的直接命中
-  // 挂 2.5 秒、每 0.5 秒一跳且可叠加的冰焰。被动只看法宝是否在技能位（slotEffect 遍历 profile.slots），
-  // 所以只能收宝。这里只调用储物袋「收宝 / 祭出」按钮背后的页面函数 operateTreasure，技能位顺序用
-  // 页面的 saveDoufaSkillSlots 还原；先把待恢复记录写入本地存储，刷新、停止或出错后都能接着装回。
+  // ---- 月殿换装：仅临时收起紫罗极火、乾蓝冰焰、阴阳冰火大剑，其余法宝保留 ----
+  // 背包有其他完好法宝时补上腾出的技能位；原装备和临时替代品一并持久化。
+  // 同时检查技能位和储物袋的 active 状态，覆盖已祭出但未放进技能位的法宝。
+  // 操作前持久化恢复记录；刷新、停止或出错后仍能祭回并恢复原技能位顺序。
   const LOADOUT_KEY='dwelling-autobot.loadout-restore';
   function doufaProfile() {
     try {
@@ -3616,9 +4109,13 @@
       return Array.isArray(profile?.slots) ? profile : null;
     } catch (e) { return null; }
   }
+  function isMoonHitPassive(slot) {
+    if (!slot || slot.locked) return false;
+    const name=String(slot.name || slot.displayName || slot.title || '').replace(/[\s·・_-]/g,'');
+    return slot.skill==='qianlan' || Number(slot.effects?.qianlan_proc_chance_pct)>0 || /(?:紫罗极火|乾蓝冰焰)/.test(name);
+  }
   function hitPassiveSlots(profile = doufaProfile()) {
-    return (profile?.slots || []).filter(slot=>slot?.itemId && !slot.locked &&
-      (slot.skill==='qianlan' || Number(slot.effects?.qianlan_proc_chance_pct)>0));
+    return (profile?.slots || []).filter(slot=>slot?.itemId && isMoonHitPassive(slot));
   }
   function slotOrder(profile = doufaProfile()) {
     return (profile?.slots || []).slice().sort((a,b)=>a.slot-b.slot).map(slot=>slot.itemId);
@@ -3627,9 +4124,340 @@
   function slotActive(itemId, profile = doufaProfile()) {
     return (profile?.slots || []).some(slot=>slot?.itemId===itemId && !slot.locked);
   }
+  function slotContains(itemId, profile = doufaProfile()) {
+    return (profile?.slots || []).some(slot=>slot?.itemId===itemId);
+  }
+  function clientTreasureRows(clientState=pageClientState()) {
+    const rows=clientState?.data?.account?.bagTreasure?.treasures;
+    return Array.isArray(rows)?rows:[];
+  }
+  // 祭出的法宝不一定占技能位，储物袋的 active 才是祭出状态。
+  function treasureManifested(itemId) {
+    const rows=clientTreasureRows().filter(row=>row?.itemId===itemId && typeof row.active==='boolean');
+    return rows.length ? rows.some(row=>row.active) : slotActive(itemId);
+  }
+  function isMoonRestrictedTreasure(item) {
+    const name=String(item?.name || item?.displayName || item?.title || '').replace(/[\s·・_-]/g,'');
+    return /(?:紫罗极火|乾蓝冰焰|阴阳冰火大剑)/.test(name) ||
+      !name && (['qianlan','yinyang_swords'].includes(item?.skill) || item?.itemId==='treasure_yanyue_yinyang_icefire_swords');
+  }
+  function loadoutReplacements(marker) {
+    return Array.isArray(marker?.replacements) ? marker.replacements : marker?.replacement ? [marker.replacement] : [];
+  }
+  function moonManifestedItems(profile=doufaProfile(), clientState=pageClientState()) {
+    const byId=new Map((profile?.slots || []).filter(slot=>slot?.itemId && !slot.locked).map(slot=>[slot.itemId,slot]));
+    for (const item of clientTreasureRows(clientState)) {
+      if (item?.itemId && item.active===true) byId.set(item.itemId,{...byId.get(item.itemId),...item});
+    }
+    return [...byId.values()];
+  }
+  function moonRestrictedItems(profile=doufaProfile(), clientState=pageClientState()) {
+    return moonManifestedItems(profile,clientState).filter(isMoonRestrictedTreasure);
+  }
   function loadoutPlayer() {
     try { return typeof window.ownWorldIdentity==='function' ? String(window.ownWorldIdentity()) : rewardBridge?.player_id || null; }
     catch (e) { return rewardBridge?.player_id || null; }
+  }
+  function pageClientValue(key) {
+    try {
+      // 客户端 CSP 允许页面内联脚本，但禁止 Function/eval。固定的页面访问器既能读取
+      // 顶层词法变量，也不会误读助手或热更新包装函数里同名的 state；不编译动态表达式。
+      if (!window.__dwellingAutobotClientAccess) {
+        const host=document.head || document.documentElement;
+        if (!host) return null;
+        const script=document.createElement('script');
+        script.textContent=`window.__dwellingAutobotClientAccess=Object.freeze({
+          state:()=>typeof state==="object" ? state : null,
+          postJson:()=>typeof postJson==="function" ? postJson : null,
+          loadDoufaProfile:()=>typeof loadDoufaProfile==="function" ? loadDoufaProfile : null,
+          runtime:()=>typeof dwellingWorld!=="undefined" ? dwellingWorld.runtime : null
+        });`;
+        try { host.appendChild(script); } finally { script.remove(); }
+      }
+      const read=window.__dwellingAutobotClientAccess?.[key];
+      return typeof read==='function' ? read() : null;
+    } catch (e) { return null; }
+  }
+  function pageClientState() {
+    return pageClientValue('state');
+  }
+  function pagePostJson() {
+    const candidate=pageClientValue('postJson');
+    return typeof candidate==='function' ? candidate : null;
+  }
+  async function refreshDoufaInventory() {
+    const load=pageClientValue('loadDoufaProfile');
+    const runtime=pageClientValue('runtime');
+    if (typeof load!=='function' || !runtime) { await refreshDoufaProfile(); return; }
+    let timer;
+    try {
+      await Promise.race([Promise.resolve().then(()=>load(runtime,{inventory:true})),new Promise(resolve=>{timer=setTimeout(resolve,14000);})]);
+    } catch (e) {}
+    finally { clearTimeout(timer); }
+  }
+  function treasureCollections(profile, clientState=pageClientState()) {
+    const bag=clientState?.data?.account?.bagTreasure;
+    if (Array.isArray(bag?.treasures)) return bag.treasures;
+    const rows=[], seen=new Set();
+    let loaded=false;
+    // availableTreasures 是斗法可用列表，不是储物袋，不能拿它判断哪些法宝尚未祭出。
+    const keys=['inventory','treasureInventory','inventoryTreasures','treasureList','treasureItems','allTreasures','ownedTreasures','treasures','backpack','bag','bagItems','treasureBag','storageTreasures','storage','法宝背包','背包'];
+    const add=value=>{
+      let list=Array.isArray(value)?value:null;
+      if (!list && value && typeof value==='object') {
+        for (const key of ['items','treasures','records','rows','list','treasureItems','法宝']) {
+          if (Array.isArray(value[key])) { list=value[key]; break; }
+        }
+        if (!list) {
+          const values=Object.values(value);
+          if (values.length && values.every(item=>item && typeof item==='object')) list=values;
+        }
+      }
+      if (!list) return;
+      loaded=true;
+      for (const row of list) if (row && typeof row==='object' && !seen.has(row)) { seen.add(row); rows.push(row); }
+    };
+    for (const key of keys) add(profile?.[key]);
+    return loaded ? rows : null;
+  }
+  function treasurePowerBonus(row) {
+    const values=new Map();
+    const visit=(value,depth=0)=>{
+      if (!value || typeof value!=='object' || depth>4) return;
+      for (const [key,raw] of Object.entries(value)) {
+        const normalized=String(key).toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]/g,'');
+        const number=typeof raw==='number' ? raw : typeof raw==='string' && raw.trim() ? Number(raw) : NaN;
+        if (Number.isFinite(number) && number>=0) {
+          let priority=-1;
+          if (/^(?:battle|combat)?powerbonus$/.test(normalized) || /^(?:战力|战斗力)(?:加持|加成|提升)$/.test(normalized)) priority=0;
+          else if (/^(?:battle|combat)?power(?:pct|percent|rate|multiplier|increase|add)$/.test(normalized) || /^(?:战力|战斗力)(?:百分比|倍率|提升)$/.test(normalized)) priority=1;
+          else if (/^(?:battle|combat)?power$/.test(normalized) || /^(?:战力|战斗力)$/.test(normalized)) priority=2;
+          if (priority>=0) values.set(priority,Math.max(values.get(priority) ?? -Infinity,number));
+        }
+        if (raw && typeof raw==='object') visit(raw,depth+1);
+      }
+    };
+    visit(row);
+    for (const text of [row?.effectText,row?.description,row?.effectsText]) {
+      if (typeof text!=='string') continue;
+      for (const match of text.matchAll(/(?:战力|战斗力)\s*(?:加持|加成|提升)\s*[:：]?\s*\+?([\d,]+(?:\.\d+)?)\s*%?/g)) {
+        const number=Number(match[1].replaceAll(',',''));
+        if (Number.isFinite(number)&&number>=0) values.set(0,Math.max(values.get(0) ?? -Infinity,number));
+      }
+    }
+    for (let priority=0; priority<=2; priority++) if (values.has(priority)) return values.get(priority);
+    return null;
+  }
+  function bestUnmanifestedTreasure(profile, clientState=pageClientState(), excluded=[]) {
+    const equipped=new Set((profile?.slots || []).map(slot=>slot?.itemId).filter(Boolean));
+    const candidates=new Map();
+    for (const raw of treasureCollections(profile,clientState) || []) {
+      const nested=raw.treasure || raw.item || raw.data;
+      const row=nested && typeof nested==='object' ? {...nested,...raw} : raw;
+      const itemId=String(row.itemId || row.treasureId || row.id || nested?.itemId || nested?.treasureId || nested?.id || '');
+      if (!itemId || equipped.has(itemId) || excluded.includes(itemId) || isMoonRestrictedTreasure(row) || row.locked===true || row.manifested===true || row.isManifested===true || row.equipped===true || row.isEquipped===true || row.inSlot===true || row.active===true || row.isActive===true || row.broken===true || row.needsRepair===true || row.durability===0 || row.quantity===0) continue;
+      const power=treasurePowerBonus(row);
+      // 优先选择战力加成高的法宝；只有名称的完好法宝也可补位。
+      const item={itemId,name:String(row.name || row.displayName || row.title || nested?.name || itemId),power:power??-1};
+      const previous=candidates.get(itemId);
+      if (!previous || item.power>previous.power) candidates.set(itemId,item);
+    }
+    return [...candidates.values()].sort((a,b)=>b.power-a.power || a.itemId.localeCompare(b.itemId))[0] || null;
+  }
+  function currentUltimate() {
+    try {
+      const profile=doufaProfile(), ultimate=profile?.ultimate;
+      const name=typeof ultimate==='string'?ultimate:ultimate?.name;
+      const mode=profile?.formation?.mode;
+      if (name?.startsWith('大庚剑阵') && (mode==='full' || mode==='half')) return '大庚剑阵（'+(mode==='full'?'全阵':'半阵')+'）';
+      const combat=readCombat();
+      return String(combat?.ultimate || combat?.stats?.ultimate || readWorld()?.combat?.ultimate || name || '');
+    } catch (e) { return ''; }
+  }
+  function isHalfGengFormation(value=currentUltimate()) {
+    return /^大庚剑阵/.test(String(value)) && /半阵/.test(String(value));
+  }
+  function commandUiDocuments() {
+    const docs=[];
+    try { if (document) docs.push(document); } catch (e) {}
+    try { if (window.top?.document && window.top.document!==document) docs.push(window.top.document); } catch (e) {}
+    return [...new Set(docs)];
+  }
+  function visibleCommandElement(element) {
+    if (!element || element.disabled || element.hidden) return false;
+    try {
+      const style=window.getComputedStyle?.(element), rect=element.getBoundingClientRect?.();
+      if (style && (style.display==='none' || style.visibility==='hidden')) return false;
+      if (rect && (rect.width<=0 || rect.height<=0)) return false;
+    } catch (e) {}
+    return true;
+  }
+  function findCommandComposer() {
+    // 桌面客户端个人指令入口是 #commandInput / #commandForm /「执行」；
+    // 旧版浏览器入口才使用 #chatInput。个人入口优先，避免误投公共频道。
+    for (const doc of commandUiDocuments()) {
+      try {
+        for (const selector of ['#commandInput','#chatInput']) {
+          const input=doc.querySelector?.(selector);
+          if (!visibleCommandElement(input)) continue;
+          const form=input.form || doc.querySelector?.(selector==='#commandInput'?'#commandForm':'#chatForm');
+          let button=form?.querySelector?.('button[type="submit"]');
+          if (!button) {
+            const labels=selector==='#commandInput'?['执行','回复']:['发送'];
+            button=[...(doc.querySelectorAll?.('button') || [])].find(item=>labels.includes(String(item.textContent || '').trim()));
+          }
+          if (visibleCommandElement(button)) return {doc,input,button};
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+  function commandLogEntries() {
+    const entries=[];
+    for (const doc of commandUiDocuments()) {
+      try {
+        for (const entry of doc.querySelectorAll?.('article.log-entry') || []) {
+          const text=String(entry.innerText || entry.textContent || '').trim();
+          if (text) entries.push({entry,text,doc});
+        }
+      } catch (e) {}
+    }
+    return entries;
+  }
+  function commandLogCount(command, pattern) {
+    return commandLogEntries().filter(({entry,text})=>{
+      if (entry.classList?.contains('user') && command && text.split('\n').some(line=>line.trim()===command)) return true;
+      return pattern ? pattern.test(text) : false;
+    }).length;
+  }
+  async function sendTianjiUiCommand(command, owner) {
+    const composer=findCommandComposer();
+    if (!composer) return {ok:false,reason:'客户端没有可用的天机阁指令输入框'};
+    const beforeCommand=commandLogCount(command);
+    const beforeSuccess=commandLogCount('',/剑阵已成|布下了【大庚剑阵】/);
+    const beforeFailure=commandLogCount('',/(?:剑阵.*(?:失败|错误|不足|无法|不允许)|指令.*(?:失败|错误|拒绝))/);
+    const {input,button}=composer;
+    try {
+      const setter=Object.getOwnPropertyDescriptor(input.constructor?.prototype || Object.getPrototypeOf(input),'value')?.set;
+      if (setter) setter.call(input,command); else input.value=command;
+      const EventCtor=input.ownerDocument?.defaultView?.Event || Event;
+      input.dispatchEvent(new EventCtor('input',{bubbles:true,inputType:'insertText',data:command}));
+      input.dispatchEvent(new EventCtor('change',{bubbles:true}));
+      button.click();
+    } catch (error) {
+      return {ok:false,reason:'客户端指令输入失败：'+safeLogText(error?.message || error,120)};
+    }
+    const deadline=Date.now()+20000;
+    while (Date.now()<deadline) {
+      checkOwner(owner);
+      const entries=commandLogEntries();
+      const success=entries.find(({entry,text})=>!entry.classList?.contains('user') && /剑阵已成|布下了【大庚剑阵】/.test(text));
+      const failure=entries.find(({entry,text})=>!entry.classList?.contains('user') && /剑阵.*(?:失败|错误|不足|无法|不允许)|指令.*(?:失败|错误|拒绝)/.test(text));
+      if (commandLogCount(command)>beforeCommand && commandLogCount('',/剑阵已成|布下了【大庚剑阵】/)>beforeSuccess && success)
+        return {ok:true,via:'ui',message:safeLogText(success.text,240)};
+      if (commandLogCount('',/(?:剑阵.*(?:失败|错误|不足|无法|不允许)|指令.*(?:失败|错误|拒绝))/)>beforeFailure && failure)
+        return {ok:false,reason:'天机阁命令未确认：'+safeLogText(failure.text,240)};
+      await sleep(250);
+    }
+    return {ok:false,reason:'客户端已发送 .布下剑阵，但在 20 秒内未观察到新的天机阁回执'};
+  }
+  async function sendTianjiCommand(command, owner) {
+    const pageRequest=pagePostJson();
+    let token='',initData='',playerId='',apiFailure=null;
+    try {
+      const app=pageClientState();
+      const query=new URLSearchParams(window.location?.search || ''), hash=new URLSearchParams(String(window.location?.hash || '').replace(/^#/,'').replace(/^\//,''));
+      token=app?.token || hash.get('tgWebAppStartParam') || query.get('tgWebAppStartParam') || query.get('autobotToken') || hash.get('autobotToken') || '';
+      initData=app?.initData || hash.get('tgWebAppData') || window.Telegram?.WebApp?.initData || '';
+      playerId=app?.selectedPlayerId || app?.data?.account?.playerId || hash.get('playerId') || loadoutPlayer() || '';
+    } catch (e) {}
+    if ((typeof window.fetch==='function' || pageRequest) && token && initData && playerId) {
+      let timer,response,data;
+      try {
+        const request=pageRequest
+          ? Promise.resolve().then(()=>pageRequest('/api/miniapp/xianxia-dwelling/command-center',{token,initData,playerId,command}))
+          : Promise.resolve().then(()=>window.fetch('/api/miniapp/xianxia-dwelling/command-center',{
+              method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({token,initData,playerId,command})
+            })).then(async result=>({__response:result,__data:await result.json().catch(()=>null)}));
+        const result=await Promise.race([request,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('请求超时')),20000);})]);
+        checkOwner(owner);
+        if (result?.__response) { response=result.__response;data=result.__data; }
+        else { response={ok:true,status:200};data=result; }
+      } catch (error) {
+        if (error instanceof Cancelled || owner!==state.generation) throw error;
+        data=null;response={ok:false,status:error?.status || 0};
+      } finally { clearTimeout(timer); }
+      const result=data?.actionResult;
+      const text=safeLogText(result?.rawMessage || result?.message || data?.message || data?.error || '',180);
+      const rejected=!data || response?.ok===false || Number(response?.status)>=400 || !!data.error || data?.ok===false || data?.success===false || result?.ok===false ||
+        /(?:失败|错误|不足|未能|无法|不允许|尚未解锁)/.test(text);
+      if (!rejected) return {ok:true,message:text,via:'api'};
+      apiFailure={ok:false,reason:'天机阁 API 未确认'+(response?.status?'（HTTP '+response.status+'）':'')+(text?'：'+text:'')};
+      log(apiFailure.reason+'，改用客户端指令输入');
+    }
+    const ui=await sendTianjiUiCommand(command,owner);
+    // API 明确失败但当前页面没有客户端个人指令入口时，保留原始 HTTP
+    // 错误，便于诊断；真实客户端有 #commandInput 时则继续走 UI 回退。
+    if (!ui.ok && apiFailure && ui.reason==='客户端没有可用的天机阁指令输入框') return apiFailure;
+    if (!ui.ok && !apiFailure && !token && !initData && !playerId && !ui.reason.includes('客户端'))
+      return {ok:false,reason:'缺少天机阁 API 凭据，且'+ui.reason};
+    return ui;
+  }
+  function recentGengPreparation(owner=state.generation) {
+    const previous=state.gengPreparation;
+    return previous?.owner===owner && previous.player===loadoutPlayer() ? previous : null;
+  }
+  async function ensureGengFormation(owner, context='开战准备') {
+    checkOwner(owner);
+    // 正在战斗的接管/续波不另发布阵命令；每场新开局都走此检查。
+    if (instanceCombatActive() && readCombat()?.state==='fighting') return {ok:true,needed:false,inCombat:true};
+    const before=currentUltimate();
+    if (!isHalfGengFormation(before)) {
+      if (/^大庚剑阵.*全阵/.test(before)) state.gengPreparation=null;
+      return {ok:true,needed:false};
+    }
+    const previous=recentGengPreparation(owner);
+    // 同一批任务内失败只发一次；新的操作可重试。成功的 UI 回执短暂容忍 iframe 旧缓存。
+    if (previous && (!previous.result.ok || previous.result.via==='ui' && Date.now()-previous.at<30000)) return previous.result;
+    const remember=result=>{
+      state.gengPreparation={owner,player:loadoutPlayer(),at:Date.now(),result};
+      return result;
+    };
+    log(context+'：检测到「'+before+'」，向天机阁发送 .布下剑阵');
+    const sent=await sendTianjiCommand('.布下剑阵',owner);
+    if (!sent.ok) {
+      log(context+'：大庚剑阵布阵命令未确认 · '+sent.reason);
+      return remember({ok:false,reason:sent.reason});
+    }
+    await refreshDoufaProfile(); checkOwner(owner);
+    // 客户端私有回执是服务端成功结果；重读后 iframe 仍可能短暂缓存半阵。
+    if (sent.via==='ui') {
+      log(context+'：客户端天机阁回执确认大庚剑阵已成');
+      return remember({ok:true,needed:true,message:sent.message,via:'ui'});
+    }
+    // API 仅确认请求处理；必须重读到全阵，才能进入副本或试炼。
+    for (let i=0; i<12; i++) {
+      checkOwner(owner);
+      const after=currentUltimate();
+      if (/^大庚剑阵.*全阵/.test(after)) {
+        log(context+'：大庚剑阵已更新为「'+after+'」');
+        return remember({ok:true,needed:true,message:sent.message,via:'api'});
+      }
+      await sleep(250);
+    }
+    const reason='已发送 .布下剑阵，但未确认全阵（当前：'+(currentUltimate() || '未知')+'）';
+    log(context+'：'+reason);
+    return remember({ok:false,reason});
+  }
+  async function requireGengFormation(owner, context) {
+    const result=await ensureGengFormation(owner,context);
+    if (!result.ok) {
+      const error=new Error('大庚剑阵布阵未确认：'+result.reason+'；未进入、未消耗本场机会');
+      error.code='geng_formation';
+      throw error;
+    }
+    return result;
   }
   function saveLoadoutMarker(marker, required = false) {
     try { localStorage.setItem(LOADOUT_KEY,JSON.stringify(marker)); }
@@ -3687,18 +4515,21 @@
     return typeof window.operateTreasure==='function' && !doufaProfile() && !(readCombat()?.kit || []).length;
   }
   function moonEntryIssue(swap) {
-    if (!CFG.moonSkipHitPassive) return null;
-    const passive=hitAudit().passive || hitPassiveSlots()[0]?.name || null;
-    if (passive) return {code:'hit_passive',reason:'「'+passive+'」仍在技能位'+
-      (swap?.skip?'（自动收起未成功：'+swap.skip+'）':'')+'，被动冰焰的每一跳都计入命中数；本场未进入、未消耗今日机会，卸下后再运行'};
+    if (swap?.skip) return {code:swap.unknown?'loadout_unknown':'loadout_unconfirmed',
+      reason:swap.skip+'；本场未进入、未消耗今日机会，稍后再运行'};
+    const prepared=recentGengPreparation();
+    const confirmed=prepared?.result.ok && prepared.result.via==='ui' && Date.now()-prepared.at<30000;
+    if (!instanceCombatActive() && isHalfGengFormation() && !confirmed) return {code:'geng_formation',
+      reason:'开局前仍为大庚剑阵半阵；本场未进入、未消耗今日机会'};
     const unknown=swap?.unknown || loadoutUnknown();
-    if (unknown || swap?.skip) return {code:unknown?'loadout_unknown':'loadout_unconfirmed',
-      reason:(swap?.skip || '斗法档案未载入，无法确认技能位里有没有放大命中数的被动法宝')+'；本场未进入、未消耗今日机会，稍后再运行'};
+    if (unknown) return {code:'loadout_unknown',
+      reason:'斗法档案未载入，无法确认月殿禁用法宝已收起；本场未进入、未消耗今日机会，稍后再运行'};
+    const other=moonRestrictedItems()[0] || (readCombat()?.kit || []).find(slot=>!slot.locked && isMoonRestrictedTreasure(slot));
+    if (other) return {code:'loadout_unconfirmed',reason:'「'+(other.name || other.itemId || '未知法宝')+'」仍在技能位或已祭出，月殿需收起紫罗极火 / 乾蓝冰焰 / 阴阳冰火大剑；本场未进入、未消耗今日机会'};
     return null;
   }
-  // 返回 {changed:false}（没有这类法宝）、{changed:true,names}（已收起）或 {skip:原因}（没收成，已尽量装回）；
-  // 技能位读不到时返回 {skip,unknown:true}。
-  async function stripHitPassives(owner) {
+  // 只收起指定三种法宝，最多按腾出的技能位数量从背包补祭安全法宝。
+  async function prepareMoonLoadout(owner) {
     const check=()=>checkOwner(owner);
     if (state.loadout) await restoreLoadout();
     if (loadoutUnknown()) {
@@ -3706,27 +4537,53 @@
       await refreshDoufaProfile();
       for (let i=0; i<20 && loadoutUnknown(); i++) { check(); await sleep(300); }
       check();
-      if (loadoutUnknown()) return {skip:'斗法档案未载入，无法确认技能位里有没有放大命中数的被动法宝',unknown:true};
+      if (loadoutUnknown()) return {skip:'斗法档案未载入，无法确认月殿禁用法宝已收起',unknown:true};
     }
-    const profile=doufaProfile(), targets=hitPassiveSlots(profile);
-    if (!targets.length) return hitAudit().passive ? {skip:'读不到斗法档案里的法宝编号'} : {changed:false};
     if (state.loadout) return {skip:'上一次收起的法宝还没有装回'};
     if (instanceCombatActive()) return {skip:'已在副本内，不能调整法宝'};
-    const items=targets.map(slot=>({itemId:slot.itemId,name:slot.name || slot.itemId,slot:slot.slot}));
-    const names=items.map(item=>item.name);
+    // 完整库存包含已祭出但未占技能位的法宝；读取失败时不能将其当成空库存。
+    if (typeof window.operateTreasure==='function') await refreshDoufaInventory();
+    check();
+    const profile=doufaProfile(), clientState=pageClientState();
+    if (typeof window.operateTreasure==='function' && treasureCollections(profile,clientState)===null) return {skip:'法宝库存未载入，无法确认已祭出的法宝',unknown:true};
+    const targets=moonRestrictedItems(profile,clientState);
+    if (!targets.length) return {changed:false};
+    if (!profile) return {skip:'斗法档案未载入，无法确认当前法宝及技能位',unknown:true};
+    const items=targets.map(item=>({itemId:item.itemId,name:item.name || item.displayName || item.title || item.itemId,slot:item.slot}));
+    const names=items.map(item=>item.name), replacements=[];
+    const excluded=items.map(item=>item.itemId);
+    for (let i=0;i<items.filter(item=>slotActive(item.itemId,profile)).length;i++) {
+      const item=bestUnmanifestedTreasure(profile,clientState,excluded);
+      if (!item) break;
+      replacements.push(item);excluded.push(item.itemId);
+    }
     // 刷新后必须有凭据可恢复；持久化失败时保持原装备。
-    if (!saveLoadoutMarker({player:loadoutPlayer(),at:Date.now(),reason:'moonpalace',items,order:slotOrder(profile),hold:true,restoring:false,error:''},true))
+    if (!saveLoadoutMarker({player:loadoutPlayer(),at:Date.now(),reason:'moonpalace',items,replacements,manifested:moonManifestedItems(profile,clientState).map(item=>item.itemId),order:slotOrder(profile),hold:true,restoring:false,error:''},true))
       return {skip:'恢复记录无法保存，未调整法宝'};
     try {
       for (const item of items) {
         step('月殿换装：收起「'+item.name+'」');
-        await treasureAction('withdraw',item,()=>!slotActive(item.itemId),check);
+        await treasureAction('withdraw',item,()=>!treasureManifested(item.itemId) && !slotActive(item.itemId),check);
+      }
+      for (const item of replacements) {
+        step('月殿换装：临时祭出「'+item.name+'」');
+        await treasureAction('manifest',item,()=>treasureManifested(item.itemId),check);
+      }
+      if (replacements.some(item=>!slotActive(item.itemId))) {
+        if (typeof window.saveDoufaSkillSlots!=='function') throw new Error('临时法宝未进入技能位，页面没有技能位保存入口');
+        let index=0;
+        const order=state.loadout.order.map(id=>items.some(item=>item.itemId===id) ? replacements[index++]?.itemId : id).filter(Boolean);
+        for (let attempt=0;attempt<3 && replacements.some(item=>!slotActive(item.itemId));attempt++) {
+          check();await Promise.resolve().then(()=>window.saveDoufaSkillSlots(order.slice())).catch(()=>{});
+          for (let i=0;i<10 && replacements.some(item=>!slotActive(item.itemId));i++) {check();await sleep(300);}
+        }
+        if (replacements.some(item=>!slotActive(item.itemId))) throw new Error('临时法宝技能位未能确认');
       }
       check();
-      const left=hitPassiveSlots()[0]?.name || hitAudit().passive;
+      const left=moonRestrictedItems()[0]?.name;
       if (left) throw new Error('收宝后技能位里仍有「'+left+'」');
-      log('月殿换装：已收起「'+names.join('」「')+'」，打完自动祭回');
-      return {changed:true,names};
+      log('月殿换装：已收起「'+names.join('」「')+'」'+(replacements.length?'，临时祭出「'+replacements.map(item=>item.name).join('」「')+'」':'')+'，其余法宝保留，打完自动恢复');
+      return {changed:true,names,replacements,replacement:replacements[0]};
     } catch (error) {
       if (state.loadout) state.loadout.hold=false;
       if (error instanceof Cancelled || owner!==state.generation) { void restoreLoadout(); throw error; }
@@ -3747,16 +4604,23 @@
         if (instanceCombatActive()) return fail('副本进行中');
         if (!doufaProfile()) return fail('斗法档案未载入');
         marker.restoring=true;
+        const replacements=loadoutReplacements(marker);
+        for (const item of replacements) {
+          if (treasureManifested(item.itemId) || slotActive(item.itemId))
+            await treasureAction('withdraw',item,()=>!treasureManifested(item.itemId) && !slotActive(item.itemId));
+        }
         for (const item of marker.items) {
-          if (slotActive(item.itemId)) continue;
-          await treasureAction('manifest',item,()=>slotActive(item.itemId));
+          if (treasureManifested(item.itemId)) continue;
+          await treasureAction('manifest',item,()=>treasureManifested(item.itemId));
         }
         const same=()=>JSON.stringify(slotOrder())===JSON.stringify(marker.order);
         let order='';
         if (!same()) {
           const current=slotOrder();
           // 祭回后顺序变了才还原；法宝集合已不同（期间手动换过）就不动用户的新配置。
-          if (current.length===marker.order.length && marker.order.every(id=>current.includes(id)) && typeof window.saveDoufaSkillSlots==='function') {
+          const manifested=moonManifestedItems().map(item=>item.itemId);
+          const originalSet=Array.isArray(marker.manifested) && manifested.length===marker.manifested.length && marker.manifested.every(id=>manifested.includes(id));
+          if ((current.length===marker.order.length && marker.order.every(id=>current.includes(id)) || originalSet) && typeof window.saveDoufaSkillSlots==='function') {
             for (let attempt=0; attempt<3 && !same(); attempt++) {
               await Promise.resolve().then(()=>window.saveDoufaSkillSlots(marker.order.slice())).catch(()=>{});
               for (let i=0; i<10 && !same(); i++) await sleep(300);
@@ -3765,13 +4629,14 @@
           } else order='，技能位配置与收起前不同，未改动';
         }
         const names=marker.items.map(item=>item.name).join('」「');
+        const replacementName=replacements.map(item=>item.name).join('」「');
         saveLoadoutMarker(null);
         state.loadoutLast={at:Date.now(),names:marker.items.map(item=>item.name),order:order || '，技能位顺序不变'};
-        log('月殿换装：已祭回「'+names+'」'+(order || '，技能位顺序不变'));
+        log('月殿换装：'+(replacementName?'已收起临时法宝「'+replacementName+'」，':'')+'已祭回「'+names+'」'+(order || '，技能位顺序不变'));
         return {ok:true,changed:true,order};
       } catch (error) {
         const reason=error?.message || String(error);
-        log('月殿换装：「'+marker.items.map(item=>item.name).join('」「')+'」尚未装回 · '+reason+'；稍后自动重试，也可在储物袋手动祭出');
+        log('月殿换装：'+(loadoutReplacements(marker).length?'临时法宝「'+loadoutReplacements(marker).map(item=>item.name).join('」「')+'」及':'')+'「'+marker.items.map(item=>item.name).join('」「')+'」尚未完全装回 · '+reason+'；稍后自动重试，也可在储物袋手动调整');
         return fail(reason);
       }
     })().finally(()=>{ loadoutRestoring=null; });
@@ -3789,23 +4654,23 @@
     state.loadout.hold=false;
     for (let i=0; i<20 && instanceCombatActive() && owner===state.generation; i++) await sleep(300);
     const restored=await restoreLoadout();
-    if (!restored.ok && state.batch?.status==='running') state.batch.loadout='「'+(state.loadout?.items || []).map(item=>item.name).join('」「')+'」尚未装回：'+restored.reason;
+    if (!restored.ok && state.batch?.status==='running') state.batch.loadout=(loadoutReplacements(state.loadout).length?'临时「'+loadoutReplacements(state.loadout).map(item=>item.name).join('」「')+'」及':'')+'「'+(state.loadout?.items || []).map(item=>item.name).join('」「')+'」尚未装回：'+restored.reason;
     else if (state.batch) delete state.batch.loadout;
   }
   async function loadoutCheck() {
     return workflow(async owner => {
       const before=slotOrder();
-      const swap=await stripHitPassives(owner);
+      const swap=await prepareMoonLoadout(owner);
       if (swap.skip) return '换装自检未通过：'+swap.skip;
-      if (!swap.changed) return '技能位里没有放大命中数的被动法宝，无需换装';
-      const clean=!hitAudit().passive && !hitPassiveSlots().length, during=slotOrder();
+      if (!swap.changed) { const issue=moonEntryIssue(swap); return issue?'换装自检未通过：'+issue.reason:'未装备指定三种禁用法宝，无需换装'; }
+      const clean=!moonEntryIssue(swap), during=slotOrder();
       if (state.loadout) state.loadout.hold=false;
       const restored=await restoreLoadout();
       checkOwner(owner);
       const after=slotOrder(), same=JSON.stringify(before)===JSON.stringify(after);
-      state.loadoutCheck={at:Date.now(),names:swap.names,before,during,after,clean,restored:restored.ok,same};
+      state.loadoutCheck={at:Date.now(),names:swap.names,replacement:swap.replacement,replacements:swap.replacements,before,during,after,clean,restored:restored.ok,same};
       if (!restored.ok) return '换装自检未通过：收起成功，装回未确认 · '+restored.reason;
-      return '换装自检'+(clean && same?'通过':'有出入')+'：收起「'+swap.names.join('」「')+'」后'+(clean?'被动已不在技能位':'被动仍在技能位')+'，已祭回，技能位顺序'+(same?'与原先一致':'与原先不同');
+      return '换装自检'+(clean && same?'通过':'有出入')+'：收起「'+swap.names.join('」「')+'」'+(swap.replacements?.length?'并临时祭出「'+swap.replacements.map(item=>item.name).join('」「')+'」':'')+'后'+(clean?'指定三种法宝均已收起':'仍有禁用法宝未收起')+'，已祭回，技能位顺序'+(same?'与原先一致':'与原先不同');
     }, {preserveResult:true,preserveError:true,returnOnError:false});
   }
   class SettlementError extends Error {
@@ -3814,6 +4679,7 @@
       const receipt = combat?.arena === arena ? instanceResult(combat, arena)?.result : null;
       this.outcome = receipt?.kind || combat?.trial?.anomaly || 'settlement_anomaly';
       this.flags = Array.isArray(receipt?.flags) ? receipt.flags.slice() : [];
+      this.syncError = combat?.trial?.syncError || '';
       this.runId = combatRunId(combat);
       this.hits = combat?.metrics?.enemyHits ?? receipt?.hits ?? null;
       // 月殿按玩家命中次数校验（count_cap:hits），保留实际上报的那个数和放大来源。
@@ -3897,7 +4763,7 @@
       }, 10000, '退出结算异常副本', owner);
     }
     checkOwner(owner); state.error = '';
-    if (state.story) {state.story.moonCombat=null;state.story.moonShots=null;state.story.moonAvoid=null;state.story.mirrorSeen=null;state.story.moonWheelChecked=false;}
+    if (state.story) {state.story.moonCombat=null;state.story.moonShots=null;state.story.moonAvoid=null;state.story.mirrorSeen=null;state.story.moonRunes=null;state.story.moonGateKey=null;state.story.moonWheelChecked=false;}
   }
   async function instanceObjective(q, objective, owner) {
     const id = objective.instance, label = INSTANCE_LABELS[id];
@@ -3907,6 +4773,7 @@
     const existingAnomaly = s?.arena === id && combatSettlementError(s);
     if (existingAnomaly) throw existingAnomaly;
     if (!s?.active || s.overworld || s.arena !== id) {
+      await requireGengFormation(owner,label+'准备');
       step('主线副本：' + label);
       if (s?.arena !== id || s.overworld) await travelMenu(label, owner);
       await until(() => {
@@ -3964,7 +4831,7 @@
         if (quota.claimed) throw new SettlementError(id, '副本失败后奖励状态改变，请核对结算');
         state.batch.history.push({ id, outcome:'defeat', at:Date.now() });
         if (state.batch.history.length>20) state.batch.history.shift();
-        state.story.moonCombat=null; state.story.moonShots=null;state.story.moonAvoid=null; state.story.mirrorSeen=null; state.story.moonWheelChecked=false;
+        state.story.moonCombat=null; state.story.moonShots=null;state.story.moonAvoid=null; state.story.mirrorSeen=null; state.story.moonRunes=null; state.story.moonGateKey=null; state.story.moonWheelChecked=false;
         step('每日副本重试：' + label);
         if (!act('start')) throw new Error('游戏未接受副本重新挑战');
         await storyWait(300, owner); continue;
@@ -4019,9 +4886,9 @@
       }
       if (!enemies.length || s.wave.interlude > 0) { releaseKeys(); await storyWait(150, owner); continue; }
       const focus = id === 'southgate' ? [0,0,114] : id === 'escort' ? escortPoint(s.escort?.dist || 0) : me;
-      const target = enemies.sort((a, b) => dist(a.position, focus) - dist(b.position, focus))[0];
+      const target = id === 'escort' ? escortEnemy(s,me) : enemies.sort((a, b) => dist(a.position, focus) - dist(b.position, focus))[0];
       const a = captureArena(s, me);
-      const boundary = id === 'jianzhong' ? { center: SWORD_FLOORS[s.wave.index].point, radius: SWORD_FLOORS[s.wave.index].radius + 2 }
+      const boundary = id === 'escort' ? escortBoundary(s) : id === 'jianzhong' ? { center: SWORD_FLOORS[s.wave.index].point, radius: SWORD_FLOORS[s.wave.index].radius + 2 }
         : { center: a.center, radius: Math.max(5, a.radius - 4) };
       storyBattleFrame(s, target, boundary);
       await storyWait(CFG.tickMs, owner);
@@ -4521,6 +5388,31 @@
       return {arena,day:null,remaining:null,used:null,limit:null,unknown:true,error:error.message,activeRun:cached?.activeRun || null};
     }
   }
+  async function settledTrialQuota(owner,arena,beforeRemaining,runId) {
+    let failure;
+    for (let attempt=0;attempt<4;attempt++) {
+      checkOwner(owner);
+      let after;
+      try {after=beforeRemaining==null?await trialEntryQuota(owner,arena):await trialStatus(owner,arena);}
+      catch(error) {
+        if (error instanceof Cancelled || owner!==state.generation || error.message==='试炼查询返回另一场地') throw error;
+        failure=new SettlementError(arena,'试炼结算次数查询异常：'+error.message);
+      }
+      storyCheck(owner);
+      if (after) {
+        if (after.day) batchDay(after.day);
+        const unsettled=after.activeRun && !after.error && (!after.activeRun.id || !runId || after.activeRun.id===runId);
+        if (after.activeRun && !after.error && !unsettled) noteTrialOrphan(arena,after.activeRun);
+        if (!unsettled && (beforeRemaining==null || after.remaining<beforeRemaining)) return after;
+        failure=new SettlementError(arena,'试炼结算后有奖次数未确认');
+      }
+      if (attempt<3) {
+        log('本局已通关，等待服务端次数状态确认 · '+(attempt+1));
+        await sleep(600*2**attempt);checkOwner(owner);
+      }
+    }
+    throw failure;
+  }
   function updateBatchTrialQuota(arena, quota) {
     state.batch.quotas ||= {};
     state.batch.quotas[arena]=quota.unknown?null:quota.remaining;
@@ -4562,7 +5454,7 @@
         window.__quests.close?.(); clickOnce('worldSheetClose'); canvas()?.focus?.({preventScroll:true});
         const result = await work(owner);
         await finishInCave(owner);
-        checkOwner(owner); state.batch.status='complete'; state.batch.current=null;
+        checkOwner(owner); state.batch.status=mode==='trials' && (state.batch.skipped.length || state.batch.incomplete)?'partial':'complete'; state.batch.current=null;
         step(result+'；已返回洞府'); return result;
       } catch (error) {
         if (owner === state.generation) {
@@ -4748,10 +5640,16 @@
           state.batch.skipped.push({id:row.id,name:row.name,...unavailable}); continue;
         }
         // 月殿按玩家命中次数校验。被动持续伤害会放大命中，但不是全部失败的唯一原因；
-        // 默认按当前装备进场；只有显式启用可选换装 / 被动保护时才收宝或检查跳过。
+        // 月殿开局前确认剑阵，只临时替换指定三种法宝。
         let swap=null;
+        const formation=await ensureGengFormation(owner,row.name+'准备');
+        if (!formation.ok) {
+          const issue={code:'geng_formation',reason:formation.reason+'；本场未进入、未消耗今日机会，修复剑阵后再运行'};
+          state.batch.skipped.push({id:row.id,name:row.name,...issue});
+          log('每日副本跳过 '+row.name+'：'+issue.reason); continue;
+        }
         if (row.id==='moonpalace') {
-          if (CFG.moonSwapHitPassive && !instanceCombatActive()) swap=await stripHitPassives(owner);
+          if (CFG.moonSwapHitPassive && !instanceCombatActive()) swap=await prepareMoonLoadout(owner);
           const issue=moonEntryIssue(swap);
           if (issue) {
             if (swap?.changed) await finishMoonLoadout(owner);
@@ -4810,7 +5708,9 @@
       const status=await dailyStatus(row.id,owner); storyCheck(owner); batchDay(status.day);
       if (!status.hasKey) return row.name+'未解锁，无法演练';
       let swap=null;
-      if (row.id==='moonpalace' && CFG.moonSwapHitPassive && !instanceCombatActive()) swap=await stripHitPassives(owner);
+      const formation=await ensureGengFormation(owner,row.name+'准备');
+      if (!formation.ok) return formation.reason+'；本场未进入、未消耗今日机会，修复剑阵后再运行';
+      if (row.id==='moonpalace' && CFG.moonSwapHitPassive && !instanceCombatActive()) swap=await prepareMoonLoadout(owner);
       try {
         const issue=row.id==='moonpalace' && moonEntryIssue(swap);
         if (issue) return issue.reason;
@@ -4860,13 +5760,16 @@
         const current=readCombat();
         if (current?.active && Object.hasOwn(TRIALS,current.arena) && !blocked.has(current.arena) &&
           (current.trial?.syncError || current.trial?.anomaly)) {
+          preserveFailedTrialSync(new SettlementError(current.arena,'战绩同步异常',current));
           await skipSettlement(new SettlementError(current.arena,'战绩同步异常：'+(current.trial.syncError || current.trial.anomaly),current),owner);
           blocked.add(current.arena); index=current.arena==='longwind'?1:0;
         }
         await storyReady(owner);
         const quotas={};
-        for (const arena of Object.keys(TRIALS).filter(id=>!blocked.has(id))) {
+        for (const arena of Object.keys(TRIALS)) {
           const quota=await trialEntryQuota(owner,arena); storyCheck(owner); if (quota.day) batchDay(quota.day);
+          updateBatchTrialQuota(arena,quota);
+          if (blocked.has(arena)) continue;
           if (quota.activeRun && !ownedTrial(quota,arena)) {
             const live=readCombat();
             if (trialArenaLive(live,arena)) {
@@ -4885,23 +5788,23 @@
           }
           quotas[arena]=quota;
         }
-        state.batch.quotas={};
-        for (const [id,quota] of Object.entries(quotas)) updateBatchTrialQuota(id,quota);
-        if (!Object.keys(quotas).length) state.batch.remaining=0;
+        state.batch.blocked=Array.from(blocked);
         // 通关面板可能仍在，但服务端 activeRun 已清空；先核对本场，不重新开局。
         const terminal=readCombat();
         const settled=terminal?.active && !terminal.overworld && terminal.state==='victory' &&
           quotas[terminal.arena] && terminal.trial?.run ? terminal : null;
         const existing=Object.entries(quotas).map(([id,q])=>ownedTrial(q,id)).find(Boolean) || settled;
-        if (state.batch.remaining===0 && !existing) return blocked.size
-          ? '本次有奖试炼已处理：通关 '+state.batch.completed.length+' 场，结算异常跳过 '+state.batch.skipped.length+' 场；异常场地本次不重试'
+        if (!Object.values(quotas).some(quota=>quota.unknown || quota.remaining>0) && !existing) return blocked.size
+          ? '本轮未全部通关：已通关 '+state.batch.completed.length+' 场，结算异常跳过 '+state.batch.skipped.length+' 场；异常场地本次不重试'
           : '今日有奖试炼次数已用完：本次通关 '+state.batch.completed.length+' 场，麦田/竹林剩余均为 0 次';
         const order=index%2?['bamboo','longwind']:['longwind','bamboo'];
         const arena=existing?.arena || order.find(id=>quotas[id] && (quotas[id].unknown || quotas[id].remaining>0)), quota=quotas[arena]; state.batch.current=arena;
         // 次数只作导航参考；是否发奖以本局原生入场回执为准。
         const beforeRemaining=quota.unknown?null:quota.remaining+(existing?1:0);
-        if (!existing && (state.batch.entryAttempts || 0)>=CFG.trialEntryMaxAttempts)
+        if (!existing && (state.batch.entryAttempts || 0)>=CFG.trialEntryMaxAttempts) {
+          state.batch.incomplete=true;
           return '本次试炼入场检查已达上限，停止本轮；本次有奖通关 '+state.batch.completed.length+' 场';
+        }
         if (!existing) state.batch.entryAttempts=(state.batch.entryAttempts || 0)+1;
         if (!existing) {
           const previousPrompt=trialEntryPrompt();
@@ -4941,25 +5844,13 @@
           if (result?.code==='settlement_anomaly') throw new SettlementError(arena,state.error || '试炼结算异常');
           if (state.error) throw new Error(state.error);
           if (!result?.verified || result.outcome!=='victory' || result.rewarded!==true) throw new SettlementError(arena,'试炼尚未确认有奖通关');
-          // 开局前次数可校验时，通关后仍必须查到次数；只有开局前就无法校验的入场检查局才放宽。
-          try { after=beforeRemaining==null ? await trialEntryQuota(owner,arena) : await trialStatus(owner,arena); }
-          catch (error) {
-            if (error instanceof Cancelled || owner !== state.generation) throw error;
-            throw new SettlementError(arena,'试炼结算次数查询异常：'+error.message);
-          }
-          storyCheck(owner); if (after.day) batchDay(after.day);
-          // 放宽时以本局原生回执（有奖 run + 已结算通关）为准；
-          // 查询失败时的 activeRun 只是战斗内缓存，不能据此否定已确认的通关。
-          // 只有本局自己的 run 仍未结算才算异常；查到的若是别的残留旧局，与本局通关无关。
           const ownRunId=result.runId || started?.trial?.run?.id || null;
-          const unsettled=after.activeRun && !after.error && (!after.activeRun.id || !ownRunId || after.activeRun.id===ownRunId);
-          if (after.activeRun && !after.error && !unsettled) noteTrialOrphan(arena,after.activeRun);
-          if (unsettled || (beforeRemaining!=null && after.remaining>=beforeRemaining))
-            throw new SettlementError(arena,'试炼结算后有奖次数未确认');
+          after=await settledTrialQuota(owner,arena,beforeRemaining,ownRunId);
           if (after.unknown) log(TRIALS[arena]+'通关后次数仍无法校验，按本局有奖回执记为完成');
         } catch (error) {
           if (error instanceof TrialPractice) return trialPracticeSummary(error);
           if (!(error instanceof SettlementError)) throw error;
+          preserveFailedTrialSync(error);
           await skipSettlement(error,owner); blocked.add(arena); index=arena==='longwind'?1:0; continue;
         }
         state.batch.completed.push({id:arena,name:TRIALS[arena],day:after.day || state.batch.day,tier:result.tier,runId:result.runId || started?.trial?.run?.id || null,result});
@@ -5003,12 +5894,17 @@
     }
     return 1;
   }
+  const MOON_TREASURE_INTERVAL_MIN=8, MOON_TREASURE_INTERVAL_MAX=12;
+  function moonInstant(rule) {
+    // 按原生基础读条筛选，蓄势也不恢复原本需要读条的技能。
+    return !!rule && Number(rule.cast ?? 0)===0;
+  }
   function moonPreferredArt(s) {
     const rules=window.QingxiTreasureRules?.arts;
     return (s.arts||[]).filter(name=>rules?.[name]?.damage>0 && rules[name].cost>=0 &&
+      moonInstant(rules[name]) &&
       (name!=='血煞斩' || s.hp/Math.max(1,s.hpMax)>.5))
-      .sort((a,b)=>((rules[a].cast||0)>1.2)-((rules[b].cast||0)>1.2) ||
-        rules[b].damage/Math.max(1,rules[b].cost)-rules[a].damage/Math.max(1,rules[a].cost))[0] || null;
+      .sort((a,b)=>rules[b].damage/Math.max(1,rules[b].cost)-rules[a].damage/Math.max(1,rules[a].cost))[0] || null;
   }
   function moonSkills(s, target) {
     const distance=dist(myPos(),target.position), rules=window.QingxiTreasureRules;
@@ -5019,18 +5915,19 @@
       const range=slot.skill==='xuantian'?10:slot.skill==='chisi'?19:rule?.range;
       if (!rule || slot.locked || !Number.isInteger(slot.slot) || slot.slot<1 || slot.slot>6 ||
         !Number.isFinite(slot.cost) || slot.cost<0 || !(rule.damage>0 || rule.dot>0) || !(range>distance+.5) ||
+        !moonInstant(rule) ||
         rule.hpPct>0 && s.hp/Math.max(1,s.hpMax)<=.5) return [];
       return [{kind:'slot',command:'slot'+slot.slot,counter:'treasures',name:slot.name||slot.skill,slot,cost:slot.cost,
-        identity:[slot.itemId||'',slot.skill||'',slot.name||''].join('|'),
-        cooldown:slot.cooldown??s.cooldown?.['slot'+slot.slot]??0,duration:s.empowered?0:rule.cast||0}];
+        cooldown:slot.cooldown??s.cooldown?.['slot'+slot.slot]??0}];
     }).sort((a,b)=>a.slot.slot-b.slot.slot);
     const name=s.art, rule=rules?.arts?.[name], index=(s.arts||[]).indexOf(name);
     const artRange=name==='烈焰焚天'?8.5:name==='灵兽突袭'?13:23;
     if (rule?.damage>0 && rule.cost>=0 && index>=0 && distance<artRange &&
+      moonInstant(rule) &&
       (name!=='血煞斩' || s.hp/Math.max(1,s.hpMax)>.5)) {
       const left=name==='火弹' ? s.cooldown?.spell : s.cooldown?.['art'+index];
-      choices.push({kind:'art',command:'art',counter:'arts',name,identity:name,cost:moonManaScale(s)*rule.cost,
-        cooldown:left??0,duration:s.empowered?0:rule.cast||0});
+      choices.push({kind:'art',command:'art',counter:'arts',name,cost:moonManaScale(s)*rule.cost,
+        cooldown:left??0});
     }
     return choices;
   }
@@ -5038,13 +5935,12 @@
     if (!state.story || s.arena!=='moonpalace') return false;
     const view=window.qingxiNgqBoss?.stats?.(), me=myPos();
     if (!view || !me || !['intro','fight','dying'].includes(view.mode) || s.mechanicTargets?.length) return false;
-    const watch=moonEvasionWatch(s,me,now,view);
     const clock=Number.isFinite(s.wave?.time)?s.wave.time:now/1000, run=s.moonPalace?.run?.id||target.id;
     let plan=state.story.moonCombat;
     if (!plan || plan.run!==run || clock<plan.time || view.phase<plan.phase || (view.counts?.interrupts||0)<plan.interrupts) {
       plan=state.story.moonCombat={run,time:clock,phase:view.phase,interrupts:view.counts?.interrupts||0,
         channels:view.counts?.channels||0,attempts:0,nextChannelAt:clock,artSwitchAt:-Infinity,artSwitches:0,
-        channel:null,cast:null,lastCastPosition:null,lastSkill:null,hp:s.hp,hurtAt:-Infinity,status:'月殿走位'};
+        channel:null,nextTreasureAt:clock,lastSkill:null,hp:s.hp,hurtAt:-Infinity,status:'月殿走位'};
     }
     if (view.phase===3 && plan.phase!==3) plan.nextChannelAt=clock+9.5;
     if ((view.counts?.interrupts||0)>plan.interrupts) {
@@ -5060,8 +5956,8 @@
     const rotation=previous<0?choices:[...choices.slice(previous+1),...choices.slice(0,previous+1)];
     const ready=rotation.filter(c=>c.cooldown===0 && now>=(state.skillRetryAt[c.command]||0));
     plan.hits=Number.isFinite(s.metrics?.playerHits)?s.metrics.playerHits:null;
-    const nav=reason=>{plan.status=reason;state.navigation={mode:plan.cast?'casting':'combat',distance:d,reason,updatedAt:Date.now()};};
-    if (s.paused || s.airborne || document.hidden || window.__rt?.mobileHudState?.()?.blocked) {plan.cast=null;releaseKeys();return true;}
+    const nav=reason=>{plan.status=reason;state.navigation={mode:'combat',distance:d,reason,updatedAt:Date.now()};};
+    if (s.paused || s.airborne || document.hidden || window.__rt?.mobileHudState?.()?.blocked) {releaseKeys();return true;}
     // 先补药，但绝不落入通用点杀优先 / 分化 / 术法兜底。
     attack(s,null,now,true,true);
     const move=(toward=null)=>{
@@ -5073,17 +5969,19 @@
     };
     const incoming=Object.values(view.swords||{}).some(blade=>blade?.attacking);
     const danger=step.critical || step.mobile || s.hp/Math.max(1,s.hpMax)<.35 || clock-plan.hurtAt<.7;
-    // 关键帧先走位和翻滚，避免同帧的锁定、站定或血契等待覆盖避险动作。
-    if (step.roll) {plan.cast=null;move();nav('翻滚避开落剑 / 血契 / 血池，随后继续输出');return true;}
+    // 关键帧先走位和翻滚，避免同帧的锁定、血契等待覆盖避险动作。
+    if (step.roll) {move();nav('翻滚避开落剑 / 血契 / 血池，随后继续输出');return true;}
     if (s.target!==target.id) {
-      plan.cast=null;move();nav('先锁定南宫阙');
+      move();nav('先锁定南宫阙');
       if (now-state.lastLockAt>450) {state.lastLockAt=now;act('lock');}
       return true;
     }
     if (view.channel!=null) {
-      plan.cast=null;
       const channel=plan.channel ||= {at:clock,attempts:0,lastAt:-Infinity,gapClosed:false};
-      const unsafe=step.threat && step.threat.move!=='ngq-channel' || incoming;
+      const threatHazard=step.threat?.hazard;
+      const inThreatHazard=!!threatHazard && dist(me,threatHazard.center)<threatHazard.radius;
+      const inGroundHazard=groundHazards().some(hazard=>dist(me,hazard.center)<hazard.radius);
+      const unsafe=!!step.critical || !!step.threat?.critical || inThreatHazard || inGroundHazard;
       if (unsafe || view.channel>=2.65) {move();nav('血契危险优先退避，未确认打断不报成功');return true;}
       if (s.casting || s.action?.kind==='cast') {move();nav('血契出现，移动取消读条后打断');return true;}
       if (s.giantSword && clock-channel.lastAt<1.15) {
@@ -5100,6 +5998,7 @@
           channel.lastAt=clock;channel.attempts++;plan.attempts++;
           nav('巨剑重击已出，等待原生血契打断计数');state.lastAct='月殿 · 巨剑打断血契';log('月殿：巨剑重击打断血契（等待原生确认）');
         }
+        if (!unsafe && incoming) nav('血契引导早期，飞剑尚未进入命中窗口，允许巨剑打断');
         return true;
       }
       if (s.hp/Math.max(1,s.hpMax)<.35 && d>2.4) {move();nav('低血不追近突刺，保留血契末段闪避');return true;}
@@ -5118,55 +6017,52 @@
       }
       nav('近身突刺，等待原生血契打断');return true;
     }
-    // 切到最适合的术法（原生 nextArt，与长按 V 相同）；读条中或切换未生效时不反复切。
+    // 前两阶段有技能就按实际消耗输出；第三阶段所有普通输出统一受破招灵力预留约束。
     const wanted=moonPreferredArt(s);
-    if (wanted && s.art!==wanted && !s.casting && !plan.cast && plan.artSwitches<12 && now-plan.artSwitchAt>700) {
+    let switchedArt=false;
+    if (wanted && s.art!==wanted && !s.casting && plan.artSwitches<12 && now-plan.artSwitchAt>700) {
       plan.artSwitchAt=now;plan.artSwitches++;
-      if (act('nextArt')) log('月殿：切换术法，目标 '+wanted);
+      switchedArt=act('nextArt');
+      if (switchedArt) log('月殿：切换术法，目标 '+wanted);
     }
-    // 血契临近时不新开跨过窗口的长读条，但不为尚未出现的血契冻结灵力和正常输出。
-    const canFinish=duration=>(view.phase!==3 || !(plan.nextChannelAt>clock) || clock+duration+.5<plan.nextChannelAt) &&
-      !(view.phase===3 && watch && (watch.fightTime<watch.unknownUntil || watch.nextPoolAt!=null && watch.nextPoolAt-watch.fightTime>=-.4 && watch.nextPoolAt-watch.fightTime<duration+.4));
-    // 域内无法从只读 stats 得知亮起哪半边，常态保持 12.8 米；血池期间每次短读条后换落点。
-    const castSafe=!danger && !incoming && d>=11.5 && view.mode==='fight' &&
-      !moonHazardZones(watch).some(h=>dist(me,h.center)<h.radius) &&
-      (!view.pools || clock-plan.hurtAt>1) && (!plan.lastCastPosition || dist(me,plan.lastCastPosition)>3);
-    if (plan.cast) {
-      if (!castSafe || !canFinish(Math.max(0,plan.cast.duration-(now-plan.cast.at)/1000))) {plan.cast=null;move();nav('预警 / 受伤出现，移动取消读条');return true;}
-      if (s.casting) {releaseKeys();nav('安全空档读条');return true;}
-      if (plan.cast.fired || now-plan.cast.at>900) {plan.lastCastPosition=me.slice();plan.cast=null;move();return true;}
-      const choice=choices.find(c=>c.command===plan.cast.command), position=me.slice();
-      const still=dist(position,plan.cast.position)<.03;plan.cast.position=position;releaseKeys();
-      if (!still || now-plan.cast.at<90) return true;
-      if (!choice || choice.identity!==plan.cast.identity || choice.cooldown>0 || s.mana<choice.cost || s.gcdLeft>0 || s.action && s.action.kind!=='cast') {plan.cast=null;move();return true;}
-      plan.cast.fired=combatAction(choice.command,choice.counter,now);
-      if (!plan.cast.fired) {plan.cast=null;move();return true;}
-      plan.lastSkill=choice.command;state.lastAct='月殿 · '+choice.name;log('月殿空档输出 '+choice.name);return true;
-    }
+    // 只在第三阶段按下一次血契与原生回灵速度逐步攒够一次巨剑；远离窗口时继续输出。
+    // stats 不暴露血契倒计时，沿用阶段进入 / 上次引导结束的保守预测。
+    const untilChannel=Math.max(0,plan.nextChannelAt-clock-.8);
+    const regen=Number(window.__rt?.mobileHudState?.()?.profile?.mana?.regenPerSecond);
+    plan.manaReserve=view.phase===3 && giant && (s.cooldown?.giant??0)<=Math.max(0,plan.nextChannelAt-clock)+1
+      ? Math.max(0,giant.cost-(Number.isFinite(regen)&&regen>0?regen:0)*untilChannel):0;
+    const canSpend=cost=>s.mana>=cost+plan.manaReserve;
+    const treasureReady=clock>=plan.nextTreasureAt;
+    const delayTreasure=()=>{
+      plan.nextTreasureAt=clock+MOON_TREASURE_INTERVAL_MIN+Math.random()*(MOON_TREASURE_INTERVAL_MAX-MOON_TREASURE_INTERVAL_MIN);
+    };
     // 满气势的大招不耗灵力，安全时优先使用。
     if (!danger && !incoming && view.mode==='fight' && castUltimate(s,{e:target,d},now)) {move();nav('气势已满，施放剑阵');return true;}
     let moved=false, rolled=false;
     const moveOnce=()=>{if (!moved) {rolled=move();moved=true;} return rolled;};
     if (!s.casting && !(s.gcdLeft>0) && (!s.action || s.action.kind==='cast') && view.mode==='fight') {
       for (const chosen of ready) {
-        if (s.mana<chosen.cost || (chosen.duration===0?step.critical:!castSafe || !canFinish(chosen.duration))) continue;
-        if (!chosen.duration) {
-          if (moveOnce()) {nav('翻滚避险，随后继续输出');return true;}
-          if (!combatAction(chosen.command,chosen.counter,now)) continue;
-          plan.lastSkill=chosen.command;state.lastAct='月殿 · '+chosen.name;
-          nav('按技能栏轮换输出 '+chosen.name);return true;
+        // 切换后旧快照中的术法不再有效，下一帧重新读取，防止途中误放读条术法。
+        if (chosen.kind==='art' ? switchedArt : !treasureReady) continue;
+        if (!canSpend(chosen.cost) || step.critical) continue;
+        if (moveOnce()) {nav('翻滚避险，随后继续输出');return true;}
+        if (!combatAction(chosen.command,chosen.counter,now)) continue;
+        if (chosen.kind==='slot') delayTreasure();
+        plan.lastSkill=chosen.command;state.lastAct='月殿 · '+chosen.name;
+        nav('按技能栏轮换输出 '+chosen.name);return true;
+      }
+      // 飞剑点杀独立补伤，按原生冷却与破招预留判断。
+      if (s.cooldown?.pierce===0 && sword && canSpend(sword.cost) && d<32) {
+        if (moveOnce()) {nav('翻滚避险，随后继续飞剑输出');return true;}
+        if (combatAction('pierce','pierces',now)) {
+          state.lastAct='月殿 · 飞剑点杀';nav('技能空档飞剑补伤');return true;
         }
-        releaseKeys();plan.cast={command:chosen.command,identity:chosen.identity,duration:chosen.duration,at:now,position:me.slice(),fired:false};
-        nav('站稳后施放 '+chosen.name);return true;
       }
     }
     moveOnce();
-    // 当前可用法宝 / 术法都未能释放时，用付得起的点杀持续补伤，不按累计命中数或未来技能消耗停火。
-    nav('绕行并使用当前灵力可施放的技能');
-    if (!rolled && !s.casting && !(s.gcdLeft>0) && view.mode==='fight' &&
-      s.cooldown?.pierce===0 && sword && s.mana>=sword.cost && d<32 && combatAction('pierce','pierces',now)) {
-      state.lastAct='月殿 · 点杀补伤';
-    }
+    // 保留即将到来的血契打断消耗；累计命中数不参与输出决策。
+    nav(plan.manaReserve>0?'绕行回灵，保留下一次血契巨剑消耗':
+      treasureReady?'绕行并使用当前灵力可施放的瞬发技能':'绕行回灵，等待下一次法宝输出');
     return true;
   }
 
@@ -5174,16 +6070,37 @@
     const seen=state.story.mirrorSeen ||= {};
     for (const mirror of s.mechanicTargets || []) {
       const old=seen[mirror.id];
-      if (!old || old.state!==mirror.state) seen[mirror.id]={state:mirror.state,since:now,observed:!!old};
+      const tone=moonMirrorTone(mirror),signature=JSON.stringify([mirror.state??null,mirror.color??null,tone]);
+      if (!old || old.signature!==signature)
+        seen[mirror.id]={state:mirror.state??null,color:mirror.color??null,tone,signature,since:now,observed:!!old};
     }
-    // 金光持续 2.6 秒；只在观察到变金后的前 0.9 秒出手，飞剑到达时仍是金光。
-    return (s.mechanicTargets || []).filter(m => m.state==='gold' && seen[m.id]?.observed && now-seen[m.id].since<900)
+    // 金 / 黄 / 白光持续窗口内才点杀；红光反弹，未知颜色也按不可攻击处理。
+    return (s.mechanicTargets || []).filter(m => moonMirrorTone(m)==='safe' && seen[m.id]?.tone==='safe' &&
+      seen[m.id]?.observed && now-seen[m.id].since<900)
       .sort((a,b) => dist(myPos(),a.position)-dist(myPos(),b.position))[0];
   }
   async function moonMechanicFrame(s, owner) {
     observeMoonDiagnostics(s);
     if (s.paused || document.hidden) {releaseKeys();return true;}
+    ensureMoonNativeFloorCompatibility();
     const me=myPos();
+    const native=window.qingxiNgqBoss?.stats?.()||null;
+    const finaleGate=moonFinaleGate(s,native),mirrorGate=moonMirrorGate(s,native);
+    if (state.story && (finaleGate.active||mirrorGate.active)) {
+      const key=JSON.stringify([finaleGate.active?finaleGate.reason:null,finaleGate.mode,finaleGate.mirrorsBroken,
+        moonNumber(finaleGate.bossRatio),mirrorGate.active,mirrorGate.targets]);
+      if (state.story.moonGateKey!==key) {
+        state.story.moonGateKey=key;
+        observeMoonDiagnostics(s,finaleGate.active?'finale_gate':'mirror_gate',{
+          reason:finaleGate.active?finaleGate.reason:'mirrors_incomplete',mode:native?.mode||null,
+          mirrorsBroken:finaleGate.mirrorsBroken,bossHp:finaleGate.bossHp,bossMax:finaleGate.bossMax,
+          bossRatio:moonNumber(finaleGate.bossRatio),mirrorTargets:mirrorGate.targets});
+      }
+    }
+    // 原生镜子阶段即使暂时没有交互目标，也不能落回首领普通输出。
+    if (mirrorGate.active && !(s.mechanicTargets||[]).length) {
+      releaseKeys();step('月殿宝镜：四面镜子尚未全部打破，等待镜面目标刷新');return true;
+    }
     const runes=(window.__fc.mechanicInteractions?.() || []).filter(t => t.data?.kind==='boss-rune');
     if (runes.length) {
       // 三枚阵纹的普通 E 交互；选择最短完整路线，不伪造镇压结果。
@@ -5198,9 +6115,10 @@
         route:route.map(t=>t.data.id),routeLength:moonNumber(length(route))});
       marker.target=target.data.id;
       marker.confirmed=Array.isArray(view?.runes)?view.runes.filter(value=>value==='sealed').length:marker.confirmed;
-      if (state.story.moonCombat) state.story.moonCombat.cast=null;
+      // 手动锁定会强制身体朝向首领；使用原生取消目标接口，让步行能先转向符文再遁光。
+      if (s.target!=null && readWorld()?.blink) window.__fc.clearUnitTarget?.();
       step('月殿镇魂：已确认 '+marker.confirmed+' / 3 · 靠近 '+(target.data.name||target.data.id));
-      await walkTo(point(target),1.25,owner,{flight:false,defend:false,moonEvasion:true,interrupt:()=>readCombat()?.state!=='fighting' || !(window.__fc.mechanicInteractions?.() || []).some(t=>t.data?.id===target.data.id)});
+      await walkTo(point(target),1.25,owner,{flight:false,defend:false,moonEvasion:true,moonBlink:true,interrupt:()=>readCombat()?.state!=='fighting' || !(window.__fc.mechanicInteractions?.() || []).some(t=>t.data?.id===target.data.id)});
       storyCheck(owner);
       const near=dist(myPos(),point(target))<1.5,available=(window.__fc.mechanicInteractions?.() || []).some(t=>t.data?.id===target.data.id);
       observeMoonDiagnostics(readCombat(),'rune_arrival',{target:target.data.id,near,available,distance:moonNumber(dist(myPos(),point(target)))});
@@ -5221,12 +6139,19 @@
       return true;
     }
     // 三纹已封但原生还没切到 dying，或目标列表尚未刷新时，不对免疫首领补输出。
-    if (window.qingxiNgqBoss?.stats?.()?.mode==='finale') {
-      if (moonDiagnosticContext && Date.now()-(moonDiagnosticContext.lastMissingAt||0)>=500) {
+    if (finaleGate.active) {
+      // 一次命中可能在原生减伤后仍未跨过阈值，继续输出直至实际血量达标。
+      if (finaleGate.reason==='native_lock_floor_waiting' && finaleGate.bossHp>
+          finaleGate.bossMax*(MOON_NATIVE_HP_GATES[2]+MOON_NATIVE_GATE_TOLERANCE)) return false;
+      if (finaleGate.mode==='finale' && moonDiagnosticContext && Date.now()-(moonDiagnosticContext.lastMissingAt||0)>=500) {
         moonDiagnosticContext.lastMissingAt=Date.now();
         observeMoonDiagnostics(s,'rune_targets_missing',{note:'原生仍为 finale，交互目标为空；等待原生刷新'});
       }
-      releaseKeys();step('月殿镇魂：等待原生阵纹 / 镇压收束');return true;
+      const message=finaleGate.reason==='native_lock_floor_waiting'
+        ? '月殿镇魂：原生锁血等待，停止普通输出并保持躲避'
+        : '月殿镇魂：等待原生阵纹 / 镇压收束';
+      moonFinaleEvade(s,message);step(message);
+      return true;
     }
     if (s.mechanicTargets?.length) {
       const a=captureArena(s,me), boundary={center:a.center,radius:Math.max(5,a.radius-4)};
@@ -5252,13 +6177,13 @@
       }
       return true;
     }
-    if (state.story) state.story.mirrorSeen=null;
+    if (state.story) {state.story.mirrorSeen=null;state.story.moonRunes=null;state.story.moonGateKey=null;}
     return false;
   }
 
   // ============ 10. 对外控制台接口 ============
   window.__autobot = {
-    version: '2.0.78', state,
+    version: '2.0.110', state,
     returnCave, returnTown:returnCave, enter: () => workflow(async owner => { await prepareTown(owner); return '已进入青溪坊'; }),
     start: startTrial, daily: completeDaily, drill: drillDaily, checkDailyRewards, trials: completeTrials, mainline: runStory, story: runStory, inspectMainline: mainline,
     sidequests: options => runStory({...options,kind:'全部支线'}), inspectSidequests: () => mainline('全部支线'),
@@ -5313,6 +6238,7 @@
         batch: state.batch ? JSON.parse(JSON.stringify(state.batch)) : null,
         dailyRewards: state.dailyRewards ? JSON.parse(JSON.stringify(state.dailyRewards)) : null,
         trialEntry: state.trialEntry ? {...state.trialEntry} : null,
+        trialSync: trialSyncRecords.map(({runtime,world,body,...row})=>({...row})),
         instanceHistory: instanceHistory.slice(-12).map(row=>({...row})),
         moonDiagnostics:moonDiagnostics(),
         waveHome: state.waveHome ? {arena:state.waveHome.arena,point:state.waveHome.point.slice(),source:state.waveHome.source} : null,
@@ -5421,6 +6347,7 @@
       rune_walk_exit:'阵纹寻路结束',rune_walk_error:'阵纹寻路异常',rune_arrival:'到达后的距离检查',
       rune_interact:'普通交互前后快照',rune_unconfirmed:'交互后未确认封印',rune_state:'原生阵纹状态变化',
       rune_timeout:'原生镇纹超时',runes_complete:'原生确认三纹已封',rune_targets_missing:'镇纹交互目标暂缺',
+      mirror_gate:'宝镜门控',finale_gate:'镇魂门控',mirror_state:'宝镜状态变化',
       damage:'角色受伤',boss_heal:'首领回血',submit:'原生结算上报',receipt:'原生结算返回',settlement:'副本结算留档'};
     const lines=[moonDiagnosticSummary(),'最近三局本地留档；缺失原生计数标为未知。镇纹时间是开始观察后的经过时间，不冒充原生倒计时。'];
     for (const run of moonDiagnosticHistory.slice().reverse()) {
@@ -5462,7 +6389,7 @@
     const style = element('style', '', document.head);
     style.textContent = '#dwellingAutobot{position:fixed;left:12px;bottom:12px;z-index:10000;width:310px;max-width:calc(100vw - 24px);color:#f1e7d2;background:#18261ff2;border:1px solid #9d885d;border-radius:8px;font:13px/1.6 system-ui;box-shadow:0 3px 18px #0005}#dwellingAutobot summary{cursor:pointer;padding:8px 12px}#dwellingAutobot .body{padding:0 12px 10px;max-height:65vh;overflow:auto}#dwellingAutobot button{margin:4px 5px 4px 0;padding:5px 9px;color:inherit;background:#304538;border:1px solid #887856;border-radius:4px;cursor:pointer}#dwellingAutobot article{border-top:1px solid #52604f;margin-top:10px;padding-top:8px}#dwellingAutobot p{margin:5px 0}#dwellingAutobot small{display:block;color:#d8c89e}';
     assistantPanel = element('details', '', document.body); assistantPanel.id = 'dwellingAutobot';
-    element('summary', '洞府助手 2.0.78 · 主支线 / 每日 / 题记', assistantPanel);
+    element('summary', '洞府助手 2.0.110 · 主支线 / 每日 / 题记', assistantPanel);
     const body = element('div', '', assistantPanel); body.className = 'body';
     const controls = element('div', '', body);
     button(controls, '返回洞府', () => window.__autobot.returnCave());
@@ -5495,7 +6422,7 @@
     const rewardLogDisplay = element('small', '', body);
     const combatStatus = element('small', '', body), moonStatus = element('small', '', body), heartbeatStatus = element('small', '', body);
     const help=element('details','',body);element('summary','使用说明',help);
-    element('small', '控制台洞府入口自动进入青溪坊。题记按越国→九国盟→天道盟目录顺序收集，跳过已记入项，未确认或入口未开放即暂停；地面无法起降的点（青黛回环）飞到上空悬停题记，空中不被接受时改沿谷底步行，到不了的点跳过并在结果里列出。所有支线分类自动收录，支持接交、采集、钓鱼、战斗及御风车追逐试驾；每日跳过已领奖/未解锁副本，月殿当天有奖机会已用时不重复挑战；月殿默认保留当前角色装备，按技能栏顺序轮换可用输出法宝，再用术法和点杀补伤，依据实际灵力、冷却和安全窗口出手，不设置累计命中预算；「月殿换装自检」只在手动点击时收宝再祭回、不进副本；一键每日遇到开局即为演练的副本立即退出，结束后复查领奖；「月殿演练（单场）」手动运行一场，机会已用仍可无奖演练；若本局有奖则正常结算；检查领奖按钮只查询不挑战；有奖试炼每局固定一重，入场确认有奖才战斗，无奖立即退出；次数无法校验时只尝试入场查看本局提示，不盲打练习局。副本/试炼结算异常跳过并继续下一场，本次不重试异常场地；全部完成或其他任务出错后返回洞府，异常推送日志群；停止按钮立即取消流程并松键。', help);
+    element('small', '控制台洞府入口自动进入青溪坊。题记按越国→九国盟→天道盟目录顺序收集，跳过已记入项，未确认或入口未开放即暂停；地面无法起降的点（青黛回环）飞到上空悬停题记，空中不被接受时改沿谷底步行，到不了的点跳过并在结果里列出。所有支线分类自动收录，支持接交、采集、钓鱼、战斗及御风车追逐试驾；每日跳过已领奖/未解锁副本，副本及试炼开局前发现大庚半阵自动发送 .布下剑阵并确认成功，全阵不重复消耗修为；大庚剑阵释放前确认目标仍存活且已选中，未锁定时先锁定再释放；月殿当天有奖机会已用时不重复挑战；月殿入场前只收起紫罗极火、乾蓝冰焰、阴阳冰火大剑，其余法宝保留；背包有可用法宝时临时补位，结束后恢复原装备和技能位顺序；月殿各阶段只放瞬发技能，普通法宝共用 8–12 秒随机回灵间隔，飞剑点杀和瞬发术法按原生冷却施放；第三阶段预留血契破招灵力，血契出现优先巨剑打断，破镜与破招按各自机制窗口执行；「月殿换装自检」只在手动点击时收宝再祭回、不进副本；一键每日遇到开局即为演练的副本立即退出，结束后复查领奖；「月殿演练（单场）」手动运行一场，机会已用仍可无奖演练；若本局有奖则正常结算；检查领奖按钮只查询不挑战；有奖试炼每局固定一重，入场确认有奖才战斗，无奖立即退出；次数无法校验时只尝试入场查看本局提示，不盲打练习局。副本/试炼结算异常跳过并继续下一场，本次不重试异常场地；全部完成或其他任务出错后返回洞府，异常推送日志群；停止按钮立即取消流程并松键。', help);
     questList = element('div', '', body); renderQuestList();
     // 点面板时不把键盘事件传给游戏；原生按钮的键盘激活仍然可用。
     assistantPanel.addEventListener('keydown', event => event.stopPropagation());
@@ -5505,7 +6432,7 @@
     setInterval(() => {
       if (state.phase !== previousPhase) { previousPhase = state.phase; panelStatus.textContent = state.phase; }
       journalStatus.textContent=state.journal?`题记：${({running:'进行中',complete:'全部收集',limited:'本轮完成',error:'异常停止',cancelled:'已停止'})[state.journal.status]} · 本次 ${state.journal.completed.length} 处 · 累计 ${state.journal.found}/${state.journal.total}${state.journal.current?' · 当前 '+state.journal.current.number+' '+state.journal.current.name:''}`:'';
-      batchStatus.textContent = state.batch ? `批量：${({running:'进行中',complete:'已完成',error:'异常停止',cancelled:'已取消'})[state.batch.status]} · 已完成 ${state.batch.completed.length} 场 · 跳过 ${state.batch.skipped.length} 场${state.batch.current?' · 当前 '+(DAILY.find(r=>r.id===state.batch.current)?.name || TRIALS[state.batch.current] || state.batch.current):''}${state.batch.quotas?' · 麦田 '+(state.batch.quotas.longwind ?? '?')+' / 竹林 '+(state.batch.quotas.bamboo ?? '?')+' 次':state.batch.remaining!=null?' · 有奖剩余 '+state.batch.remaining+' 次':''}` : '';
+      batchStatus.textContent = state.batch ? `批量：${({running:'进行中',complete:'已完成',partial:'未全部通关',error:'异常停止',cancelled:'已取消'})[state.batch.status]} · 已完成 ${state.batch.completed.length} 场 · 跳过 ${state.batch.skipped.length} 场${state.batch.current?' · 当前 '+(DAILY.find(r=>r.id===state.batch.current)?.name || TRIALS[state.batch.current] || state.batch.current):''}${state.batch.quotas?' · 麦田 '+(state.batch.quotas.longwind ?? '?')+' / 竹林 '+(state.batch.quotas.bamboo ?? '?')+' 次':state.batch.remaining!=null?' · 有奖剩余 '+state.batch.remaining+' 次':''}` : '';
       loadoutStatus.textContent = state.loadout ? '换装：「'+state.loadout.items.map(item=>item.name).join('」「')+'」已收起'+(state.loadout.hold?'，月殿结束后祭回':'，待祭回'+(state.loadout.error?'（'+state.loadout.error+'，自动重试）':'')) : '';
       navigationStatus.textContent = state.story && state.navigation ?
         `移动：${({race:'御风车竞速',flight:'御空',walk:'步行',settling:'等待停稳',idle:'已停稳',waiting:'等待刷新',combat:'反击避敌',casting:'站定施法',syncing:'等待同步'})[state.navigation.mode] || '步行'} · 目标 ${Math.round(state.navigation.distance)} 米${state.navigation.flight ? ' · '+state.navigation.flight.reason : state.navigation.reason ? ' · '+state.navigation.reason : ''}` : '';
@@ -5521,7 +6448,7 @@
   window.addEventListener('pagehide', () => window.__autobot.stop());
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountPanel, { once: true });
   else mountPanel();
-  if (rewardBridge && !inherited) {
+  if (rewardBridge && !rewardBridge.local && !inherited) {
     const generation = state.generation;
     setTimeout(() => { if (state.generation === generation) void autoEnterFromEntry(); }, 0);
   }

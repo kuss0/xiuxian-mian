@@ -216,11 +216,11 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
             'const fightStartedAt=Date.now(), deadline=fightStartedAt+5*60000;',
         "if (Date.now() > deadline) throw new Error('战斗超时：' + target.name);":
             "if (Date.now() > deadline) " + QUEST_FIGHT_TIMEOUT_DIAGNOSTIC,
-        'const target = livingEnemies(s).find(e => e.id === enemyId) || fieldThreat(s);':
-            'const requested = livingEnemies(s).find(e => e.id === enemyId);\n'
-            '        const target = (requested?.engaged ? requested : null) || fieldThreat(s) || requested;',
-        'let flightAttempt = null, walkRecovery = false;':
-            'let flightAttempt = null, walkRecovery = false, obstaclesReviewed = false;',
+        'if (requested) focusedEnemy(initial,livingEnemies(initial),requested,true);':
+            'fieldThreat(initial);\n'
+            '    if (requested?.engaged) focusedEnemy(initial,livingEnemies(initial),requested,true);',
+        'let flightAttempt = null, walkRecovery = false, blinkRetryAt = 0;':
+            'let flightAttempt = null, walkRecovery = false, blinkRetryAt = 0, obstaclesReviewed = false;',
         'const obstacles = [], deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);':
             'const obstacles = []; let deadline = Date.now() + Math.max(90000, dist(last, goal) * 1500);',
         'if (options.defend !== false && await defendNearby(owner)) { path = null; movedAt = Date.now(); continue; }':
@@ -237,11 +237,11 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         warmup = Path(__file__).with_name('qingxi_native_warmup.js').read_text() + '\n'
         capture = '          const obj = Reflect.apply(target, receiver, args);\n'
         patches[capture] = capture + "          if (slot === '__rt') qingxiWarmup.capture(obj);\n"
-        gather = '  async function gatherNode(node, owner) {'
+        gather = '  async function gatherNode(node, owner, movementRetries = 0) {'
         q23_gather = Path(__file__).with_name('qingxi_q23_gather.js').read_text().replace(
             '__Q23_DEFER_REASON__', json.dumps(Q23_DEFER_REASON))
         patches.update({
-            gather: q23_gather + '\n  async function gatherNode(node, owner, timedBottle = false) {',
+            gather: q23_gather + '\n  async function gatherNode(node, owner, movementRetries = 0, timedBottle = false) {',
             '  async function storyRequest(action, data, owner) {':
                 '  async function storyRequest(action, data, owner, timedPosition = null) {',
             '    const result = await window.__quests.fieldRequest(action, data);\n    storyCheck(owner);':
@@ -260,7 +260,7 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
             '      await gatherNode(node, owner);':
                 '      if (timedBottle && !q23NodeMatches(storyData(), node.id))\n'
                 '        throw new Q23GatherDeferred("封煞瓶节点待核对");\n'
-                '      await gatherNode(node, owner, timedBottle);',
+                '      await gatherNode(node, owner, 0, timedBottle);',
             "      if (!node) throw new Error('任务采集物尚未出现：' + objective.text);":
                 '      if (!node && timedBottle) throw new Q23GatherDeferred("封煞瓶节点待核对");\n'
                 "      if (!node) throw new Error('任务采集物尚未出现：' + objective.text);",
@@ -280,6 +280,11 @@ def browser_script(player, choices=None, *, read_only=False, reviewed_cast_pendi
         if script.count(before) != 1:
             raise RuntimeError('qingxi_upstream_policy_anchor_changed')
         script = script.replace(before, after)
+    if not read_only and not reward_batch:
+        retry = 'return await gatherNode(node,owner,movementRetries+1);'
+        if script.count(retry) != 3:
+            raise RuntimeError('qingxi_upstream_gather_retry_anchor_changed')
+        script = script.replace(retry, 'return await gatherNode(node,owner,movementRetries+1,timedBottle);')
     if daily_id is not None:
         native = Path(__file__).with_name('qingxi_single_daily_native.js').read_text().replace(
             '__SINGLE_DAILY_ID__', json.dumps(daily_id))

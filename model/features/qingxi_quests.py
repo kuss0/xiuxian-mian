@@ -29,7 +29,7 @@ from .cave_treasure_miniapp import build_cave_treasure_miniapp_adapter
 from .miniapp_common import MiniAppIdentityOwner, build_pooled_miniapp_transport, run_miniapp_blocking_flow
 
 API_PATH = '/api/miniapp/xianxia-dwelling/quests'
-SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78'})
+SUPPORTED_UPSTREAM_VERSIONS = frozenset({'2.0.53', '2.0.78', '2.0.110'})
 CATALOG_PATH = Path(__file__).with_name('qingxi_quest_catalog.json')
 _TASKS = {}
 
@@ -659,7 +659,7 @@ def safe_low_health_return(result, identity_id):
         return False
     error = result['report']['error']
     return (error == '野外气血低于 30% 且无法立即回血，已中止任务并尝试安全回城'
-            or (result['upstream_version'] == '2.0.78' and re.fullmatch(
+            or (result['upstream_version'] in {'2.0.78', '2.0.110'} and re.fullmatch(
                 r'野外气血低于 30% 且无法立即回血(?:（[^（）\r\n]+剩余 (?:[1-9][0-9]?|100)% 气血）)?'
                 r'，已中止任务并尝试返回洞府', error) is not None))
 
@@ -1739,8 +1739,12 @@ async def run_gameplay(owner, token, url, record, allowed, *, verify_flight, cho
             record['previous_browser'] = copy.deepcopy(record['browser'])
         deadline_seconds = (SINGLE_DAILY_WORKER_SEC if daily_id is not None else
                             (1500 if inspection_only else 11100) if reward_batch else QUEST_WORKER_SEC)
+        version = json.loads((Path(__file__).resolve().parents[2] /
+                              'vendor/dwelling-autobot/source.json').read_text())['version']
+        if version not in SUPPORTED_UPSTREAM_VERSIONS:
+            raise RuntimeError('qingxi_upstream_version_unsupported')
         record.update(phase='running', deadline=time.time() + deadline_seconds, gameplay_uncertain=True,
-                      browser={'phase': 'running', 'evidence_dir': str(directory), 'version': '2.0.78',
+                      browser={'phase': 'running', 'evidence_dir': str(directory), 'version': version,
                                'workflow': 'rewards' if reward_batch else 'quests'})
         if daily_id is not None:
             record['browser']['daily_id'] = daily_id

@@ -28,7 +28,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
 function fixture({remaining = 420000, nativeRemaining = remaining, wait = 0, alter,
-    fail = false, returnVerified = true} = {}) {
+    fail = false, returnVerified = true, threats = 0, defendMs = 0} = {}) {
   let clock = 0, owner = 1;
   const endpoint = 'https://fixture.invalid/api/miniapp/xianxia-dwelling/quests';
   const ids = {quest: 'qx_q23', item: 'qxq_sealing_bottle', node: 'opaque-dynamic-q23-node'};
@@ -72,6 +72,8 @@ function fixture({remaining = 420000, nativeRemaining = remaining, wait = 0, alt
     storyData: () => data, storyQuest: id => ({id, giver: 'herbalist', receiver: 'herbalist'}),
     storyReady: async () => {}, storyCheck: () => {}, releaseKeys: () => {},
     storyWait: async ms => {clock += ms;}, readCombat: () => null,
+    fieldThreat: () => threats-- > 0 ? {id: 'nearby-enemy'} : null,
+    defendNearby: async () => {clock += defendMs;},
     position3: value => Array.isArray(value) && value.length >= 2 ? [value[0], 0, value.at(-1)] : null,
     dist: (a, b) => a && b ? Math.hypot(...a.map((v, i) => v - b[i])) : 0,
     readWorld: () => ({actorPosition}), shown: id => id === 'dwellingWorld',
@@ -116,6 +118,12 @@ function fixture({remaining = 420000, nativeRemaining = remaining, wait = 0, alt
     assert.equal(f.wire[0].nodeId, f.ids.node);
     assert.equal(f.wire[1].gatherId, 'native-id');
   }
+  const afterDefence = fixture({remaining: 430000, threats: 1, defendMs: 500});
+  await afterDefence.execute();
+  assert.deepEqual(afterDefence.wire.map(body => body.action), ['gather-start', 'gather-finish']);
+  const defenceUsesBudget = fixture({remaining: 420001, threats: 1, defendMs: 500});
+  await assert.rejects(defenceUsesBudget.execute(), error => error.constructor.name === 'Q23GatherDeferred');
+  assert.equal(defenceUsesBudget.wire.length, 0);
   const ownerChanged = fixture({wait: 1, alter: ({invalidate}) => invalidate()});
   await assert.rejects(ownerChanged.execute(), /owner lost/);
   assert.equal(ownerChanged.wire.length, 0);

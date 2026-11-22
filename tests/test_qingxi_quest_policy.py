@@ -31,7 +31,42 @@ function environment(config={},handler=null,stored=[]){
 }
 async function ready(config={},handler=null){const env=environment(config,handler);await env.send('start',{});return env;}
 async function check(scenario){
- if(scenario.startsWith('reward_')){
+ if(scenario.startsWith('formation_')){
+  const e=await ready({readOnly:scenario==='formation_readonly'},(resource,body)=>{
+   if(resource!=='command-center')return {ok:true,account:{playerId:42}};
+   if(scenario==='formation_unknown')throw Error('missing command response');
+   const actionResult={ok:true,completed:true,command:body.command};
+   if(scenario==='formation_wrong_receipt')actionResult.command='.远航归来';
+   if(scenario==='formation_incomplete')actionResult.completed=false;
+   return {ok:true,actionResult};
+  });
+  const body={playerId:scenario==='formation_identity'?99:42,
+    command:scenario==='formation_scope'?'.远航归来':'.布下剑阵'};
+  if(scenario==='formation_status_spoof')body.action='status';
+  const blocked=['formation_readonly','formation_scope','formation_identity','formation_status_spoof'].includes(scenario);
+  if(blocked){
+   await assert.rejects(e.send('command-center',body));
+   assert.equal(e.calls.length,1);assert.equal(e.c.__qx.pending.size,0);
+  }else{
+   if(scenario==='formation_unknown')await assert.rejects(e.send('command-center',body));
+   else await e.send('command-center',body);
+   const good=scenario==='formation_success';
+   assert.equal(e.c.__qx.pending.size,good?0:1);
+   assert.equal(e.c.__qx.receipts.at(-1).ok,good);
+   assert.equal(e.c.__qx.receipts.at(-1).action,'.布下剑阵');
+   const saved=JSON.parse(e.storage.get('qingxi-local-pending:42'));
+   if(!good){
+    assert.equal(saved[0].action,'.布下剑阵');
+    await assert.rejects(e.send('command-center',body));
+    assert.equal(e.calls.filter(row=>row.resource==='command-center').length,1);
+    const restarted=environment({},null,saved);
+    await assert.rejects(restarted.send('command-center',body));
+    assert.equal(restarted.calls.length,0);
+   }
+   assert.ok(e.calls[1].journal.includes('.布下剑阵'));
+   assert.ok(!e.calls[1].journal.includes('initData'));
+  }
+ }else if(scenario.startsWith('reward_')){
   const quotas={longwind:{arena:'longwind',day:'2026-11-20',used:0,remaining:3,limit:3,activeRun:null},
    bamboo:{arena:'bamboo',day:'2026-11-20',used:0,remaining:3,limit:3,activeRun:null}};
   if(scenario==='reward_unknown_active')quotas.longwind.activeRun={id:'old'};
@@ -469,6 +504,8 @@ def test_budget_stop_is_resumable_only_outside_an_active_instance(snapshot, phas
 
 
 @pytest.mark.parametrize('scenario', [
+    'formation_success', 'formation_unknown', 'formation_wrong_receipt', 'formation_incomplete',
+    'formation_readonly', 'formation_scope', 'formation_identity', 'formation_status_spoof',
     'choices', 'fishing', 'durable_unknown', 'duplicate', 'singleflight',
     'native_cast', 'daily_full', 'daily_retry', 'pacing', 'readonly',
     'identity', 'journal_failure', 'status_cache', 'status_failure', 'housekeeping',
@@ -648,22 +685,31 @@ def test_field_combat_targets_live_threat_before_disengaged_original(scenario, t
     if shutil.which('node') is None:
         pytest.skip('Node is required to replay the real field target selection')
     source = browser_script(42)
-    helpers = source[source.index('  function livingEnemies('):source.index('  function protectFieldHealth(')]
-    selection = source[source.index('        const requested ='):source.index('        if (!target) {')]
+    helpers = source[source.index('  function livingEnemies('):source.index('  function steerWalkable(')]
+    fight = source[source.index('  async function fightEnemyCore('):source.index('  async function defendNearby(')]
     fixture = (Path(__file__).parent / 'fixtures/qingxi-disengaged-target.json').read_text()
     script = """const assert=require('node:assert/strict'),f=FIXTURE;
 const myPos=()=>f.actor,dist=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+const state={generation:1,phase:'任务',story:{}},window={__fc:{},__quests:{refresh:async()=>{}}};
+const fieldSettlements=[],fieldSettlementSequence=0,CFG={tickMs:0,settlementTimeoutMs:180000};
+const done=Error('first combat decision'),releaseKeys=()=>{},storyCheck=()=>{},storyReady=async()=>{};
+const storyWait=async()=>{throw done},step=value=>{state.phase=value},warnHitInflation=()=>{};
+const storyData=()=>({field:{enemies:[],regions:{}}});
+let chosen=null;const storyBattleFrame=(_s,target)=>{chosen=target.id;throw done};
+const readCombat=()=>s;
 HELPERS
-function choose(s,enemyId){SELECT;return target?.id||null}
-const s={overworld:true,enemies:f.enemies},original=s.enemies.find(e=>e.id===f.requested);
+FIGHT
+const s={overworld:true,active:true,state:'fighting',hp:100,hpMax:100,fieldPending:0,enemies:f.enemies},
+ original=s.enemies.find(e=>e.id===f.requested);
 if(SCENARIO==='requested_engaged')original.engaged=true;
 if(SCENARIO==='no_threat')s.enemies.forEach(e=>e.engaged=false);
 if(SCENARIO==='requested_dead')original.hp=0;
 if(SCENARIO==='requested_returning')original.returning=true;
 if(SCENARIO==='all_dead')s.enemies.forEach(e=>e.hp=0);
 const expected=SCENARIO==='all_dead'?null:['requested_engaged','no_threat'].includes(SCENARIO)?f.requested:'field-enemy-3';
-assert.equal(choose(s,f.requested),expected);
-""".replace('FIXTURE', fixture).replace('HELPERS', helpers).replace('SELECT', selection)
+(async()=>{try{await fightEnemyCore(f.requested,1);}catch(error){if(error!==done)throw error;}
+ assert.equal(chosen,expected);})().catch(error=>{console.error(error);process.exitCode=1});
+""".replace('FIXTURE', fixture).replace('HELPERS', helpers).replace('FIGHT', fight)
     script = script.replace('SCENARIO', json.dumps(scenario))
     path = tmp_path / 'field-target.cjs'
     path.write_text(script)
