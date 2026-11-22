@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -123,6 +124,24 @@ def test_real_returned_panel_with_settlement_hint_is_valid(env):
     with state_module.use_identity(ID):
         parsed = concubine._parse_status_voyage(RETURNED.split(": ", 1)[1], NOW)
     assert parsed is not None and parsed["status"] == "returned"
+
+
+@pytest.mark.parametrize('route', ['direct', 'native', 'passive'])
+def test_owned_reception_status_completes_only_the_read(env, route):
+    sample = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-awaiting-reception-20261122.json').read_text())
+    env.identity.update(concubine_name='绾绾', concubine_voyage_route='均衡',
+                        concubine_voyage_status='sailing', concubine_voyage_return_at=0)
+    assert asyncio.run(start(env))
+    receipt(env)
+    assert asyncio.run(reply(env, sample['text'], route=route))
+    assert env.identity[FIELD]['status'] == 'complete'
+    assert (CHAT, ROOT) not in env.identity['pending_tasks']
+    assert env.identity['concubine_voyage_status'] == 'returned'
+    assert env.identity['concubine_voyage_route'] == '均衡'
+    before = copy.deepcopy(env.identity)
+    assert not asyncio.run(reply(env, sample['text'], route=route))
+    assert env.identity == before
 
 
 @pytest.mark.parametrize("route", ["direct", "native", "passive"])

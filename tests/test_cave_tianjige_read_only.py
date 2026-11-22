@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -406,6 +407,28 @@ def test_public_tianjige_voyage_status_reconciles_returned_state(runtime):
     assert runtime.identity["concubine_voyage_status"] == "returned"
     assert runtime.identity["concubine_voyage_route"] == "月殿寻痕"
     assert runtime.identity["concubine_voyage_return_at"] == NOW
+
+
+def test_public_tianjige_voyage_reception_receipt_stays_unsettled(runtime):
+    receipt = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-awaiting-reception-20261122.json').read_text())
+    runtime.identity.update(concubine_name='绾绾', concubine_voyage_status='sailing',
+        concubine_voyage_route='均衡', concubine_voyage_return_at=NOW + 3600,
+        concubine_voyage_enabled=True)
+    runtime.flow.return_value['data']['actionResult']['rawMessage'] = receipt['text']
+    response = read('.远航状态')
+    assert response['ok']
+    assert runtime.identity['concubine_voyage_status'] == 'returned'
+    assert runtime.identity['concubine_voyage_route'] == '均衡'
+    assert runtime.identity['concubine_voyage_return_at'] == NOW
+    assert runtime.flow.await_count == 1
+
+
+@pytest.mark.parametrize('suffix', ['但尚未归来', '，已经结算', '\n远航状态未知'])
+def test_voyage_reception_receipt_rejects_unrecognized_suffix(suffix):
+    receipt = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-awaiting-reception-20261122.json').read_text())
+    assert concubine._parse_voyage_status_text(receipt['text'].removesuffix('。') + suffix, NOW) is None
 
 
 @pytest.fixture
