@@ -84,6 +84,37 @@ launcher 的视距初始化没有被任务入口调用；上游助手只强制 l
 远端回收 cleanup_verified=true；宿主 waiting_gameplay、gameplay_uncertain=false。
 途中三次 field-defeat 均有真实确认；q23 仍 active，不称为 q23 通关。
 
+## 最小视距启动后的真实验收
+
+修复代码 68c1f5b7 已推送；没有重启主服务。16:18 经正常 run 入口开始
+quest-161459517c9349228a6eb533782d126b，同一远端、本人 301299112。
+观察到 low、viewDistancePreference=200，入坊后 effective=200。
+16:26 封瓶 gather-start/gather-finish 均正常确认；服务端 bottle=1、ready，
+真实 300 秒期限至 16:31:21。16:28:52 turn-in 已确认，q23=rewarded，
+距期限约 149 秒；奖励为灵石×227、回灵丹×1。
+证据 baji-remote-minview-q23-turnin.json、baji-remote-minview-observed.jsonl。
+
+后续 q24 已确认 ambush=3，但黑衣剑宗尚未击杀。两次实际 HP 损失后，
+原版低血保护触发，16:35 前返回洞府；最终 hp=1851.36/9744。
+最终 server_checked=true、内存/磁盘 pending=0、field-release 成功，
+远端 state=closed/cleanup_verified=true。宿主 waiting_gameplay、
+gameplay_uncertain=false；q24 active、q25 locked。不重试本次首领，
+原始受伤候选和原任务结果保留在 baji-remote-minview-final.json 与原 job。
+q23 的成功只验收这条远端主线链，不计作 7+6 副本通关；本日仍 1/26。
+
+16:30 本机整机样本 load1=0.37、CPU idle=84%/94%；同轮远端 idle=22%/22%。
+这些是短时样本，证明本次负载迁移，不当作长期性能或加速倍数。
+16:36 WA bloodland 的正常只读复查仍为原 run 9ce59966fb81bab7649b116d、
+claimed=false；旧 pending_instance 和 held 保留。
+
+受伤候选的条件回放使用原版 threats 函数：假设目标仍存活、可见且该招
+尚未响应，bossDash 在 time=.65、距离约1.71米时会正确分类 critical。
+第二笔日志仅见 recover，无当前 move。这些导出缺少完整控制器和实际
+翻滚回执，不能归因于距离过滤错误，也不能宣称已复现第二笔伤源。
+现场帧时间样本约170ms，原 bossDash 命中窗口仅120ms；帧调度仍为候选
+原因，需进一步记录真实动作与原生子帧。没有据此改 vendor 或放宽低血保护。
+离线证据 q24-threat-candidates-replay.json 明确列出缺失输入与夹具假设。
+
 ## 本轮主线状态
 
 吧唧原生 q15 已击杀 lantern:090、拾取原契血印并交付，随后 HTTP 段
