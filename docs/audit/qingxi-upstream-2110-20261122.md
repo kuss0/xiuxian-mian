@@ -2,7 +2,7 @@
 
 2026-11-22。用户要求先检查上游更新，减少重复的本地处理。
 候选基线 187c45bd，独立工作树 `/root/xiuxian-qingxi-upstream2110-20261122`。
-最终全量验证已通过，待发布。
+已验证并发布；真实主线与整批验收继续进行。
 
 ## 上游事实和采用范围
 
@@ -69,3 +69,21 @@ actionResult.ok=true/completed=true 回执。网络未知、未完成或回执�
 原生返回、服务端任务/飞行回执以及内存与磁盘 pending。
 尚未以 2.0.110 完成任何真实主线、每日副本或试炼，不把隔离回归称为实机验收。
 麦田旧 m19 的真实通关与今天竹林战败另见当天 7+6 验收文档。
+
+## 08:16 发布与启动检查
+
+候选 bf07e212 合入生产为 **9a68347b**，已推 `xiuxian-mian/main`。
+08:16:10 只重启 xiuxian.service，MainPID 2699318、NRestarts=0。
+08:16:29 恢复 24 身份；08:17–08:18 面板 HTTP 200，实际 UI 队列、
+持久 pending 及模块 pending 均为 0；watchdog 与 health observer active。
+listener sidecar 仍按既有设置停用，自动整批与 NPC 调度开关仍 false。
+
+生产 vendor 已再次核对为 2.0.110/8a6938d0。
+正常只读 refresh 已确认 WA q20 active、无 pending/gather 或不确定占用。
+本号普通法宝计时因启动恢复错峰到 08:26:02，先观察它的原动作，再安排主线。
+重启时既有试炼启动对账已把主记录改为竹林 run V7AAXv8A5YCT_Ywn 的部分奖励，
+server_cleared=false，不再显示麦田通关为最新结果。没有重开试炼或重发通知。
+
+原有题库运行时修改保留。吧唧寻宝的同一操作已有本地 complete 记录，
+但 checkpoint 仍为 in_round=true/settled=false，模块继续阻止新局；
+本轮没有清除这条记录或启动寻宝。

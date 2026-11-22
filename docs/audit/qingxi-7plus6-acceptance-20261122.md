@@ -84,9 +84,10 @@ job `b8ffeb454d2d46dc85b640866d7476c0`。真实子进程参数
 摘要 `/root/xiuxian-maintenance-20261122/wa-bamboo-defeat.json`，
 原目录为同一 runtime 下的 `b8ffeb454d2d46dc85b640866d7476c0/`。
 
-现存主记录的旧文字仍显示上一场麦田通关，但本局 browser_trial 和
+07:46 时主记录的旧文字仍显示上一场麦田通关，但本局 browser_trial 和
 defeats_by_arena 已准确记录竹林战败；验收以本局原生及服务端回执为准。
-现有启动对账会依据新 browser_trial 重建主记录，本节不把旧文字当本局结果。
+08:16 上游升级重启时，现有启动对账已依据新 browser_trial 重建主记录：
+run_id 为 V7AAXv8A5YCT_Ywn，文字为已结束及本局部分奖励，server_cleared=false。
 
 wisemole 07:37:13 只读探针确认两个场地均 activeRun=null、used=0/remaining=3，
 七副本未解锁。证据 `wisemole-rewards-read.json`，未开局、未解除其旧 held。
