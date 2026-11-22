@@ -431,6 +431,33 @@ def test_voyage_reception_receipt_rejects_unrecognized_suffix(suffix):
     assert concubine._parse_voyage_status_text(receipt['text'].removesuffix('。') + suffix, NOW) is None
 
 
+def test_real_two_line_reception_read_is_returned_without_a_settlement_request(runtime):
+    sample = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-reception-instruction-20261122.json').read_text())
+    runtime.identity.update(concubine_name='南宫婉·月影', concubine_voyage_status='sailing',
+        concubine_voyage_route='月殿寻痕', concubine_voyage_return_at=NOW + 3600)
+    runtime.flow.return_value['data']['actionResult']['rawMessage'] = sample['text']
+    response = read('.远航状态')
+    assert response['ok']
+    assert runtime.identity['concubine_voyage_status'] == 'returned'
+    assert runtime.identity['concubine_voyage_return_at'] == NOW
+    assert runtime.flow.await_count == 1
+
+
+@pytest.mark.parametrize('change', ['unknown_footer', 'extra_line', 'other_command', 'settled', 'no_task'])
+def test_reception_instruction_requires_the_exact_known_receipt(change):
+    sample = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-reception-instruction-20261122.json').read_text())['text']
+    changed = {
+        'unknown_footer': sample.replace('结算本次远航', '远航状态未知'),
+        'extra_line': sample + '\n已结算',
+        'other_command': sample.replace('`.远航归来`', '`.侍妾远航`'),
+        'settled': sample.replace('正在洞府外等你接引', '已经结算'),
+        'no_task': '侍妾当前并未执行远航任务。\n' + sample.split('\n')[1],
+    }[change]
+    assert concubine._parse_voyage_status_text(changed, NOW) is None
+
+
 @pytest.fixture
 def voyage_runtime(runtime):
     runtime.identity.update(

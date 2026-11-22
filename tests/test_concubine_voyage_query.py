@@ -144,6 +144,26 @@ def test_owned_reception_status_completes_only_the_read(env, route):
     assert env.identity == before
 
 
+@pytest.mark.parametrize('route', ['direct', 'native', 'passive'])
+def test_owned_reception_instruction_closes_read_without_settling_or_resending(env, route):
+    sample = json.loads(Path(__file__).with_name('fixtures').joinpath(
+        'concubine-voyage-reception-instruction-20261122.json').read_text())
+    env.identity.update(concubine_name='南宫婉·月影', concubine_voyage_route='月殿寻痕',
+                        concubine_voyage_status='sailing', concubine_voyage_return_at=0)
+    assert asyncio.run(start(env))
+    receipt(env)
+    assert asyncio.run(reply(env, sample['text'], route=route))
+    assert env.identity[FIELD]['status'] == 'complete'
+    assert (CHAT, ROOT) not in env.identity['pending_tasks']
+    assert env.identity['concubine_voyage_status'] == 'returned'
+    assert env.identity['concubine_voyage_route'] == '月殿寻痕'
+    assert env.send.await_count == 1
+    assert env.send.await_args.args == (COMMAND,)
+    before = copy.deepcopy(env.identity)
+    assert not asyncio.run(reply(env, sample['text'], route=route))
+    assert env.identity == before
+
+
 @pytest.mark.parametrize("route", ["direct", "native", "passive"])
 def test_owned_voyage_status_closes_exact_pending_and_is_idempotent(env, route):
     env.identity.update(concubine_voyage_status="sailing", concubine_voyage_return_at=0)

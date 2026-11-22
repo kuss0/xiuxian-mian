@@ -14,5 +14,11 @@ reason 和 raw_message；通用 `_write_json_result` 在 ok=false 时丢弃 extr
 过长文本沿用原有错误封装。没有扩大远航解析器、结算或调度条件。
 
 定向回归 175 passed；全量 19422 passed、1561 subtests passed in 564.46s。
-全量 Ruff、编译和 diff 检查通过。生产校准待完成。
+全量 Ruff、编译和 diff 检查通过。
 完整日志 `/root/xiuxian-maintenance-20261122/readonly-evidence-full.log`。
+
+11:30 发布并推送 ba160348，仅重启 xiuxian.service。11:31 恢复 24 身份，
+UI HTTP 200，watchdog 正常。实际诊断返回了两行完整回包：第一行为
+等待接引，第二行为“请使用 `.远航归来` 结算本次远航。”。
+原始响应已保存到 `/root/xiuxian-maintenance-20261122/voyage-reception-live-diagnostic.json`。
+解析器仍拒绝该段，候选应依据这份真实文本适配固定第二行，而非任意丢弃尾文。
