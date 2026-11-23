@@ -191,6 +191,7 @@ from .config import (
     LOG_GROUP_ID,
     LOG_GROUP_DELIVERY_METRICS,
     LOG_GROUP_STRUCTURED_SUMMARY,
+    LOG_GROUP_QUIET_ROUTINE,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS,
     LOG_SEND_MODE,
@@ -3160,6 +3161,30 @@ def _resolve_audit_priority(content, priority=None):
     return AUDIT_PRIORITY_LOW
 
 
+_QUIET_AUDIT_ALERT_MARKERS = (
+    "⚠", "❌", "失败", "异常", "错误", "超时", "不足", "冻结", "熔断",
+    "未知", "未确认", "未核销", "未匹配", "未结算", "未领奖", "未送达",
+    "待核查", "待核实", "需核实", "需处理", "请检查", "请重新", "请重试",
+    "中断", "断开", "不可用", "无响应", "未能", "负伤", "损失", "受伤",
+    "失联", "超限", "限流", "自动停用", "安全锁", "保护锁", "暂停保护",
+    "战败", "死亡", "大凶",
+)
+
+
+def _quiet_audit_priority(content, priority, *, explicit="auto", buttons=None):
+    """Group routine display only; alerts and interactive messages stay immediate."""
+    if not (LOG_GROUP_QUIET_ROUTINE and LOG_GROUP_STRUCTURED_SUMMARY):
+        return priority
+    if priority == AUDIT_PRIORITY_HIGH or _resolve_audit_priority(content) == AUDIT_PRIORITY_HIGH:
+        return AUDIT_PRIORITY_HIGH
+    text = str(content or "")
+    if (buttons or str(explicit).lower() in {"warn", "warning"}
+            or any(marker in text for marker in _QUIET_AUDIT_ALERT_MARKERS)
+            or re.search(r"\bHTTP\s*[45]\d{2}\b|\b(?:error|failed|failure|timeout|unknown|warning)\b", text, re.I)):
+        return AUDIT_PRIORITY_MEDIUM
+    return AUDIT_PRIORITY_LOW
+
+
 def _note_dungeon_quiet_send_block(command, *, send_as_id=None):
     try:
         identity_id = int(send_as_id if send_as_id is not None else (get_current_identity_id() or 0))
@@ -3362,7 +3387,8 @@ def get_audit_push_status_text():
     lines = [
         "日志推送策略",
         "低优先级: 进入定时汇总，明细折叠；重复记录保留次数。",
-        "中优先级: 实时发送日志群，不 @。",
+        ("中优先级: 异常实时，普通通知进入定时汇总，不 @。" if LOG_GROUP_QUIET_ROUTINE and LOG_GROUP_STRUCTURED_SUMMARY
+         else "中优先级: 实时发送日志群，不 @。"),
         "高优先级: 实时发送日志群，并 @ 管理员。",
         "",
         f"低优先级汇总间隔: {_audit_summary_interval()} 秒",
@@ -3371,7 +3397,8 @@ def get_audit_push_status_text():
         f"定时任务: {'已排程' if is_scheduled else '未排程'}",
     ]
     if LOG_GROUP_STRUCTURED_SUMMARY:
-        lines.append("Lab 结构化摘要: 仅闭关/元婴确认结果；其他中高优先级保持原策略。")
+        lines.append("安静模式: 普通成功、进度和等待只发定时摘要。" if LOG_GROUP_QUIET_ROUTINE
+                     else "Lab 结构化摘要: 仅闭关/元婴确认结果；其他中高优先级保持原策略。")
         store = _audit_summary_store
         if store is not None:
             lines.append(f"摘要投递待核查: {len(store.held)} 批（不自动重发）；超期/超量仅保留计数: {store.retired_records} 条")
@@ -3436,6 +3463,7 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
         summary_kind = ""
     if summary_kind:
         audit_priority = AUDIT_PRIORITY_LOW
+    audit_priority = _quiet_audit_priority(content, audit_priority, explicit=priority, buttons=buttons)
     display_content = routine_copy(content) if audit_priority == AUDIT_PRIORITY_LOW else str(content or "")
     # Clip visible text, not markup bytes, so links/tags and astral characters
     # survive the caller's display budget. Console logging retains its own copy.
