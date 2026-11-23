@@ -32,10 +32,10 @@ class QuietNotificationTests(IsolatedAsyncioTestCase):
             self.addCleanup(item.stop)
 
     async def test_normal_success_and_wait_are_saved_then_sent_once_per_hour(self):
-        for body in ("洞府寻宝已完成｜奖励：凝血草x13", "深度闭关进行中，完成后继续结算", "批次进度：已完成 2/6"):
+        for body in ("洞府寻宝已完成｜奖励：凝血草x13", "深度闭关进行中，完成后继续结算", "批次进度：已完成 2/6", "野外负伤而归｜修为-1268"):
             assert await runtime.send_audit_log(body, scope="global", priority="normal")
         self.sender.assert_not_awaited()
-        assert sum(row["count"] for row in self.store.bucket.values()) == 3
+        assert sum(row["count"] for row in self.store.bucket.values()) == 4
         self.now[0] += 1800
         await runtime.flush_low_priority_audit_summary()
         self.sender.assert_not_awaited()
@@ -47,7 +47,7 @@ class QuietNotificationTests(IsolatedAsyncioTestCase):
         assert "tg://user" not in message and not self.store.bucket
 
     async def test_failures_and_unknown_results_stay_immediate_even_if_marked_low(self):
-        for body in ("请求失败：HTTP 502", "结果未知，未确认结算", "安全锁拦截", "Connection timeout", "野外负伤而归"):
+        for body in ("请求失败：HTTP 502", "结果未知，未确认结算", "安全锁拦截", "Connection timeout", "处理错误"):
             with self.subTest(body=body):
                 self.sender.reset_mock()
                 await runtime.send_audit_log(body, scope="global", priority="low")
@@ -71,6 +71,15 @@ class QuietNotificationTests(IsolatedAsyncioTestCase):
         await runtime.send_audit_log("获得灵石 +500｜剩余 429", scope="global", priority="normal")
         self.sender.assert_not_awaited()
         assert len(self.store.bucket) == 1
+
+    async def test_zero_failure_counts_are_routine_but_real_failures_still_send(self):
+        await runtime.send_audit_log("🧩 批次完成：成功 24｜失败 0。", scope="global", priority="normal")
+        self.sender.assert_not_awaited()
+        assert len(self.store.bucket) == 1
+        for text in ("批次完成：成功 23｜失败 1。", "批次完成：失败 0｜结果未知", "批次完成：错误 0｜HTTP 502", "发送失败：0", "批次完成：成功 24｜操作失败：0"):
+            self.sender.reset_mock()
+            await runtime.send_audit_log(text, scope="global", priority="normal")
+            self.sender.assert_awaited_once()
 
     async def test_quiet_switch_off_preserves_existing_normal_delivery(self):
         with patch.object(runtime, "LOG_GROUP_QUIET_ROUTINE", False):

@@ -3165,9 +3165,9 @@ _QUIET_AUDIT_ALERT_MARKERS = (
     "⚠", "❌", "失败", "异常", "错误", "超时", "不足", "冻结", "熔断",
     "未知", "未确认", "未核销", "未匹配", "未结算", "未领奖", "未送达",
     "待核查", "待核实", "需核实", "需处理", "请检查", "请重新", "请重试",
-    "中断", "断开", "不可用", "无响应", "未能", "负伤", "损失", "受伤",
+    "中断", "断开", "不可用", "无响应", "未能",
     "失联", "超限", "限流", "自动停用", "安全锁", "保护锁", "暂停保护",
-    "战败", "死亡", "大凶",
+    "死亡", "大凶",
 )
 
 
@@ -3178,8 +3178,11 @@ def _quiet_audit_priority(content, priority, *, explicit="auto", buttons=None):
     if priority == AUDIT_PRIORITY_HIGH or _resolve_audit_priority(content) == AUDIT_PRIORITY_HIGH:
         return AUDIT_PRIORITY_HIGH
     text = str(content or "")
+    alert_text = text
+    if any(word in text for word in ("批次", "进度", "统计", "汇总")):
+        alert_text = re.sub(r"(?<![a-zA-Z\u4e00-\u9fff])(?:失败|异常|错误|超时)\s*[:：=]?\s*0(?:\s*[个条项次笔])?(?=[｜|，,；;。!！\n]|$)", "", text)
     if (buttons or str(explicit).lower() in {"warn", "warning"}
-            or any(marker in text for marker in _QUIET_AUDIT_ALERT_MARKERS)
+            or any(marker in alert_text for marker in _QUIET_AUDIT_ALERT_MARKERS)
             or re.search(r"\bHTTP\s*[45]\d{2}\b|\b(?:error|failed|failure|timeout|unknown|warning)\b", text, re.I)):
         return AUDIT_PRIORITY_MEDIUM
     return AUDIT_PRIORITY_LOW
